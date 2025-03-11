@@ -25,6 +25,8 @@ public class FileRecord implements Serializable {
     private String fileName;
     private String filePath;
     private String poNumber;
+    private Integer dccId;
+    
 
     public FileRecord() {
     }
@@ -37,6 +39,15 @@ public class FileRecord implements Serializable {
         this.recordNo = recordNo;
     }
 
+    public Integer getDccId() {
+        return dccId;
+    }
+
+    public void setDccId(Integer dccId) {
+        this.dccId = dccId;
+    }
+
+    
     public String getFileName() {
         return fileName;
     }

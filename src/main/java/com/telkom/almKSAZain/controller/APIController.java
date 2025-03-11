@@ -14,6 +14,7 @@ import com.telkom.almKSAZain.model.tbScopeApprovalLevels;
 import com.telkom.almKSAZain.model.DCCLineItem;
 import com.telkom.almKSAZain.model.dccstatus;
 import com.telkom.almKSAZain.model.supplierdata;
+import com.telkom.almKSAZain.model.tbSerialNumber;
 import com.telkom.almKSAZain.model.DCC;
 import com.telkom.almKSAZain.model.polndata;
 import com.telkom.almKSAZain.model.upldata;
@@ -36,8 +37,9 @@ import com.telkom.almKSAZain.model.tb_ChargeAccount;
 import com.telkom.almKSAZain.model.tb_ErrorMessage;
 import com.telkom.almKSAZain.model.tb_Site;
 import com.telkom.almKSAZain.model.tb_Region;
-import com.telkom.almKSAZain.model.tbCategoryApprovalLevels;
+//import com.telkom.almKSAZain.model.tbCategoryApprovalLevels;
 import com.telkom.almKSAZain.model.tbItemCodeSubstitute;
+import com.telkom.almKSAZain.model.tbNode;
 import com.telkom.almKSAZain.repo.tbCategoryApprovalLevelRepo;
 import com.telkom.almKSAZain.repo.tbSiteRepo;
 import com.telkom.almKSAZain.repo.tbRegionRepo;
@@ -46,6 +48,8 @@ import com.telkom.almKSAZain.repo.tbErrorMessageRepo;
 import com.telkom.almKSAZain.repo.tbChargeAccountRepo;
 import com.telkom.almKSAZain.repo.tbScopeApprovalLevelsRepo;
 import com.telkom.almKSAZain.repo.tbScopeRepo;
+import com.telkom.almKSAZain.repo.tbNodeRepo;
+import com.telkom.almKSAZain.repo.tbSerialNumberRepo;
 import com.telkom.almKSAZain.utlities.Httpcall;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -60,17 +64,23 @@ import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
+import java.sql.Timestamp;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.stream.Collectors;
 import org.apache.logging.log4j.LogManager;
 import org.json.JSONException;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -134,6 +144,12 @@ public class APIController {
 
     @Autowired
     tbScopeRepo scopeRepo;
+
+    @Autowired
+    tbSerialNumberRepo serialNumberRepo;
+
+    @Autowired
+    tbNodeRepo nodeRepo;
 
     @Autowired
     tbScopeApprovalLevelsRepo scopeApprovalLevelsRepo;
@@ -737,58 +753,65 @@ public class APIController {
                 if (!validatePoList.isEmpty()) {
                     tb_PurchaseOrderUPL spldt = purchaseOrderUPLRepo.findByRecordNo(recordNo);
                     if (spldt != null) {
-                        java.util.Date parsedDate = dateFormat.parse(now.toString());
-                        java.sql.Date newDate = new java.sql.Date(parsedDate.getTime());
-                        spldt.setRecordDatetime(newDate);
-                        spldt.setVendor(jsonObject.getString("vendor").trim());
-                        spldt.setManufacturer(jsonObject.getString("manufacturer").trim());
-                        spldt.setCountryOfOrigin(jsonObject.getString("countryOfOrigin").trim());
-                        spldt.setProjectName(jsonObject.getString("projectName").trim());
-                        spldt.setPoType(jsonObject.getString("poType").trim());
-                        spldt.setReleaseNumber(jsonObject.getString("releaseNumber").trim());
-                        spldt.setPoNumber(jsonObject.getString("poNumber").trim());
-                        spldt.setPoLineNumber(jsonObject.getString("poLineNumber").trim());
-                        spldt.setUplLine(jsonObject.getString("uplLine").trim());
-                        spldt.setPoLineItemType(jsonObject.getString("poLineItemType").trim());
-                        spldt.setPoLineItemCode(jsonObject.getString("poLineItemCode").trim());
-                        spldt.setPoLineDescription(jsonObject.getString("poLineDescription").trim());
-                        spldt.setUplLineItemType(jsonObject.getString("uplLineItemType").trim());
-                        spldt.setUplLineItemCode(jsonObject.getString("uplLineItemCode").trim());
-                        spldt.setUplLineDescription(jsonObject.getString("uplLineDescription").trim());
-                        spldt.setZainItemCategoryCode(jsonObject.getString("zainItemCategoryCode").trim());
-                        spldt.setZainItemCategoryDescription(jsonObject.getString("zainItemCategoryDescription").trim());
-                        spldt.setUplItemSerialized(jsonObject.getString("uplItemSerialized").trim());
-                        spldt.setActiveOrPassive(jsonObject.getString("activeOrPassive").trim());
-                        spldt.setUom(jsonObject.getString("uom").trim());
-                        spldt.setCurrency(jsonObject.getString("currency").trim());
-                        spldt.setPoLineQuantity(jsonObject.getDouble("poLineQuantity"));
-                        spldt.setPoLineUnitPrice(jsonObject.getDouble("poLineUnitPrice"));
-                        spldt.setUplLineQuantity(jsonObject.getDouble("uplLineQuantity"));
-                        spldt.setUplLineUnitPrice(jsonObject.getDouble("uplLineUnitPrice"));
-                        spldt.setSubstituteItemCode(jsonObject.getString("substituteItemCode"));
-                        spldt.setRemarks(jsonObject.getString("remarks").trim());
-                        spldt.setUplModifiedBy(jsonObject.getString("modifiedBy").trim());
-                        // if (jsonObject.has("uplModifiedDate") && jsonObject.getString("uplModifiedDate").length() > 1) {
-                        java.util.Date upldate = dateFormat.parse(now.toString());
-                        java.sql.Date sqlDate = new java.sql.Date(upldate.getTime());
-                        spldt.setUplModifiedDate(sqlDate);
-                        // }
-                        spldt.setRemarks(jsonObject.getString("remarks").trim());
+                        //add a validation to check if the UPL has an acceptance record already 
+
+                        List<DCCLineItem> validateacceptance = dcclnrepo.findByPoIdAndLineNumberAndUplLineNumber(jsonObject.getString("poNumber").trim(), jsonObject.getString("poLineNumber").trim(), jsonObject.getString("uplLine").trim());
+                        if (validateacceptance.isEmpty()) {
+                            java.util.Date parsedDate = dateFormat.parse(now.toString());
+                            java.sql.Date newDate = new java.sql.Date(parsedDate.getTime());
+                            spldt.setRecordDatetime(newDate);
+                            spldt.setVendor(jsonObject.getString("vendor").trim());
+                            spldt.setManufacturer(jsonObject.getString("manufacturer").trim());
+                            spldt.setCountryOfOrigin(jsonObject.getString("countryOfOrigin").trim());
+                            spldt.setProjectName(jsonObject.getString("projectName").trim());
+                            spldt.setPoType(jsonObject.getString("poType").trim());
+                            spldt.setReleaseNumber(jsonObject.getString("releaseNumber").trim());
+                            spldt.setPoNumber(jsonObject.getString("poNumber").trim());
+                            spldt.setPoLineNumber(jsonObject.getString("poLineNumber").trim());
+                            spldt.setUplLine(jsonObject.getString("uplLine").trim());
+                            spldt.setPoLineItemType(jsonObject.getString("poLineItemType").trim());
+                            spldt.setPoLineItemCode(jsonObject.getString("poLineItemCode").trim());
+                            spldt.setPoLineDescription(jsonObject.getString("poLineDescription").trim());
+                            spldt.setUplLineItemType(jsonObject.getString("uplLineItemType").trim());
+                            spldt.setUplLineItemCode(jsonObject.getString("uplLineItemCode").trim());
+                            spldt.setUplLineDescription(jsonObject.getString("uplLineDescription").trim());
+                            spldt.setZainItemCategoryCode(jsonObject.getString("zainItemCategoryCode").trim());
+                            spldt.setZainItemCategoryDescription(jsonObject.getString("zainItemCategoryDescription").trim());
+                            spldt.setUplItemSerialized(jsonObject.getString("uplItemSerialized").trim());
+                            spldt.setActiveOrPassive(jsonObject.getString("activeOrPassive").trim());
+                            spldt.setUom(jsonObject.getString("uom").trim());
+                            spldt.setCurrency(jsonObject.getString("currency").trim());
+                            spldt.setPoLineQuantity(jsonObject.getDouble("poLineQuantity"));
+                            spldt.setPoLineUnitPrice(jsonObject.getDouble("poLineUnitPrice"));
+                            spldt.setUplLineQuantity(jsonObject.getDouble("uplLineQuantity"));
+                            spldt.setUplLineUnitPrice(jsonObject.getDouble("uplLineUnitPrice"));
+                            spldt.setSubstituteItemCode(jsonObject.getString("substituteItemCode"));
+                            spldt.setRemarks(jsonObject.getString("remarks").trim());
+                            spldt.setUplModifiedBy(jsonObject.getString("modifiedBy").trim());
+                            // if (jsonObject.has("uplModifiedDate") && jsonObject.getString("uplModifiedDate").length() > 1) {
+                            java.util.Date upldate = dateFormat.parse(now.toString());
+                            java.sql.Date sqlDate = new java.sql.Date(upldate.getTime());
+                            spldt.setUplModifiedDate(sqlDate);
+                            // }
+                            spldt.setRemarks(jsonObject.getString("remarks").trim());
 //                        spldt.setDptApprover1(jsonObject.getString("dptApprover1").trim());
 //                        spldt.setDptApprover2(jsonObject.getString("dptApprover2").trim());
 //                        spldt.setDptApprover3(jsonObject.getString("dptApprover3").trim());
 //                        spldt.setDptApprover4(jsonObject.getString("dptApprover4").trim());
 //                        spldt.setRegionalApprover(jsonObject.getString("regionalApprover").trim());
-                        spldt.setCreatedBy(jsonObject.getInt("createdById"));
-                        spldt.setCreatedByName(jsonObject.getString("createdByName").trim());
-                        try {
-                            purchaseOrderUPLRepo.save(spldt);
-                            responseinfo = "Record Updated Success";
-                        } catch (Exception excc) {
+                            spldt.setCreatedBy(jsonObject.getInt("createdById"));
+                            spldt.setCreatedByName(jsonObject.getString("createdByName").trim());
+                            try {
+                                purchaseOrderUPLRepo.save(spldt);
+                                responseinfo = "Record Updated Success";
+                            } catch (Exception excc) {
 
-                            loggger.info("Exception |  " + excc.toString());
+                                loggger.info("Exception |  " + excc.toString());
 
-                            responseinfo = excc.toString();
+                                responseinfo = excc.toString();
+                            }
+                        } else {
+                            responseinfo = "This record cannot be editted since there is an existing acceptance request already raised for this UPL line Item ";
                         }
                     } else {
                         tb_PurchaseOrderUPL nwspldt = new tb_PurchaseOrderUPL();
@@ -964,6 +987,47 @@ public class APIController {
         return batchfilename;
     }
 
+    @PostMapping(value = "/getAttachments")
+    @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
+    public ResponseEntity<Map<String, Object>> getFiles(@RequestBody Map<String, Object> requestBody) {
+        Map<String, Object> response = new HashMap<>();
+
+        // Extract parameters from the request body
+        String poNumber = (String) requestBody.get("poNumber");
+        Integer dccId = (Integer) requestBody.get("dccId");
+
+        loggger.info("Fetching files for poNumber: " + poNumber + " and dccId: " + dccId);
+
+        // Validate the inputs
+        if (poNumber == null || dccId == null) {
+            response.put("responseCode", "1");
+            response.put("responseDesc", "poNumber and dccId are required");
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(response);
+        }
+
+        List<FileRecord> fileRecords = fileRepo.findByPoNumberAndDccId(poNumber, dccId);
+
+        if (fileRecords.isEmpty()) {
+            response.put("responseCode", "1");
+            response.put("responseDesc", "No files found for the given poNumber and dccId");
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
+        }
+
+        // Map the response to include file name and file path
+        List<Map<String, String>> files = fileRecords.stream().map(file -> {
+            Map<String, String> fileInfo = new HashMap<>();
+            fileInfo.put("fileName", file.getFileName());
+            fileInfo.put("filePath", "/files/" + file.getFileName()); // Provide the redirect URL
+            return fileInfo;
+        }).collect(Collectors.toList());
+
+        response.put("responseCode", "0");
+        response.put("responseDesc", "Record Fetched Success");
+        response.put("files", files);
+
+        return ResponseEntity.ok(response);
+    }
+
     @PostMapping(value = "/postdcc")
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
     public Map<String, String> postdcc(@RequestPart(value = "file", required = false) List<MultipartFile> files, @RequestPart("data") String req) {
@@ -976,34 +1040,29 @@ public class APIController {
         }
         JSONObject firstRecord = jsonArray.getJSONObject(0);
         String poNumber = firstRecord.getString("poNumber");
+        List<String> allowedExtensions = Arrays.asList(".pdf", ".docx", ".xlsx", ".jpg", ".png");
 
         String uploadDir = "/home/app/logs/ALM/POUPL/";
+
         if (files != null) {
             for (MultipartFile file : files) {
                 String originalFileName = file.getOriginalFilename();
+                loggger.info("Received file: " + originalFileName);
                 String fileExtension = "";
                 if (originalFileName != null) {
                     int dotIndex = originalFileName.lastIndexOf('.');
                     if (dotIndex > 0) {
-                        fileExtension = originalFileName.substring(dotIndex);
+                        fileExtension = originalFileName.substring(dotIndex).toLowerCase();
+                    }
+                    if (!allowedExtensions.contains(fileExtension)) {
+                        return response("Error", "Invalid file type: " + fileExtension);
                     }
                 }
-                String newFileName = poNumber + "_" + System.currentTimeMillis() + fileExtension;
+                String newFileName = originalFileName + "_" + System.currentTimeMillis() + fileExtension;
 
                 File destinationFile = new File(uploadDir + newFileName);
                 if (destinationFile.exists()) {
                     return response("Error", "File already exists: " + newFileName);
-                }
-                try {
-                    Files.copy(file.getInputStream(), destinationFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-                    FileRecord filerc = new FileRecord();
-                    filerc.setFileName(newFileName);
-                    filerc.setPoNumber(poNumber);
-                    filerc.setFilePath(destinationFile.getAbsolutePath());
-
-                    fileRepo.save(filerc);
-                } catch (IOException e) {
-                    return response("Error", "File upload failed: " + e.getMessage());
                 }
             }
         }
@@ -1014,6 +1073,8 @@ public class APIController {
         JSONArray jsonArrayresponse = new JSONArray();
         long recordNo = 0;
         long recordNoValidate = 0;
+
+        Integer ValidateLineItemRecordNo = 0;
         List<DCCLineItem> validateDCCLineList;
 
         String vendorName = "";
@@ -1036,8 +1097,17 @@ public class APIController {
             List<String> alreadyCreatedDCC = new ArrayList<>();
             List<String> missingSerialsforUPLBased = new ArrayList<>();
             List<String> missingApprovalLevel = new ArrayList<>();
+            List<String> existingSerialNumbers = new ArrayList<>();
             List<String> missingSerialsforNONUPLBased = new ArrayList<>();
             List<String> oldDateService = new ArrayList<>();
+            List<String> ScopeOfworkList = new ArrayList<>();
+            List<String> locationList = new ArrayList<>();
+            List<String> validateInventory = new ArrayList<>();
+
+            List<String> missingItemCode = new ArrayList<>();
+            List<String> scopevalidation = new ArrayList<>();
+
+            List<Integer> recordNumbers = new ArrayList<>();
 
             String actualItemCode = "";
             String itemCode = "";
@@ -1046,6 +1116,7 @@ public class APIController {
             String polineitem = "";
             String dateInServiceString = "";
             String scopeofWork = "";
+            String localName = "";
             //UPL BASED , CHECK FROM UPL TABLE IF ITS SERIALIZED OR NOT, IF IT IS CHECK IF SERIAL NUMBER IS PASSED , IF NOT DECLINE 
             //LETS VALIDATE DIPLICATE HERE  loop through the dcc line items check if its been created then check the status
             for (int i = 0; i < jsonArray.length(); i++) {
@@ -1053,70 +1124,104 @@ public class APIController {
                 JSONObject validatejsonObject = jsonArray.getJSONObject(i);
                 recordNoValidate = Integer.parseInt(validatejsonObject.getString("recordNo"));
                 if (recordNoValidate == 0) {
-
                     String acceptancestatus = validatejsonObject.getString("status");
                     String poNum = validatejsonObject.getString("poNumber");
                     JSONArray dcclineRequest = validatejsonObject.getJSONArray("lineItems");
-
                     for (int j = 0; j < dcclineRequest.length(); j++) {
                         JSONObject dcclinejsonObject = dcclineRequest.getJSONObject(j);
-                        //check if actual item code is empty 
+                        itemCode = dcclinejsonObject.getString("itemCode");
                         if (dcclinejsonObject.has("actualItemCode")) {
                             actualItemCode = dcclinejsonObject.getString("actualItemCode");
                         }
-                        itemCode = dcclinejsonObject.getString("itemCode");
+                        if (actualItemCode.length() > 1) {
+                            //VALIDATE USING ITEM CODE AND ACTUAL ITEM CODE  
+                            List<tbItemCodeSubstitute> validateActualItemCode = itemCodeSubstituteRepo.findByItemCodeAndRelatedItemCode(dcclinejsonObject.getString("itemCode"), actualItemCode);
+                            if (validateActualItemCode.isEmpty()) {
+                                missingItemCode.add(actualItemCode);
+                            }
+                            // itemCode = actualItemCode;
+                        }
+
+//                        else {
+//                            itemCode = dcclinejsonObject.getString("itemCode");
+//                        }
                         serialNumber = dcclinejsonObject.getString("serialNumber");
                         upllineitem = dcclinejsonObject.getString("uplLineNumber");
                         polineitem = dcclinejsonObject.getString("poLineNumber");
                         dateInServiceString = dcclinejsonObject.getString("dateInService");
 
                         scopeofWork = dcclinejsonObject.getString("scopeOfWork");
+                        localName = dcclinejsonObject.getString("locationName");
+
+                        if (scopeofWork.length() > 1) {
+                            ScopeOfworkList.add(scopeofWork);
+                        }
+
+                        if (localName.length() > 1) {
+                            locationList.add(localName);
+                        }
+
                         DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
                         LocalDateTime dateInService = LocalDateTime.parse(dateInServiceString, formatter);
                         LocalDateTime sixMonthsAgo = LocalDateTime.now().minus(6, ChronoUnit.MONTHS);
 
+                        if (serialNumber.length() > 1 && actualItemCode.length() > 1) {
+                            List<tbSerialNumber> validateSerial = serialNumberRepo.findBySerialNumberAndItemCode(serialNumber, actualItemCode);
+
+                            if (!validateSerial.isEmpty()) {
+                                existingSerialNumbers.add(serialNumber);
+                            }
+                        }
+
+                        if (serialNumber.length() > 1 && itemCode.length() > 1) {
+                            List<tbSerialNumber> validateSerial = serialNumberRepo.findBySerialNumberAndItemCode(serialNumber, itemCode);
+
+                            if (!validateSerial.isEmpty()) {
+                                existingSerialNumbers.add(serialNumber);
+                            }
+                        }
+
                         if (dateInService.isBefore(sixMonthsAgo)) {
                             oldDateService.add(upllineitem);
                         }
+                        tbScope scopeRecord = scopeRepo.findByScope(scopeofWork.trim());
+                        String scopeId = scopeRecord != null ? String.valueOf(scopeRecord.getRecordNo()) : "";
+
+                        List<tbScopeApprovalLevels> validateScope = scopeApprovalLevelsRepo.findByScope(Integer.parseInt(scopeId));
+
+                        if (validateScope.isEmpty()) {
+                            missingApprovalLevel.add(scopeofWork);
+                        }
+
                         if (upllineitem.length() > 1) {
 
-                            tbScope scopeRecord = scopeRepo.findByScope(scopeofWork.trim());
-                            String scopeId = scopeRecord != null ? String.valueOf(scopeRecord.getRecordNo()) : "";
                             tb_PurchaseOrderUPL topRecord = purchaseOrderUPLRepo.findTopByPoNumberAndPoLineNumberAndUplLine(poNumber, polineitem, upllineitem);
                             String itemSerialized = topRecord != null ? String.valueOf(topRecord.getUplItemSerialized()) : "";
-                            //String itemcategorycode = topRecord != null ? String.valueOf(topRecord.getZainItemCategoryCode()) : "";
-                            // List<tbCategoryApprovalLevels> validateItemCode = categoryApprovalLevelRepo.findByItemCategoryCode(itemcategorycode);
-                            List<tbScopeApprovalLevels> validateScope = scopeApprovalLevelsRepo.findByScope(Integer.parseInt(scopeId));
+                            String activeOrPassive = topRecord != null ? String.valueOf(topRecord.getActiveOrPassive()) : "";
 
-                            if (validateScope.isEmpty()) {
-                                missingApprovalLevel.add(scopeofWork);
-                            }
+                            if (itemSerialized.equalsIgnoreCase("Yes") && activeOrPassive.equalsIgnoreCase("Active")) {
+                                //CHECK FROM INVENTORY SIDE 
+                                if (serialNumber.length() > 1 && itemCode.length() > 1) {
+                                    List<tbNode> validateInventorylist = nodeRepo.findByPartNumberAndSerialNumber(itemCode, serialNumber);
 
-                            if (itemSerialized.equalsIgnoreCase("Yes")) {
-                                if (serialNumber.length() < 1) {
-                                    //if serialized, a serial number must be passed 
-                                    missingSerialsforUPLBased.add(upllineitem);
-                                }
-                            } else if (itemSerialized.equalsIgnoreCase("No")) {
-                                tbPurchaseOrder podetails = PurchaseOrderRepo.findTopByPoNumberAndLineNumber(poNumber, polineitem);
-                                String serialcontrol = topRecord != null ? String.valueOf(podetails.getSerialControl()) : "";
-                                if (!serialcontrol.equalsIgnoreCase("NO CONTROL")) {
-                                    if (serialNumber.length() < 1) {
-                                        missingSerialsforNONUPLBased.add(polineitem);
+                                    if (validateInventorylist.isEmpty()) {
+                                        validateInventory.add(serialNumber);
                                     }
                                 }
                             }
                         } else {
+                            tbPurchaseOrder podetails = PurchaseOrderRepo.findTopByPoNumberAndLineNumber(poNumber, polineitem);
+                            String serialcontrol = podetails != null ? String.valueOf(podetails.getSerialControl()) : "";
+                            if (!serialcontrol.equalsIgnoreCase("NO CONTROL")) {
+//                                List<tbSerialNumber> validateSerialNumberforPo = serialNumberRepo.findBySerialNumber(serialNumber);
+//                                if (!validateSerialNumberforPo.isEmpty()) {
+//                                    missingSerialsforNONUPLBased.add(polineitem);
+//                                }
+                            }
                         }
-                        //CHECK IF UPL BASED 
-                        //VALIDATE
-//                    if (actualItemCode.length() > 1) {
-//                        validateDCCLineList = dcclnrepo.findBySerialNumberAndActualItemCode(serialNumber, actualItemCode);
-//                    } else {
                         if (serialNumber.length() > 1 && itemCode.length() > 1) {
                             validateDCCLineList = dcclnrepo.findBySerialNumberAndItemCode(serialNumber, itemCode);
-                            // }
-//here check the validation again 
+
                             if (!validateDCCLineList.isEmpty()) {
                                 DCCLineItem topRecordNo = dcclnrepo.findTopBySerialNumberAndItemCode(serialNumber, itemCode);
                                 String dccid = topRecordNo != null ? String.valueOf(topRecordNo.getDccId()) : "";
@@ -1124,7 +1229,7 @@ public class APIController {
                                     DCC dccRecord = dccrepo.findByRecordNo(Integer.parseInt(dccid));
                                     String dccStatus = dccRecord != null ? String.valueOf(dccRecord.getStatus()) : "";
 
-                                    if (dccStatus.equalsIgnoreCase("inprocess") || dccStatus.equalsIgnoreCase("approved")) {
+                                    if (dccStatus.equalsIgnoreCase("inprocess") || dccStatus.equalsIgnoreCase("approved") || dccStatus.equalsIgnoreCase("returned") || dccStatus.equalsIgnoreCase("request-info")) {
 
                                         alreadyCreatedDCC.add(serialNumber);
                                     }
@@ -1132,13 +1237,177 @@ public class APIController {
                             }
                         }
                     }
+                } else {
+
+                    String UpdateActualItemCode = "";
+                     String UpdateItemCode = "";
+
+                    JSONArray dcclineRequestItems = validatejsonObject.getJSONArray("lineItems");
+
+                    for (int k = 0; k < dcclineRequestItems.length(); k++) {
+
+                        JSONObject dcclineUpdatejsonObject = dcclineRequestItems.getJSONObject(k);
+                        ValidateLineItemRecordNo = Integer.parseInt(dcclineUpdatejsonObject.getString("recordNo"));
+                        recordNumbers.add(ValidateLineItemRecordNo);
+
+                        if (dcclineUpdatejsonObject.has("actualItemCode")) {
+                            UpdateActualItemCode = dcclineUpdatejsonObject.getString("actualItemCode");
+                        }
+                        UpdateItemCode = dcclineUpdatejsonObject.getString("itemCode");
+
+                        if (UpdateActualItemCode.length() > 1) {
+                            //  List<tbItemCodeSubstitute> validateActualItemCode = itemCodeSubstituteRepo.findByItemCodeAndRelatedItemCode(dcclinejsonObject.getString("itemCode"),actualItemCode);
+
+                            List<tbItemCodeSubstitute> validateActualItemCode = itemCodeSubstituteRepo.findByItemCodeAndRelatedItemCode(dcclineUpdatejsonObject.getString("itemCode"), UpdateActualItemCode);
+
+                            if (validateActualItemCode.isEmpty()) {
+                                missingItemCode.add(UpdateActualItemCode);
+                            }
+                            // itemCode = actualItemCode;
+                        }
+
+//                        else {
+//                            
+//                        }
+                        serialNumber = dcclineUpdatejsonObject.getString("serialNumber");
+                        upllineitem = dcclineUpdatejsonObject.getString("uplLineNumber");
+                        polineitem = dcclineUpdatejsonObject.getString("poLineNumber");
+                        if (serialNumber.length() > 1 && UpdateActualItemCode.length() > 1) {
+                            List<tbSerialNumber> validateSerial = serialNumberRepo.findBySerialNumberAndItemCode(serialNumber, UpdateActualItemCode);
+
+                            if (!validateSerial.isEmpty()) {
+                                existingSerialNumbers.add(serialNumber);
+                            }
+                        }
+
+                        if (serialNumber.length() > 1 && UpdateItemCode.length() > 1) {
+                            List<tbSerialNumber> validateSerial = serialNumberRepo.findBySerialNumberAndItemCode(serialNumber, UpdateItemCode);
+
+                            if (!validateSerial.isEmpty()) {
+                                existingSerialNumbers.add(serialNumber);
+                            }
+                        }
+
+//                        if (serialNumber.length() > 1) {
+//                            List<tbSerialNumber> validateSerial = serialNumberRepo.findBySerialNumberAndItemCode(serialNumber, itemCode);
+//                            if (!validateSerial.isEmpty()) {
+//                                existingSerialNumbers.add(serialNumber);
+//                            }
+//                        }
+                        scopeofWork = dcclineUpdatejsonObject.getString("scopeOfWork");
+                        localName = dcclineUpdatejsonObject.getString("locationName");
+
+                        if (scopeofWork.length() > 1) {
+                            ScopeOfworkList.add(scopeofWork);
+                        }
+
+                        if (localName.length() > 1) {
+                            locationList.add(localName);
+                        }
+                        tbScope scopeRecord = scopeRepo.findByScope(scopeofWork.trim());
+                        String scopeId = scopeRecord != null ? String.valueOf(scopeRecord.getRecordNo()) : "";
+
+                        List<tbScopeApprovalLevels> validateScope = scopeApprovalLevelsRepo.findByScope(Integer.parseInt(scopeId));
+
+                        if (validateScope.isEmpty()) {
+                            missingApprovalLevel.add(scopeofWork);
+                        }
+
+                        if (upllineitem.length() > 1) {
+
+                            tb_PurchaseOrderUPL topRecord = purchaseOrderUPLRepo.findTopByPoNumberAndPoLineNumberAndUplLine(poNumber, polineitem, upllineitem);
+                            String itemSerialized = topRecord != null ? String.valueOf(topRecord.getUplItemSerialized()) : "";
+                            String activeOrPassive = topRecord != null ? String.valueOf(topRecord.getActiveOrPassive()) : "";
+
+                            if (itemSerialized.equalsIgnoreCase("Yes") && activeOrPassive.equalsIgnoreCase("Active")) {
+
+                                //CHECK FROM INVENTORY SIDE 
+                                if (serialNumber.length() > 1 && UpdateItemCode.length() > 1) {
+
+                                    List<tbNode> validateInventorylist = nodeRepo.findByPartNumberAndSerialNumber(UpdateItemCode, serialNumber);
+
+                                    if (validateInventorylist.isEmpty()) {
+                                        validateInventory.add(serialNumber);
+                                    }
+
+                                }
+
+//                                List<tbSerialNumber> validateSerialNumber = serialNumberRepo.findBySerialNumber(serialNumber);
+//                                if (!validateSerialNumber.isEmpty()) {
+//                                    missingSerialsforUPLBased.add(upllineitem);
+//                                }
+                            }
+                        } else {
+                            tbPurchaseOrder podetails = PurchaseOrderRepo.findTopByPoNumberAndLineNumber(poNumber, polineitem);
+                            String serialcontrol = podetails != null ? String.valueOf(podetails.getSerialControl()) : "";
+                            if (!serialcontrol.equalsIgnoreCase("NO CONTROL")) {
+//                                List<tbSerialNumber> validateSerialNumberforPo = serialNumberRepo.findBySerialNumber(serialNumber);
+//                                if (!validateSerialNumberforPo.isEmpty()) {
+//                                    missingSerialsforNONUPLBased.add(polineitem);
+//                                }
+                            }
+                        }
+
+                        if (serialNumber.length() > 1 && UpdateItemCode.length() > 1) {
+                            validateDCCLineList = dcclnrepo.findBySerialNumberAndItemCode(serialNumber, UpdateItemCode);
+
+                            if (!validateDCCLineList.isEmpty()) {
+                                DCCLineItem topRecordNo = dcclnrepo.findTopBySerialNumberAndItemCode(serialNumber, UpdateItemCode);
+                                String dccid = topRecordNo != null ? String.valueOf(topRecordNo.getDccId()) : "";
+                                if (dccid.length() > 1) {
+                                    DCC dccRecord = dccrepo.findByRecordNo(Integer.parseInt(dccid));
+                                    String dccStatus = dccRecord != null ? String.valueOf(dccRecord.getStatus()) : "";
+
+                                    if (dccStatus.equalsIgnoreCase("inprocess") || dccStatus.equalsIgnoreCase("approved") || dccStatus.equalsIgnoreCase("returned") || dccStatus.equalsIgnoreCase("request-info")) {
+
+                                        alreadyCreatedDCC.add(serialNumber);
+                                    }
+                                }
+                            }
+                        }
+
+                    }
+
+                    List<DCCLineItem> dccLineItems = dcclnrepo.findAllByDccId(String.valueOf(recordNoValidate));
+
+                    List<Long> dbRecordNumbers = dccLineItems.stream()
+                            .map(DCCLineItem::getRecordNo)
+                            .collect(Collectors.toList());
+
+                    List<Long> toDelete = dbRecordNumbers.stream()
+                            .filter(recordNoNew -> !recordNumbers.contains(recordNoNew))
+                            .collect(Collectors.toList());
+
+                    if (!toDelete.isEmpty()) {
+                        dcclnrepo.deleteAllByIdInBatch(toDelete);
+                    }
                 }
             }
+            Set<String> uniqueScope = new HashSet<>(ScopeOfworkList);
+
+            if (uniqueScope.size() > 1) {
+                return response("Error", "You can only raise an acceptance request for one unique scope of work. The passed scopes are " + String.join(", ", uniqueScope));
+
+            }
+
+            Set<String> uniquelocation = new HashSet<>(locationList);
+
+            if (uniquelocation.size() > 1) {
+                return response("Error", "You can only raise an acceptance request for one unique location. The passed locations are " + String.join(", ", uniquelocation));
+            }
+
+            if (!missingItemCode.isEmpty()) {
+                return response("Error", "The given Item Codes " + String.join(", ", missingItemCode) + " are not valid. Please use existing  item codes");
+            }
+
             if (!missingSerialsforNONUPLBased.isEmpty()) {
                 return response("Error", "PO line Item(s) " + String.join(", ", missingSerialsforNONUPLBased) + " are serialized and hence a serial number must be provided to raise an acceptance request");
             }
             if (!missingSerialsforUPLBased.isEmpty()) {
                 return response("Error", "UPL line Item(s) " + String.join(", ", missingSerialsforUPLBased) + " are serialized and hence a serial number must be provided to raise an acceptance request");
+            }
+            if (!validateInventory.isEmpty()) {
+                return response("Error", "An acceptance request cannot be raised for serial number  " + String.join(", ", validateInventory) + " since they are missing in the active inventory ");
             }
             if (!alreadyCreatedDCC.isEmpty()) {
                 return response("Error", "Acceptance request for serial numbers " + String.join(", ", alreadyCreatedDCC) + " has already been raised. Duplicates records not allowed ");
@@ -1146,8 +1415,13 @@ public class APIController {
             if (!missingApprovalLevel.isEmpty()) {
                 return response("Error", "Missing Approval Level Configurations for Scope(s):  " + String.join(", ", missingApprovalLevel) + " Please contact the OPCO.");
             }
+          
             if (!oldDateService.isEmpty()) {
                 return response("Error", "The dateInService for Upl Line Items(s) " + oldDateService + " is more than 6 months old. Validation failed.");
+            }
+
+            if (!existingSerialNumbers.isEmpty()) {
+                return response("Error", "The following serial Numbers  " + String.join(", ", existingSerialNumbers) + " have already been received. Kindly raise an acceptance request for a different serial Number ");
             }
 
             String createdByName = "";
@@ -1159,25 +1433,56 @@ public class APIController {
                 poNumber = jsonObject.getString("poNumber");
                 vendorName = jsonObject.getString("vendorName");
                 status = jsonObject.getString("status");
-                createdBy = jsonObject.getInt("createdById");
+                createdBy = jsonObject.getInt("createdById");// createdById
                 createdByName = jsonObject.getString("createdByName");
                 JSONArray dcc_line_data = jsonObject.getJSONArray("lineItems");
                 String result = addEditDCC(recordNo, jsonObject);
                 DCC topRecord = dccrepo.findTopByPoNumber(poNumber);
                 String recordId = topRecord != null ? String.valueOf(topRecord.getRecordNo()) : "";
-                //insert into the main table
-                //remove this for now . Approval Workflow has changed
-//                if (!status.equalsIgnoreCase("incomplete")) {
-//                    tb_Arc_ApprovalRecords approval = new tb_Arc_ApprovalRecords();
-//                    approval.setRecordDatetime(newDate);
-//                    approval.setRecordId(Integer.parseInt(recordId));
-//                    approval.setRecordTable("tb_DCC");
-//                    approval.setApprovalStatus("pending");
-//                    approval.setCreatedBy(createdBy);
-//                    arcApprovalRecordsRepo.save(approval);
-//                }
+
+                String newRecordNo = "";
+
+                DCC checkdcc = dccrepo.findByRecordNo(recordNo);
+                if (checkdcc != null) {
+                    newRecordNo = jsonObject.getString("recordNo");
+                } else {
+                    newRecordNo = recordId;
+                }
+
+                //HERE CHECK IF THERE WERE ANY FILES PASSED AND SAVE THEM PER DCC RECORD NUMBER 
+                if (files != null) {
+                    for (MultipartFile file : files) {
+                        String originalFileName = file.getOriginalFilename();
+                        loggger.info("Received file: " + originalFileName);
+                        String fileExtension = "";
+                        if (originalFileName != null) {
+                            int dotIndex = originalFileName.lastIndexOf('.');
+                            if (dotIndex > 0) {
+                                fileExtension = originalFileName.substring(dotIndex);
+                            }
+                        }
+                        //String newFileName = poNumber + "_" + System.currentTimeMillis() + fileExtension;
+                        String newFileName = originalFileName + "_" + System.currentTimeMillis() + fileExtension;
+                        File destinationFile = new File(uploadDir + newFileName);
+                        if (destinationFile.exists()) {
+                            return response("Error", "File already exists: " + newFileName);
+                        }
+                        try {
+                            Files.copy(file.getInputStream(), destinationFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                            FileRecord fileRecord = new FileRecord();
+                            fileRecord.setFileName(newFileName);
+                            fileRecord.setPoNumber(poNumber);
+                            fileRecord.setFilePath(destinationFile.getAbsolutePath());
+                            fileRecord.setDccId(Integer.parseInt(newRecordNo));
+                            fileRepo.save(fileRecord);
+                        } catch (IOException e) {
+                            return response("Error", "File upload failed: " + e.getMessage());
+                        }
+                    }
+                }
+
                 if (result.contains("Success")) {
-                    postdccln(poNumber, recordId, status, createdBy, createdByName, vendorName, dcc_line_data.toString());
+                    postdccln(poNumber, newRecordNo, status, createdBy, createdByName, vendorName, dcc_line_data.toString());
 
                 } else {
                     net.minidev.json.JSONObject responsedata = new net.minidev.json.JSONObject();
@@ -1219,14 +1524,25 @@ public class APIController {
 
     private String addEditDCC(long recordno, JSONObject jsonObject) {
         String dataadded = "Failed to save";
+        String requesttime = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(Calendar.getInstance().getTime());
 
         try {
             DCC checkdcc = dccrepo.findByRecordNo(recordno);
             if (checkdcc != null) {
+                //createdById
+                checkdcc.setCreatedBy(jsonObject.getString("createdByName"));
                 checkdcc.setPoNumber(jsonObject.getString("poNumber"));
                 checkdcc.setProjectName(jsonObject.getString("projectName"));
                 checkdcc.setAcceptanceType(jsonObject.getString("acceptanceType"));
                 checkdcc.setStatus(jsonObject.getString("status"));
+                if (jsonObject.getString("status").equalsIgnoreCase("request-info")) {
+                    checkdcc.setStatus("inprocess");
+                }
+
+                if (jsonObject.has("vendorComment")) {
+                    checkdcc.setVendorComment(jsonObject.getString("vendorComment"));
+                }
+
                 checkdcc.setVendorName(jsonObject.getString("vendorName"));
                 checkdcc.setVendorNumber(jsonObject.getString("vendorNumber"));
                 try {
@@ -1239,6 +1555,7 @@ public class APIController {
                 }
             } else {
                 DCC nwcheckdcc = new DCC();
+                nwcheckdcc.setCreatedBy(jsonObject.getString("createdByName"));
                 nwcheckdcc.setPoNumber(jsonObject.getString("poNumber"));
                 nwcheckdcc.setProjectName(jsonObject.getString("projectName"));
                 nwcheckdcc.setAcceptanceType(jsonObject.getString("acceptanceType"));
@@ -1247,11 +1564,17 @@ public class APIController {
                 nwcheckdcc.setVendorNumber(jsonObject.getString("vendorNumber"));
                 SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd"); // Adjust the pattern as per your date format
                 LocalDateTime now = LocalDateTime.now();
+
+                ZoneId eatZone = ZoneId.of("Africa/Nairobi");
+                ZonedDateTime eatZonedDateTime = now.atZone(ZoneId.systemDefault()).withZoneSameInstant(eatZone);
+                // Convert ZonedDateTime to LocalDateTime
+                LocalDateTime eatLocalDateTime = eatZonedDateTime.toLocalDateTime();
+                Timestamp timestamp = Timestamp.valueOf(eatLocalDateTime);
                 java.util.Date parsedDate;
                 try {
                     parsedDate = dateFormat.parse(now.toString());
                     java.sql.Date newDate = new java.sql.Date(parsedDate.getTime());
-                    nwcheckdcc.setCreatedDate(newDate);
+                    nwcheckdcc.setCreatedDate(timestamp);
                 } catch (ParseException ex) {
                     Logger.getLogger(APIController.class.getName()).log(Level.SEVERE, null, ex);
                 }
@@ -1390,7 +1713,7 @@ public class APIController {
                 }
             }
 
-            tb_Site topRecord = siteRepo.findBySiteId(locationName);
+            tb_Site topRecord = siteRepo.findFirstBySiteId(locationName);
             Integer regionrecordId = topRecord != null ? (topRecord.getRegionId()) : null;
             tb_Region regionRecord = regionRepo.findByRecordNo(regionrecordId);
 
@@ -1414,6 +1737,11 @@ public class APIController {
                 params.put("vendorName", vendorName);
                 params.put("createdBy", createdBy.toString());
                 params.put("regions", regionRecord.getRegionName());
+                if (status.equalsIgnoreCase("request-info")) {
+                    params.put("status", "request-info");
+                } else {
+                    params.put("status", "");
+                }
                 jsonArraynew.add(params);
             }
 
@@ -1421,7 +1749,12 @@ public class APIController {
             String ipaddress = getIPAddress();
             CompletableFuture.runAsync(() -> {
                 try {
-                    requestMap = utils.httpPOST(jsonArraynew.toString(), "http://" + ipaddress + ":8080/alm-zain-ksa/workflow/initialize-approval", requestMap);
+                    if (!status.equalsIgnoreCase("incomplete")) {
+                        requestMap = utils.httpPOST(jsonArraynew.toString(), "http://" + ipaddress + ":8080/alm-zain-ksa/workflow/initialize-approval", requestMap);
+                    }
+                    if (status.equalsIgnoreCase("request-info")) {
+                        //Update the DCC table 
+                    }
                     loggger.info("| POST WORKFLOW RESPONSE  " + requestMap);
                 } catch (Exception ex) {
                     loggger.info("| POST WORKFLOW EXCEPTION " + ex.toString());
@@ -1455,7 +1788,7 @@ public class APIController {
 
         DCCLineItem eddccLineItem = dcclnrepo.findByRecordNo(recordno);
         if (eddccLineItem != null) {
-            eddccLineItem.setDccId(recordId);
+            // eddccLineItem.setDccId(recordId);
             eddccLineItem.setLineNumber(jsonObject.getString("poLineNumber"));
             eddccLineItem.setUplLineNumber(jsonObject.getString("uplLineNumber"));
             eddccLineItem.setItemCode(jsonObject.getString("itemCode"));
@@ -1468,13 +1801,12 @@ public class APIController {
             eddccLineItem.setDeliveredQty(delivered);
             eddccLineItem.setLocationName(jsonObject.getString("locationName"));
             String dateInServiceString = jsonObject.getString("dateInService");
-            if (jsonObject.has("uplItemCode")) {
-                eddccLineItem.setUplItemCode(jsonObject.getString("uplItemCode"));
+            if (jsonObject.has("uplLineItemCode")) {
+                eddccLineItem.setUplItemCode(jsonObject.getString("uplLineItemCode"));
             }
-            if (jsonObject.has("uplItemDescription")) {
-                eddccLineItem.setUplItemDescription(jsonObject.getString("uplItemDescription"));
+            if (jsonObject.has("uplLineDescription")) {
+                eddccLineItem.setUplItemDescription(jsonObject.getString("uplLineDescription"));
             }
-
             try {
                 java.util.Date parsedDate = dateFormat.parse(dateInServiceString);
                 java.sql.Date sqlDate = new java.sql.Date(parsedDate.getTime());
@@ -1509,6 +1841,16 @@ public class APIController {
             dccLineItem.setLocationName(jsonObject.getString("locationName"));
             String dateInServiceString = jsonObject.getString("dateInService");
             Double delivered = Double.parseDouble(jsonObject.getString("deliveredQty"));
+            if (jsonObject.has("actualItemCode")) {
+                dccLineItem.setActualItemCode(jsonObject.getString("actualItemCode"));
+            }
+
+            if (jsonObject.has("uplLineItemCode")) {
+                dccLineItem.setUplItemCode(jsonObject.getString("uplLineItemCode"));
+            }
+            if (jsonObject.has("uplLineDescription")) {
+                dccLineItem.setUplItemDescription(jsonObject.getString("uplLineDescription"));
+            }
             dccLineItem.setPoId(poNumber);
             dccLineItem.setDeliveredQty(delivered);
             try {

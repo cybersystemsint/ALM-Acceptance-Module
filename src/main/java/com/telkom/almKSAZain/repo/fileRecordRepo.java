@@ -5,6 +5,7 @@
 package com.telkom.almKSAZain.repo;
 
 import com.telkom.almKSAZain.model.FileRecord;
+import java.util.List;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 /**
@@ -14,4 +15,6 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface fileRecordRepo extends JpaRepository<FileRecord, Long> {
 
     FileRecord findByRecordNo(long recordNo);
+
+    List<FileRecord> findByPoNumberAndDccId(String poNumber, int dccId);
 }

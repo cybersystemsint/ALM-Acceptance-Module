@@ -18,4 +18,6 @@ public interface tbItemCodeSubstituteRepo extends JpaRepository<tbItemCodeSubsti
 
     List<tbItemCodeSubstitute> findByItemCodeAndRelatedItemCode(String itemCode, String relatedItemCode);
 
+    List<tbItemCodeSubstitute> findByRelatedItemCode(String relatedItemCode);
+
 }

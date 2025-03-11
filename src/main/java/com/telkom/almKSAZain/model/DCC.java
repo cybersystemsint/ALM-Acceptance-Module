@@ -43,14 +43,23 @@ public class DCC {
     private String costCenter;
     private String termsAndConditions;
     private String createdBy;
+    private String vendorComment;
+
     // Constructors, getters, and setters
     // Constructor
-
     public DCC() {
     }
 
     public long getRecordNo() {
         return recordNo;
+    }
+
+    public String getVendorComment() {
+        return vendorComment;
+    }
+
+    public void setVendorComment(String vendorComment) {
+        this.vendorComment = vendorComment;
     }
 
     public void setRecordNo(long recordNo) {
@@ -121,7 +130,6 @@ public class DCC {
         this.createdDate = createdDate;
     }
 
-   
     public String getDccId() {
         return dccId;
     }
@@ -281,6 +289,5 @@ public class DCC {
     public void setCreatedBy(String createdBy) {
         this.createdBy = createdBy;
     }
-    
-    
+
 }

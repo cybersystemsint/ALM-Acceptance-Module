@@ -30,7 +30,6 @@ import org.springframework.transaction.annotation.EnableTransactionManagement;
         transactionManagerRef = "mysqlTransactionManager"
 )
 public class DataSourceConfig {
-
     //.76 
 //    @Primary
 //    @Bean(name = {"mysqlDataSource", "dataSource"})
@@ -42,29 +41,30 @@ public class DataSourceConfig {
 //                .driverClassName("com.mysql.cj.jdbc.Driver")
 //                .build();
 //    }
+
     //KSA UAT
+//    @Primary
+//    @Bean(name = {"mysqlDataSource", "dataSource"})
+//    public DataSource mysqlDataSource() {
+//        return DataSourceBuilder.create()
+//                .url("jdbc:mysql://10.123.105.59:3306/ALM_ZAIN_KSA")
+//                .username("root")
+//                .password("ALM-KSA_db20@5")
+//                .driverClassName("com.mysql.cj.jdbc.Driver")
+//                .build();
+//    }
+    //KSA PROD 1 
     @Primary
     @Bean(name = {"mysqlDataSource", "dataSource"})
     public DataSource mysqlDataSource() {
         return DataSourceBuilder.create()
-                .url("jdbc:mysql://10.123.105.59:3306/ALM_ZAIN_KSA")
+                .url("jdbc:mysql://10.123.102.67:3306/ALM_ZAIN_KSA")
                 .username("root")
                 .password("ALM-KSA_db20@5")
                 .driverClassName("com.mysql.cj.jdbc.Driver")
                 .build();
     }
 
-    //KSA PROD 1 
-//    @Primary
-//    @Bean(name = {"mysqlDataSource", "dataSource"})
-//    public DataSource mysqlDataSource() {
-//        return DataSourceBuilder.create()
-//                .url("jdbc:mysql://10.123.102.67:3306/ALM_ZAIN_KSA")
-//                .username("root")
-//                .password("ALM-KSA_db20@5")
-//                .driverClassName("com.mysql.cj.jdbc.Driver")
-//                .build();
-//    }
     //KSA PROD 2
 //    @Primary
 //    @Bean(name = {"mysqlDataSource", "dataSource"})
@@ -73,6 +73,17 @@ public class DataSourceConfig {
 //                .url("jdbc:mysql://10.123.102.69:3306/ALM_ZAIN_KSA")
 //                .username("root")
 //                .password("ALM-KSA_db20@5")
+//                .driverClassName("com.mysql.cj.jdbc.Driver")
+//                .build();
+//    }
+    //217.160.147.169
+//    @Primary
+//    @Bean(name = {"mysqlDataSource", "dataSource"})
+//    public DataSource mysqlDataSource() {
+//        return DataSourceBuilder.create()
+//                .url("jdbc:mysql://127.0.0.1:3306/ALM_ZAIN_KSA")
+//                .username("root")
+//                .password("ALMDev@2024!")
 //                .driverClassName("com.mysql.cj.jdbc.Driver")
 //                .build();
 //    }
@@ -87,40 +98,10 @@ public class DataSourceConfig {
                 .persistenceUnit("mysql")
                 .build();
     }
-
     @Primary
     @Bean(name = "mysqlTransactionManager")
     public PlatformTransactionManager mysqlTransactionManager(
             @Qualifier("mysqlEntityManagerFactory") EntityManagerFactory entityManagerFactory) {
         return new JpaTransactionManager(entityManagerFactory);
     }
-
-    // Oracle DataSource Configuration
-    @Bean(name = "oracleDataSource")
-    public DataSource oracleDataSource() {
-        return DataSourceBuilder.create()
-                .url("jdbc:oracle:thin:@//SAJDERP03.SA.ZAIN.COM:1525/XXZAIN_AMU")
-                .username("XXZAIN_AMU")
-                .password("Zain@2024")
-                .driverClassName("oracle.jdbc.OracleDriver")
-                .build();
-    }
-
-    @Bean(name = "oracleEntityManagerFactory")
-    public LocalContainerEntityManagerFactoryBean oracleEntityManagerFactory(
-            EntityManagerFactoryBuilder builder,
-            @Qualifier("oracleDataSource") DataSource dataSource) {
-        return builder
-                .dataSource(dataSource)
-                .packages("com.telkom.almKSAZain.oracle.model") // Package with Oracle-specific entities
-                .persistenceUnit("oracle")
-                .build();
-    }
-
-    @Bean(name = "oracleTransactionManager")
-    public PlatformTransactionManager oracleTransactionManager(
-            @Qualifier("oracleEntityManagerFactory") EntityManagerFactory entityManagerFactory) {
-        return new JpaTransactionManager(entityManagerFactory);
-    }
-
 }
