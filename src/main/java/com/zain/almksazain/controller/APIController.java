@@ -20,6 +20,8 @@ import com.zain.almksazain.model.polndata;
 import com.zain.almksazain.model.upldata;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+//import com.github.junrar.Archive;
+//import com.github.junrar.rarfile.FileHeader;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonSyntaxException;
@@ -39,6 +41,7 @@ import com.zain.almksazain.model.tb_Site;
 import com.zain.almksazain.model.tb_Region;
 import com.zain.almksazain.model.tbItemCodeSubstitute;
 import com.zain.almksazain.model.tbNode;
+import com.zain.almksazain.model.tbPassiveInventory;
 //import com.zain.almksazain.repo.tbCategoryApprovalLevelRepo;
 import com.zain.almksazain.repo.tbSiteRepo;
 import com.zain.almksazain.repo.tbRegionRepo;
@@ -48,6 +51,7 @@ import com.zain.almksazain.repo.tbChargeAccountRepo;
 import com.zain.almksazain.repo.tbScopeApprovalLevelsRepo;
 import com.zain.almksazain.repo.tbScopeRepo;
 import com.zain.almksazain.repo.tbNodeRepo;
+import com.zain.almksazain.repo.tbPassiveInventoryRepo;
 import com.zain.almksazain.repo.tbSerialNumberRepo;
 import com.zain.almksazain.utlities.Httpcall;
 import org.json.JSONArray;
@@ -76,12 +80,19 @@ import java.util.concurrent.CompletableFuture;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+//import org.apache.commons.compress.archivers.ArchiveInputStream;
 import org.apache.logging.log4j.LogManager;
 import org.json.JSONException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.multipart.MultipartFile;
+//import org.apache.commons.compress.archivers.ArchiveEntry;
+//
+//import org.apache.commons.compress.archivers..RarArchiveInputStream;
+//import org.apache.commons.compress.archivers.;
 
 @RestController
 public class APIController {
@@ -151,6 +162,9 @@ public class APIController {
 
     @Autowired
     supplierrepo suprepo;
+
+    @Autowired
+    tbPassiveInventoryRepo passiveRepo;
 
     Httpcall utils = new Httpcall();
 
@@ -693,7 +707,8 @@ public class APIController {
             JSONArray jsonArray = new JSONArray(req);
             String responseinfo = "Failed to save or data";
             JSONArray jsonArrayValidate = new JSONArray(req);
-            List<String> validationErrorsUPLCreation = new ArrayList<>();
+            List<String> validationExistingAcceptance = new ArrayList<>();
+            List<String> duplicateLines = new ArrayList<>();
 
             for (int i = 0; i < jsonArrayValidate.length(); i++) {
                 JSONObject jsonObject = jsonArrayValidate.getJSONObject(i);
@@ -703,136 +718,170 @@ public class APIController {
                 if (recordNovalidation == 0) {
                     List<tb_PurchaseOrderUPL> validateUPLCreation = purchaseOrderUPLRepo.findByPoNumberAndPoLineNumberAndUplLine(jsonObject.getString("poNumber"), jsonObject.getString("poLineNumber"), jsonObject.getString("uplLine"));
                     if (!validateUPLCreation.isEmpty()) {
-                        validationErrorsUPLCreation.add(jsonObject.getString("uplLine") + " ");
+                        duplicateLines.add(jsonObject.getString("uplLine") + " ");
                     }
+                } else {
+
+                    List<DCCLineItem> validateacceptance = dcclnrepo.findByPoIdAndLineNumberAndUplLineNumber(jsonObject.getString("poNumber").trim(), jsonObject.getString("poLineNumber").trim(), jsonObject.getString("uplLine").trim());
+                    if (validateacceptance.isEmpty()) {
+
+                        validationExistingAcceptance.add(jsonObject.getString("uplLine") + " ");
+
+                    }
+                }
+
+                // Validate if PO exists
+                List<tbPurchaseOrder> poList = PurchaseOrderRepo.findByPoNumber(jsonObject.getString("poNumber"));
+                if (poList.isEmpty()) {
+                    missingPoNumbers.add(jsonObject.getString("poNumber") + " ");
                 }
 
             }
 
-            if (!validationErrorsUPLCreation.isEmpty()) {
-                return response("Error", "The records having with lines: " + String.join("; ", validationErrorsUPLCreation) + " already exists. Please check and try again. ");
+            // If any validation errors, return without saving anything
+            if (!duplicateLines.isEmpty() || !missingPoNumbers.isEmpty() || !validationExistingAcceptance.isEmpty()) {
+                String errorMessage = "";
+                if (!duplicateLines.isEmpty()) {
+
+                    List<String> distinctlineNumbers = duplicateLines.stream()
+                            .distinct()
+                            .collect(Collectors.toList());
+                    errorMessage += "Duplicate UPL lines: " + String.join(", ", distinctlineNumbers) + ". found ";
+                }
+                if (!missingPoNumbers.isEmpty()) {
+
+                    List<String> distinctPoNumbers = missingPoNumbers.stream()
+                            .distinct()
+                            .collect(Collectors.toList());
+
+                    if (!distinctPoNumbers.isEmpty()) {
+                        errorMessage += "Missing PO Numbers: " + String.join(", ", distinctPoNumbers) + ". Kindly upload the Purchase Orders before uploading the UPL ";
+                    }
+
+                    // errorMessage += "Missing PO Numbers: " + String.join(", ", missingPoNumbers) + ". ";
+                }
+
+                if (!validationExistingAcceptance.isEmpty()) {
+                    errorMessage += "This record cannot be editted since there is an existing acceptance request already raised for this UPL line Item " + String.join(", ", validationExistingAcceptance) + ". ";
+                }
+
+                loggger.info("UPL VALIDATION FAILED | " + errorMessage);
+                return response("Error", errorMessage);
             }
 
-            loggger.info("UPL VALIDATE ERROR |  " + validationErrorsUPLCreation.toString());
-
+//
+//            if (!validationErrorsUPLCreation.isEmpty()) {
+//                return response("Error", "The records having with lines: " + String.join("; ", validationErrorsUPLCreation) + " already exists. Please check and try again. ");
+//            }
             for (int i = 0; i < jsonArray.length(); i++) {
                 JSONObject jsonObject = jsonArray.getJSONObject(i);
                 recordNo = Integer.parseInt(jsonObject.getString("recordNo"));
                 List<tbPurchaseOrder> validatePoList = PurchaseOrderRepo.findByPoNumber(jsonObject.getString("poNumber"));
-                if (!validatePoList.isEmpty()) {
-                    tb_PurchaseOrderUPL spldt = purchaseOrderUPLRepo.findByRecordNo(recordNo);
-                    if (spldt != null) {
+                // if (!validatePoList.isEmpty()) {
+                tb_PurchaseOrderUPL spldt = purchaseOrderUPLRepo.findByRecordNo(recordNo);
+                if (spldt != null) {
+                    java.util.Date parsedDate = dateFormat.parse(now.toString());
+                    java.sql.Date newDate = new java.sql.Date(parsedDate.getTime());
+                    spldt.setRecordDatetime(newDate);
+                    spldt.setVendor(jsonObject.getString("vendor").trim());
+                    spldt.setManufacturer(jsonObject.getString("manufacturer").trim());
+                    spldt.setCountryOfOrigin(jsonObject.getString("countryOfOrigin").trim());
+                    spldt.setProjectName(jsonObject.getString("projectName").trim());
+                    spldt.setPoType(jsonObject.getString("poType").trim());
+                    spldt.setReleaseNumber(jsonObject.getString("releaseNumber").trim());
+                    spldt.setPoNumber(jsonObject.getString("poNumber").trim());
+                    spldt.setPoLineNumber(jsonObject.getString("poLineNumber").trim());
+                    spldt.setUplLine(jsonObject.getString("uplLine").trim());
+                    spldt.setPoLineItemType(jsonObject.getString("poLineItemType").trim());
+                    spldt.setPoLineItemCode(jsonObject.getString("poLineItemCode").trim());
+                    spldt.setPoLineDescription(jsonObject.getString("poLineDescription").trim());
+                    spldt.setUplLineItemType(jsonObject.getString("uplLineItemType").trim());
+                    spldt.setUplLineItemCode(jsonObject.getString("uplLineItemCode").trim());
+                    spldt.setUplLineDescription(jsonObject.getString("uplLineDescription").trim());
+                    spldt.setZainItemCategoryCode(jsonObject.getString("zainItemCategoryCode").trim());
+                    spldt.setZainItemCategoryDescription(jsonObject.getString("zainItemCategoryDescription").trim());
+                    spldt.setUplItemSerialized(jsonObject.getString("uplItemSerialized").trim());
+                    spldt.setActiveOrPassive(jsonObject.getString("activeOrPassive").trim());
+                    spldt.setUom(jsonObject.getString("uom").trim());
+                    spldt.setCurrency(jsonObject.getString("currency").trim());
+                    spldt.setPoLineQuantity(jsonObject.getDouble("poLineQuantity"));
+                    spldt.setPoLineUnitPrice(jsonObject.getDouble("poLineUnitPrice"));
+                    spldt.setUplLineQuantity(jsonObject.getDouble("uplLineQuantity"));
+                    spldt.setUplLineUnitPrice(jsonObject.getDouble("uplLineUnitPrice"));
+                    spldt.setSubstituteItemCode(jsonObject.getString("substituteItemCode"));
+                    spldt.setRemarks(jsonObject.getString("remarks").trim());
+                    spldt.setUplModifiedBy(jsonObject.getString("modifiedBy").trim());
+                    // if (jsonObject.has("uplModifiedDate") && jsonObject.getString("uplModifiedDate").length() > 1) {
+                    java.util.Date upldate = dateFormat.parse(now.toString());
+                    java.sql.Date sqlDate = new java.sql.Date(upldate.getTime());
+                    spldt.setUplModifiedDate(sqlDate);
+                    // }
+                    spldt.setRemarks(jsonObject.getString("remarks").trim());
 
-                        List<DCCLineItem> validateacceptance = dcclnrepo.findByPoIdAndLineNumberAndUplLineNumber(jsonObject.getString("poNumber").trim(), jsonObject.getString("poLineNumber").trim(), jsonObject.getString("uplLine").trim());
-                        if (validateacceptance.isEmpty()) {
-                            java.util.Date parsedDate = dateFormat.parse(now.toString());
-                            java.sql.Date newDate = new java.sql.Date(parsedDate.getTime());
-                            spldt.setRecordDatetime(newDate);
-                            spldt.setVendor(jsonObject.getString("vendor").trim());
-                            spldt.setManufacturer(jsonObject.getString("manufacturer").trim());
-                            spldt.setCountryOfOrigin(jsonObject.getString("countryOfOrigin").trim());
-                            spldt.setProjectName(jsonObject.getString("projectName").trim());
-                            spldt.setPoType(jsonObject.getString("poType").trim());
-                            spldt.setReleaseNumber(jsonObject.getString("releaseNumber").trim());
-                            spldt.setPoNumber(jsonObject.getString("poNumber").trim());
-                            spldt.setPoLineNumber(jsonObject.getString("poLineNumber").trim());
-                            spldt.setUplLine(jsonObject.getString("uplLine").trim());
-                            spldt.setPoLineItemType(jsonObject.getString("poLineItemType").trim());
-                            spldt.setPoLineItemCode(jsonObject.getString("poLineItemCode").trim());
-                            spldt.setPoLineDescription(jsonObject.getString("poLineDescription").trim());
-                            spldt.setUplLineItemType(jsonObject.getString("uplLineItemType").trim());
-                            spldt.setUplLineItemCode(jsonObject.getString("uplLineItemCode").trim());
-                            spldt.setUplLineDescription(jsonObject.getString("uplLineDescription").trim());
-                            spldt.setZainItemCategoryCode(jsonObject.getString("zainItemCategoryCode").trim());
-                            spldt.setZainItemCategoryDescription(jsonObject.getString("zainItemCategoryDescription").trim());
-                            spldt.setUplItemSerialized(jsonObject.getString("uplItemSerialized").trim());
-                            spldt.setActiveOrPassive(jsonObject.getString("activeOrPassive").trim());
-                            spldt.setUom(jsonObject.getString("uom").trim());
-                            spldt.setCurrency(jsonObject.getString("currency").trim());
-                            spldt.setPoLineQuantity(jsonObject.getDouble("poLineQuantity"));
-                            spldt.setPoLineUnitPrice(jsonObject.getDouble("poLineUnitPrice"));
-                            spldt.setUplLineQuantity(jsonObject.getDouble("uplLineQuantity"));
-                            spldt.setUplLineUnitPrice(jsonObject.getDouble("uplLineUnitPrice"));
-                            spldt.setSubstituteItemCode(jsonObject.getString("substituteItemCode"));
-                            spldt.setRemarks(jsonObject.getString("remarks").trim());
-                            spldt.setUplModifiedBy(jsonObject.getString("modifiedBy").trim());
-                            // if (jsonObject.has("uplModifiedDate") && jsonObject.getString("uplModifiedDate").length() > 1) {
-                            java.util.Date upldate = dateFormat.parse(now.toString());
-                            java.sql.Date sqlDate = new java.sql.Date(upldate.getTime());
-                            spldt.setUplModifiedDate(sqlDate);
-                            // }
-                            spldt.setRemarks(jsonObject.getString("remarks").trim());
+                    spldt.setCreatedBy(jsonObject.getInt("createdById"));
+                    spldt.setCreatedByName(jsonObject.getString("createdByName").trim());
+                    try {
+                        purchaseOrderUPLRepo.save(spldt);
+                        responseinfo = "Record Updated Success";
+                    } catch (Exception excc) {
 
-                            spldt.setCreatedBy(jsonObject.getInt("createdById"));
-                            spldt.setCreatedByName(jsonObject.getString("createdByName").trim());
-                            try {
-                                purchaseOrderUPLRepo.save(spldt);
-                                responseinfo = "Record Updated Success";
-                            } catch (Exception excc) {
+                        loggger.info("Exception |  " + excc.toString());
 
-                                loggger.info("Exception |  " + excc.toString());
-
-                                responseinfo = excc.toString();
-                            }
-                        } else {
-                            responseinfo = "This record cannot be editted since there is an existing acceptance request already raised for this UPL line Item ";
-                        }
-                    } else {
-                        tb_PurchaseOrderUPL nwspldt = new tb_PurchaseOrderUPL();
-                        java.util.Date parsedDate = dateFormat.parse(now.toString());
-                        java.sql.Date newDate = new java.sql.Date(parsedDate.getTime());
-                        nwspldt.setRecordDatetime(newDate);
-                        nwspldt.setVendor(jsonObject.getString("vendor").trim());
-                        nwspldt.setManufacturer(jsonObject.getString("manufacturer").trim());
-                        nwspldt.setCountryOfOrigin(jsonObject.getString("countryOfOrigin").trim());
-                        nwspldt.setProjectName(jsonObject.getString("projectName").trim());
-                        nwspldt.setPoType(jsonObject.getString("poType").trim());
-                        nwspldt.setReleaseNumber(jsonObject.getString("releaseNumber").trim());
-                        nwspldt.setPoNumber(jsonObject.getString("poNumber").trim());
-                        nwspldt.setPoLineNumber(jsonObject.getString("poLineNumber").trim());
-                        nwspldt.setUplLine(jsonObject.getString("uplLine").trim());
-                        nwspldt.setPoLineItemType(jsonObject.getString("poLineItemType").trim());
-                        nwspldt.setPoLineItemCode(jsonObject.getString("poLineItemCode").trim());
-                        nwspldt.setPoLineDescription(jsonObject.getString("poLineDescription").trim());
-                        nwspldt.setUplLineItemType(jsonObject.getString("uplLineItemType").trim());
-                        nwspldt.setUplLineItemCode(jsonObject.getString("uplLineItemCode").trim());
-                        nwspldt.setUplLineDescription(jsonObject.getString("uplLineDescription").trim());
-                        nwspldt.setZainItemCategoryCode(jsonObject.getString("zainItemCategoryCode").trim());
-                        nwspldt.setZainItemCategoryDescription(jsonObject.getString("zainItemCategoryDescription").trim());
-                        nwspldt.setUplItemSerialized(jsonObject.getString("uplItemSerialized").trim());
-                        nwspldt.setActiveOrPassive(jsonObject.getString("activeOrPassive").trim());
-                        nwspldt.setUom(jsonObject.getString("uom").trim());
-                        nwspldt.setCurrency(jsonObject.getString("currency").trim());
-                        nwspldt.setPoLineQuantity(jsonObject.getDouble("poLineQuantity"));
-                        nwspldt.setPoLineUnitPrice(jsonObject.getDouble("poLineUnitPrice"));
-                        nwspldt.setUplLineQuantity(jsonObject.getDouble("uplLineQuantity"));
-                        nwspldt.setUplLineUnitPrice(jsonObject.getDouble("uplLineUnitPrice"));
-                        nwspldt.setSubstituteItemCode(jsonObject.getString("substituteItemCode").trim());
-                        nwspldt.setRemarks(jsonObject.getString("remarks").trim());
-
-                        nwspldt.setCreatedBy(jsonObject.getInt("createdById"));
-                        nwspldt.setCreatedByName(jsonObject.getString("createdByName").trim());
-                        try {
-                            purchaseOrderUPLRepo.save(nwspldt);
-                            responseinfo = "Record Created Success";
-                        } catch (JSONException excc) {
-                            loggger.info("Exception |  " + excc.toString());
-                            responseinfo = excc.toString();
-                        }
-
+                        responseinfo = excc.toString();
                     }
+
                 } else {
-                    String missingPoNumber = jsonObject.getString("poNumber");
-                    missingPoNumbers.add(missingPoNumber);
-                    System.out.println("PO NUMBER DOEST EXISTS " + jsonObject.getString("poNumber"));
+                    tb_PurchaseOrderUPL nwspldt = new tb_PurchaseOrderUPL();
+                    java.util.Date parsedDate = dateFormat.parse(now.toString());
+                    java.sql.Date newDate = new java.sql.Date(parsedDate.getTime());
+                    nwspldt.setRecordDatetime(newDate);
+                    nwspldt.setVendor(jsonObject.getString("vendor").trim());
+                    nwspldt.setManufacturer(jsonObject.getString("manufacturer").trim());
+                    nwspldt.setCountryOfOrigin(jsonObject.getString("countryOfOrigin").trim());
+                    nwspldt.setProjectName(jsonObject.getString("projectName").trim());
+                    nwspldt.setPoType(jsonObject.getString("poType").trim());
+                    nwspldt.setReleaseNumber(jsonObject.getString("releaseNumber").trim());
+                    nwspldt.setPoNumber(jsonObject.getString("poNumber").trim());
+                    nwspldt.setPoLineNumber(jsonObject.getString("poLineNumber").trim());
+                    nwspldt.setUplLine(jsonObject.getString("uplLine").trim());
+                    nwspldt.setPoLineItemType(jsonObject.getString("poLineItemType").trim());
+                    nwspldt.setPoLineItemCode(jsonObject.getString("poLineItemCode").trim());
+                    nwspldt.setPoLineDescription(jsonObject.getString("poLineDescription").trim());
+                    nwspldt.setUplLineItemType(jsonObject.getString("uplLineItemType").trim());
+                    nwspldt.setUplLineItemCode(jsonObject.getString("uplLineItemCode").trim());
+                    nwspldt.setUplLineDescription(jsonObject.getString("uplLineDescription").trim());
+                    nwspldt.setZainItemCategoryCode(jsonObject.getString("zainItemCategoryCode").trim());
+                    nwspldt.setZainItemCategoryDescription(jsonObject.getString("zainItemCategoryDescription").trim());
+                    nwspldt.setUplItemSerialized(jsonObject.getString("uplItemSerialized").trim());
+                    nwspldt.setActiveOrPassive(jsonObject.getString("activeOrPassive").trim());
+                    nwspldt.setUom(jsonObject.getString("uom").trim());
+                    nwspldt.setCurrency(jsonObject.getString("currency").trim());
+                    nwspldt.setPoLineQuantity(jsonObject.getDouble("poLineQuantity"));
+                    nwspldt.setPoLineUnitPrice(jsonObject.getDouble("poLineUnitPrice"));
+                    nwspldt.setUplLineQuantity(jsonObject.getDouble("uplLineQuantity"));
+                    nwspldt.setUplLineUnitPrice(jsonObject.getDouble("uplLineUnitPrice"));
+                    nwspldt.setSubstituteItemCode(jsonObject.getString("substituteItemCode").trim());
+                    nwspldt.setRemarks(jsonObject.getString("remarks").trim());
+
+                    nwspldt.setCreatedBy(jsonObject.getInt("createdById"));
+                    nwspldt.setCreatedByName(jsonObject.getString("createdByName").trim());
+                    try {
+                        purchaseOrderUPLRepo.save(nwspldt);
+                        responseinfo = "Record Created Success";
+                    } catch (JSONException excc) {
+                        loggger.info("Exception |  " + excc.toString());
+                        responseinfo = excc.toString();
+                    }
+
                 }
+//                } else {
+//                    String missingPoNumber = jsonObject.getString("poNumber");
+//                    missingPoNumbers.add(missingPoNumber);
+//                    System.out.println("PO NUMBER DOEST EXISTS " + jsonObject.getString("poNumber"));
+//                }
             }
             loggger.info("UPL CREATE RESPONSE |  " + responseinfo);
-            if (!missingPoNumbers.isEmpty()) {
-                batchfilename = getbatchfilename("FailedUpload");
-                helper.logBatchFile(responseinfo, true, batchfilename);
-                return response("Error", "Missing PO Numbers: " + String.join(", ", missingPoNumbers));
-            } else if (!responseinfo.contains("Success")) {
+            if (!responseinfo.contains("Success")) {
                 batchfilename = getbatchfilename("FailedUpload");
                 helper.logBatchFile(responseinfo, true, batchfilename);
                 return response("Error", responseinfo);
@@ -998,14 +1047,25 @@ public class APIController {
         }
         JSONObject firstRecord = jsonArray.getJSONObject(0);
         String poNumber = firstRecord.getString("poNumber");
-        List<String> allowedExtensions = Arrays.asList(".pdf", ".docx", ".xlsx", ".jpeg", ".msg", ".jpg", ".png");
+        List<String> allowedExtensions = Arrays.asList(".pdf", ".doc", ".csv", ".docx", ".xlsx", ".jpeg", ".msg", ".jpg", ".png", ".xlsm", ".xls", ".zip", ".rar");
 
         String uploadDir = "/home/app/logs/ALM/POUPL/";
+        List<String> InvalidItems = new ArrayList<>();
 
+        long maxFileSize = 100 * 1024 * 1024;
         if (files != null) {
             for (MultipartFile file : files) {
                 String originalFileName = file.getOriginalFilename();
                 loggger.info("Received file: " + originalFileName);
+
+                long fileSize = file.getSize();
+                loggger.info("Received file: " + originalFileName + ", size: " + fileSize + " bytes");
+
+                // Validate file size
+                if (fileSize > maxFileSize) {
+                    return response("Error", "File too large: " + originalFileName + " exceeds the 50MB limit.");
+                }
+
                 String fileExtension = "";
                 if (originalFileName != null) {
                     int dotIndex = originalFileName.lastIndexOf('.');
@@ -1015,6 +1075,41 @@ public class APIController {
                     if (!allowedExtensions.contains(fileExtension)) {
                         return response("Error", "Invalid file type: " + fileExtension);
                     }
+                    if (".zip".equals(fileExtension)) {
+                        try (ZipInputStream zis = new ZipInputStream(file.getInputStream())) {
+                            ZipEntry entry;
+                            while ((entry = zis.getNextEntry()) != null) {
+                                if (!entry.isDirectory()) {
+                                    String entryName = entry.getName();
+                                    int dotIndexEntry = entryName.lastIndexOf('.');
+                                    String entryExtension = "";
+                                    if (dotIndexEntry > 0) {
+                                        entryExtension = entryName.substring(dotIndexEntry).toLowerCase();
+                                    }
+                                    loggger.info("Checking file inside zip: " + entryName);
+                                    if (!allowedExtensions.contains(entryExtension)) {
+                                        return response("Error", "Invalid file inside zip: " + entryName);
+                                    }
+                                }
+                            }
+                        } catch (IOException e) {
+                            loggger.error("Failed to read zip file: " + originalFileName, e);
+                            return response("Error", "Failed to process zip file.");
+                        }
+                    }
+                    if (".rar".equals(fileExtension)) {
+
+                        try {
+                            boolean isValid = validateRarContents(file.getInputStream(), originalFileName);
+                            if (!isValid) {
+                                return response("Error", "Invalid file inside rar archive");
+                            }
+                        } catch (IOException | InterruptedException e) {
+                            loggger.error("Failed to validate rar file: " + originalFileName, e);
+                            return response("Error", "Failed to process rar file.");
+                        }
+                    }
+
                 }
                 String newFileName = originalFileName + "_" + System.currentTimeMillis() + fileExtension;
 
@@ -1056,14 +1151,20 @@ public class APIController {
             String requesttime = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(Calendar.getInstance().getTime());
             List<String> alreadyCreatedDCC = new ArrayList<>();
 
+            List<String> alreadyRaisedDCC = new ArrayList<>();
+
             List<String> missingSerialsforUPLBased = new ArrayList<>();
             List<String> missingApprovalLevel = new ArrayList<>();
             List<String> existingSerialNumbers = new ArrayList<>();
+            List<String> existingActualSerialNumbers = new ArrayList<>();
             List<String> missingSerialsforNONUPLBased = new ArrayList<>();
+            List<String> extraValuesPassed = new ArrayList<>();
             List<String> oldDateService = new ArrayList<>();
             List<String> ScopeOfworkList = new ArrayList<>();
             List<String> locationList = new ArrayList<>();
             List<String> validateInventory = new ArrayList<>();
+
+            List<String> validatePassiveInventory = new ArrayList<>();
             // ITEM CODES LIST 
             List<String> itemCodesList = new ArrayList<>();
             List<String> updateditemCodesList = new ArrayList<>();
@@ -1072,6 +1173,9 @@ public class APIController {
 
             List<String> missingItemCode = new ArrayList<>();
             List<String> scopevalidation = new ArrayList<>();
+
+            List<String> serialnumberItemCode = new ArrayList<>();
+            List<String> serialnumberActualItemCode = new ArrayList<>();
 
             List<Integer> recordNumbers = new ArrayList<>();
 
@@ -1096,9 +1200,13 @@ public class APIController {
                     JSONArray dcclineRequest = validatejsonObject.getJSONArray("lineItems");
                     for (int j = 0; j < dcclineRequest.length(); j++) {
                         JSONObject dcclinejsonObject = dcclineRequest.getJSONObject(j);
-                        itemCode = dcclinejsonObject.getString("itemCode");
+                        itemCode = "";
+                        serialNumber = "";
+                        actualItemCode = "";
+                        String newItemCode = "";
+                        itemCode = dcclinejsonObject.getString("itemCode").trim();
                         if (dcclinejsonObject.has("actualItemCode")) {
-                            actualItemCode = dcclinejsonObject.getString("actualItemCode");
+                            actualItemCode = dcclinejsonObject.getString("actualItemCode").trim();
                         }
                         if (actualItemCode.length() > 1) {
                             //VALIDATE USING ITEM CODE AND ACTUAL ITEM CODE  
@@ -1106,9 +1214,12 @@ public class APIController {
                             if (validateActualItemCode.isEmpty()) {
                                 missingItemCode.add(actualItemCode);
                             }
+                            newItemCode = actualItemCode;
+                        } else {
+                            newItemCode = itemCode;
                         }
 
-                        serialNumber = dcclinejsonObject.getString("serialNumber");
+                        serialNumber = dcclinejsonObject.getString("serialNumber").trim();
                         // serialNumber = serialNumber.trim();
                         upllineitem = dcclinejsonObject.getString("uplLineNumber");
                         polineitem = dcclinejsonObject.getString("poLineNumber");
@@ -1133,31 +1244,36 @@ public class APIController {
                         LocalDateTime dateInService = LocalDateTime.parse(dateInServiceString, formatter);
                         LocalDateTime sixMonthsAgo = LocalDateTime.now().minus(6, ChronoUnit.MONTHS);
 
-                        //VALIDATE USING ACTUAL ITEM CODE AND SERILAL NUMBER FOR ALREADY RECEIVED REQUESTS
-                        if (serialNumber.length() > 1 && actualItemCode.length() > 1) {
-                            List<tbSerialNumber> validateSerial = serialNumberRepo.findBySerialNumberAndItemCode(serialNumber, actualItemCode);
-
-                            if (!validateSerial.isEmpty()) {
-                                existingSerialNumbers.add(serialNumber);
-                            }
-                        }
                         //VALIDATE USING ITEM CODE AND SERIAL NUMBER FOR ALREADY RECEIVED REQUESTS
                         if (serialNumber.length() > 1 && itemCode.length() > 1) {
-                            List<tbSerialNumber> validateSerial = serialNumberRepo.findBySerialNumberAndItemCode(serialNumber, itemCode);
-
-                            if (!validateSerial.isEmpty()) {
-                                existingSerialNumbers.add(serialNumber);
+                            if (actualItemCode.length() == 0) {
+                                List<tbSerialNumber> validateSerial = serialNumberRepo.findBySerialNumberAndItemCode(serialNumber, itemCode);
+                                if (!validateSerial.isEmpty()) {
+                                    existingSerialNumbers.add(serialNumber);
+                                    serialnumberItemCode.add(itemCode);
+                                }
                             }
                         }
+                        //VALIDATE USING ACTUAL ITEM CODE AND SERILAL NUMBER FOR ALREADY RECEIVED REQUESTS
+                        if (serialNumber.length() > 1 && itemCode.length() > 1) {
+                            if (!actualItemCode.isBlank()) {
+                                List<tbSerialNumber> validateSerial = serialNumberRepo.findBySerialNumberAndItemCode(serialNumber, actualItemCode);
+                                if (!validateSerial.isEmpty()) {
+                                    existingActualSerialNumbers.add(serialNumber);
+                                    serialnumberActualItemCode.add(actualItemCode);
+                                }
+                            }
+                        }
+
                         //VALIDATE USING ITEM CODE AND SERIAL NUMBER FOR ALREADY RECEIVED REQUESTS
-                        if (serialNumber.length() > 1) {
-                            List<tbSerialNumber> validateSerial = serialNumberRepo.findBySerialNumber(serialNumber);
-
-                            if (!validateSerial.isEmpty()) {
-                                existingSerialNumbers.add(serialNumber);
-                            }
-                        }
-
+                        //DONT VALIDATE SERIAL NUMBER ONLY 
+//                        if (serialNumber.length() > 1) {
+//                            List<tbSerialNumber> validateSerial = serialNumberRepo.findBySerialNumber(serialNumber);
+//
+//                            if (!validateSerial.isEmpty()) {
+//                                existingSerialNumbers.add(serialNumber);
+//                            }
+//                        }
                         if (dateInService.isBefore(sixMonthsAgo)) {
                             oldDateService.add(upllineitem);
                         }
@@ -1169,26 +1285,68 @@ public class APIController {
                         if (validateScope.isEmpty()) {
                             missingApprovalLevel.add(scopeofWork);
                         }
-                        if (upllineitem.length() > 1) {
+                        if (upllineitem.length() != 0) {
                             tb_PurchaseOrderUPL topRecord = purchaseOrderUPLRepo.findTopByPoNumberAndPoLineNumberAndUplLine(poNumber, polineitem, upllineitem);
                             String itemSerialized = topRecord != null ? String.valueOf(topRecord.getUplItemSerialized()) : "";
                             String activeOrPassive = topRecord != null ? String.valueOf(topRecord.getActiveOrPassive()) : "";
                             //HAPA NI KIZUNGUMKUTI 
                             String uplItemCode = topRecord != null ? String.valueOf(topRecord.getUplLineItemCode()) : "";
 
+                            Double uplQty = topRecord != null ? topRecord.getUplLineQuantity() : 0.0;
                             loggger.info("itemSerialized: " + itemSerialized);
                             loggger.info("activeOrPassive: " + activeOrPassive);
                             loggger.info("uplItemCode: " + uplItemCode);
                             loggger.info("itemCode: " + itemCode);
+                            loggger.info("newItemCode: " + itemCode);
+                            loggger.info("UPL LINE QTY : " + uplQty);
+
                             if (itemSerialized.equalsIgnoreCase("Yes") && activeOrPassive.equalsIgnoreCase("Active")) {
                                 //CHECK FROM INVENTORY SIDE 
                                 if (serialNumber.length() > 1 && itemCode.length() > 1) {
-                                    List<tbNode> validateInventorylist = nodeRepo.findByPartNumberAndSerialNumber(uplItemCode, serialNumber);
+                                    loggger.info("validating Active Inventory: ");
+                                    List<tbNode> validateInventorylist = nodeRepo.findByPartNumberAndSerialNumber(newItemCode, serialNumber);
                                     if (validateInventorylist.isEmpty()) {
                                         validateInventory.add(serialNumber);
                                     }
                                 }
                             }
+                            //DISABLE VALIDATING OF PASSIVE INVENTORY ----KOSI
+//                            else if (itemSerialized.equalsIgnoreCase("Yes") && activeOrPassive.equalsIgnoreCase("Passive")) {
+//
+//                                //CHECK FROM PASSIVE SIDE 
+//                                if (serialNumber.length() > 1 && itemCode.length() > 1) {
+//                                    loggger.info("validating Passive Inventory: ");
+//                                    List<tbPassiveInventory> validateInventorylist = passiveRepo.findByItemCodeAndSerialNumber(newItemCode, serialNumber);
+//                                    if (validateInventorylist.isEmpty()) {
+//                                        validatePassiveInventory.add(serialNumber);
+//                                    }
+//                                }
+//                            }
+
+                            //ADD A NEW VALIDATION HERE TO VALIDATE THE QUANTITY 
+                            List<String> allowedStatuses = Arrays.asList("approved-received", "inprocess", "approved", "returned", "request-info");
+
+                            List<Integer> validRecordNos = dccrepo.findByPoNumberAndStatus(poNumber, allowedStatuses);
+                            loggger.info("Matching RecordNos: " + validRecordNos);
+                            Double passedQty = Double.parseDouble(dcclinejsonObject.getString("deliveredQty"));
+
+//                            if (!validRecordNos.isEmpty()) {
+//
+//                                List<String> dccIdStrings = validRecordNos.stream()
+//                                        .map(String::valueOf)
+//                                        .collect(Collectors.toList());
+//                                Double totalDeliveredQty = dcclnrepo.sumDeliveredQtyByDccIdsAndPoLineInfo(
+//                                        dccIdStrings, poNumber, polineitem, upllineitem);
+//
+//                                loggger.info("Total Delivered Qty for given PoNumber/Line/UpLine: " + totalDeliveredQty);
+//
+//                                if ((totalDeliveredQty + passedQty) > uplQty) {
+//
+//                                    extraValuesPassed.add(upllineitem);
+//
+//                                }
+//
+//                            }
                         } else {
                             tbPurchaseOrder podetails = PurchaseOrderRepo.findTopByPoNumberAndLineNumber(poNumber, polineitem);
                             String serialcontrol = podetails != null ? String.valueOf(podetails.getSerialControl()) : "";
@@ -1199,42 +1357,57 @@ public class APIController {
                                 }
                             }
                         }
-                        if (serialNumber.length() > 1 && itemCode.length() > 1 && actualItemCode.length() < 1) {
-                            //if ((serialNumber.length() > 1 && itemCode.length() > 1 && (actualItemCode.equalsIgnoreCase("") || actualItemCode.isEmpty()))) {
-                            validateDCCLineList = dcclnrepo.findBySerialNumberAndItemCode(serialNumber, itemCode);
-                            if (!validateDCCLineList.isEmpty()) {
-                                DCCLineItem topRecordNo = dcclnrepo.findTopBySerialNumberAndItemCode(serialNumber, itemCode);
-                                String dccid = topRecordNo != null ? String.valueOf(topRecordNo.getDccId()) : "";
-                                if (dccid.length() > 1) {
-                                    DCC dccRecord = dccrepo.findByRecordNo(Integer.parseInt(dccid));
-                                    String dccStatus = dccRecord != null ? String.valueOf(dccRecord.getStatus()) : "";
+                        if (serialNumber.length() > 1 && itemCode.length() > 1) {
+                            loggger.info("actualItemCode_LENGTH: " + actualItemCode.length());
+                            if (actualItemCode.length() == 0) {
+                                //if ((serialNumber.length() > 1 && itemCode.length() > 1 && (actualItemCode.equalsIgnoreCase("") || actualItemCode.isEmpty()))) {
+                                validateDCCLineList = dcclnrepo.findBySerialNumberAndItemCode(serialNumber, itemCode);
+                                loggger.info("validateDCCLineList: " + validateDCCLineList);
+                                loggger.info("validateDCCLineList is Empty: " + validateDCCLineList.isEmpty());
+                                if (!validateDCCLineList.isEmpty()) {
+                                    DCCLineItem topRecordNo = dcclnrepo.findTopBySerialNumberAndItemCode(serialNumber, itemCode);
+                                    String dccid = topRecordNo != null ? String.valueOf(topRecordNo.getDccId()) : "";
+                                    loggger.info("dccid: " + dccid);
+                                    if (dccid.length() != 0) {
+                                        loggger.info("dccid_Length: " + dccid.length());
+                                        DCC dccRecord = dccrepo.findTopByRecordNo(Integer.parseInt(dccid));
+                                        loggger.info("dccRecord: " + dccRecord);
+                                        String dccStatus = dccRecord != null ? String.valueOf(dccRecord.getStatus()) : "";
+                                        loggger.info("Request Status: " + dccStatus);
 
-                                    if (dccStatus.equalsIgnoreCase("inprocess") || dccStatus.equalsIgnoreCase("approved") || dccStatus.equalsIgnoreCase("returned") || dccStatus.equalsIgnoreCase("request-info")) {
-                                        alreadyCreatedDCC.add(serialNumber);
-                                        itemCodesList.add(itemCode);
+                                        if (dccStatus.equalsIgnoreCase("approved-received") || dccStatus.equalsIgnoreCase("inprocess") || dccStatus.equalsIgnoreCase("approved") || dccStatus.equalsIgnoreCase("returned") || dccStatus.equalsIgnoreCase("request-info")) {
+                                            alreadyRaisedDCC.add(serialNumber);
+                                            itemCodesList.add(itemCode);
+                                        }
                                     }
                                 }
                             }
                         }
-                        if (serialNumber.length() > 1 && itemCode.length() > 1 && actualItemCode.length() > 1) {
+                        loggger.info("Is_alreadyCreatedDCC_Empty " + alreadyRaisedDCC.isEmpty());
+                        if (serialNumber.length() > 1 && itemCode.length() > 1) {
 
-                            validateSerialNumberActualItemCode = dcclnrepo.findBySerialNumberAndActualItemCode(serialNumber, actualItemCode);
+                            if (!actualItemCode.isBlank()) {
 
-                            if (!validateSerialNumberActualItemCode.isEmpty()) {
-                                DCCLineItem topRecordNo = dcclnrepo.findTopBySerialNumberAndActualItemCode(serialNumber, actualItemCode);
-                                String dccid = topRecordNo != null ? String.valueOf(topRecordNo.getDccId()) : "";
-                                if (dccid.length() > 1) {
-                                    DCC dccRecord = dccrepo.findByRecordNo(Integer.parseInt(dccid));
-                                    String dccStatus = dccRecord != null ? String.valueOf(dccRecord.getStatus()) : "";
+                                validateSerialNumberActualItemCode = dcclnrepo.findBySerialNumberAndActualItemCode(serialNumber, actualItemCode);
 
-                                    if (dccStatus.equalsIgnoreCase("inprocess") || dccStatus.equalsIgnoreCase("approved") || dccStatus.equalsIgnoreCase("returned") || dccStatus.equalsIgnoreCase("request-info")) {
-                                        alreadyCreatedDCCwithactualItemCode.add(serialNumber);
-                                        updateditemCodesList.add(actualItemCode);
+                                if (!validateSerialNumberActualItemCode.isEmpty()) {
+                                    DCCLineItem topRecordNo = dcclnrepo.findTopBySerialNumberAndActualItemCode(serialNumber, actualItemCode);
+                                    String dccid = topRecordNo != null ? String.valueOf(topRecordNo.getDccId()) : "";
+                                    loggger.info("Actualdccid: " + dccid);
+                                    if (dccid.length() != 0) {
+                                        loggger.info("Actualdccid_Length: " + dccid.length());
+                                        DCC dccRecord = dccrepo.findByRecordNo(Integer.parseInt(dccid));
+                                        String dccStatus = dccRecord != null ? String.valueOf(dccRecord.getStatus()) : "";
+                                        loggger.info("ActualdccRecord: " + dccRecord);
+                                        loggger.info("Actual Request Status: " + dccStatus);
+                                        if (dccStatus.equalsIgnoreCase("approved-received") || dccStatus.equalsIgnoreCase("inprocess") || dccStatus.equalsIgnoreCase("approved") || dccStatus.equalsIgnoreCase("returned") || dccStatus.equalsIgnoreCase("request-info")) {
+                                            alreadyCreatedDCCwithactualItemCode.add(serialNumber);
+                                            updateditemCodesList.add(actualItemCode);
+                                        }
                                     }
                                 }
                             }
                         }
-
                         //VALIDATE SERIAL NUMBER
 //                        if (serialNumber.length() > 1) {
 //                            validateSerialNumber = dcclnrepo.findBySerialNumber(serialNumber);
@@ -1257,6 +1430,7 @@ public class APIController {
 
                     String UpdateActualItemCode = "";
                     String UpdateItemCode = "";
+                    String newItem = "";
 
                     JSONArray dcclineRequestItems = validatejsonObject.getJSONArray("lineItems");
 
@@ -1268,6 +1442,7 @@ public class APIController {
 
                         if (dcclineUpdatejsonObject.has("actualItemCode")) {
                             UpdateActualItemCode = dcclineUpdatejsonObject.getString("actualItemCode");
+
                         }
                         UpdateItemCode = dcclineUpdatejsonObject.getString("itemCode");
 
@@ -1278,36 +1453,58 @@ public class APIController {
                             if (validateActualItemCode.isEmpty()) {
                                 missingItemCode.add(UpdateActualItemCode);
                             }
+                            newItem = UpdateActualItemCode;
+                        } else {
+                            newItem = UpdateItemCode;
                         }
 
                         serialNumber = dcclineUpdatejsonObject.getString("serialNumber");
                         upllineitem = dcclineUpdatejsonObject.getString("uplLineNumber");
                         polineitem = dcclineUpdatejsonObject.getString("poLineNumber");
-                        if (serialNumber.length() > 1 && UpdateActualItemCode.length() > 1) {
-                            List<tbSerialNumber> validateSerial = serialNumberRepo.findBySerialNumberAndItemCode(serialNumber, UpdateActualItemCode);
-
-                            if (!validateSerial.isEmpty()) {
-                                existingSerialNumbers.add(serialNumber);
-                            }
-                        }
-
-                        if (serialNumber.length() > 1 && UpdateItemCode.length() > 1) {
-                            List<tbSerialNumber> validateSerial = serialNumberRepo.findBySerialNumberAndItemCode(serialNumber, UpdateItemCode);
-
-                            if (!validateSerial.isEmpty()) {
-                                existingSerialNumbers.add(serialNumber);
-                            }
-                        }
 
                         //VALIDATE USING ITEM CODE AND SERIAL NUMBER FOR ALREADY RECEIVED REQUESTS
-                        if (serialNumber.length() > 1) {
-                            List<tbSerialNumber> validateSerial = serialNumberRepo.findBySerialNumber(serialNumber);
-
-                            if (!validateSerial.isEmpty()) {
-                                existingSerialNumbers.add(serialNumber);
+                        if (serialNumber.length() > 1 && UpdateItemCode.length() > 1) {
+                            if (UpdateActualItemCode.length() == 0) {
+                                List<tbSerialNumber> validateSerial = serialNumberRepo.findBySerialNumberAndItemCode(serialNumber, UpdateItemCode);
+                                if (!validateSerial.isEmpty()) {
+                                    existingSerialNumbers.add(serialNumber);
+                                    serialnumberItemCode.add(UpdateItemCode);
+                                }
+                            }
+                        }
+                        //VALIDATE USING ACTUAL ITEM CODE AND SERILAL NUMBER FOR ALREADY RECEIVED REQUESTS
+                        if (serialNumber.length() > 1 && UpdateItemCode.length() > 1) {
+                            if (!UpdateActualItemCode.isBlank()) {
+                                List<tbSerialNumber> validateSerial = serialNumberRepo.findBySerialNumberAndItemCode(serialNumber, UpdateActualItemCode);
+                                if (!validateSerial.isEmpty()) {
+                                    existingActualSerialNumbers.add(serialNumber);
+                                    serialnumberActualItemCode.add(UpdateActualItemCode);
+                                }
                             }
                         }
 
+//                        if (serialNumber.length() > 1 && UpdateActualItemCode.length() > 1) {
+//                            List<tbSerialNumber> validateSerial = serialNumberRepo.findBySerialNumberAndItemCode(serialNumber, UpdateActualItemCode);
+//
+//                            if (!validateSerial.isEmpty()) {
+//                                existingSerialNumbers.add(serialNumber);
+//                            }
+//                        }
+//                        if (serialNumber.length() > 1 && UpdateItemCode.length() > 1) {
+//                            List<tbSerialNumber> validateSerial = serialNumberRepo.findBySerialNumberAndItemCode(serialNumber, UpdateItemCode);
+//
+//                            if (!validateSerial.isEmpty()) {
+//                                existingSerialNumbers.add(serialNumber);
+//                            }
+//                        }
+//                        //VALIDATE USING ITEM CODE AND SERIAL NUMBER FOR ALREADY RECEIVED REQUESTS
+//                        if (serialNumber.length() > 1) {
+//                            List<tbSerialNumber> validateSerial = serialNumberRepo.findBySerialNumber(serialNumber);
+//
+//                            if (!validateSerial.isEmpty()) {
+//                                existingSerialNumbers.add(serialNumber);
+//                            }
+//                        }
                         scopeofWork = dcclineUpdatejsonObject.getString("scopeOfWork");
                         localName = dcclineUpdatejsonObject.getString("locationName");
 
@@ -1326,27 +1523,42 @@ public class APIController {
                         if (validateScope.isEmpty()) {
                             missingApprovalLevel.add(scopeofWork);
                         }
-
-                        if (upllineitem.length() > 1) {
-
+                        if (upllineitem.length() != 0) {
                             tb_PurchaseOrderUPL topRecord = purchaseOrderUPLRepo.findTopByPoNumberAndPoLineNumberAndUplLine(poNumber, polineitem, upllineitem);
                             String itemSerialized = topRecord != null ? String.valueOf(topRecord.getUplItemSerialized()) : "";
                             String activeOrPassive = topRecord != null ? String.valueOf(topRecord.getActiveOrPassive()) : "";
                             String uplItemCode = topRecord != null ? String.valueOf(topRecord.getUplLineItemCode()) : "";
 
+//                            if (itemSerialized.equalsIgnoreCase("Yes") && activeOrPassive.equalsIgnoreCase("Active")) {
+//                                //CHECK FROM INVENTORY SIDE 
+//                                if (serialNumber.length() > 1 && UpdateItemCode.length() > 1) {
+//                                    List<tbNode> validateInventorylist = nodeRepo.findByPartNumberAndSerialNumber(uplItemCode, serialNumber);
+//                                    if (validateInventorylist.isEmpty()) {
+//                                        validateInventory.add(serialNumber);
+//                                    }
+//                                }
+//                            }
                             if (itemSerialized.equalsIgnoreCase("Yes") && activeOrPassive.equalsIgnoreCase("Active")) {
-
                                 //CHECK FROM INVENTORY SIDE 
                                 if (serialNumber.length() > 1 && UpdateItemCode.length() > 1) {
-
-                                    List<tbNode> validateInventorylist = nodeRepo.findByPartNumberAndSerialNumber(uplItemCode, serialNumber);
-
+                                    loggger.info("validating Active Inventory: ");
+                                    List<tbNode> validateInventorylist = nodeRepo.findByPartNumberAndSerialNumber(newItem, serialNumber);
                                     if (validateInventorylist.isEmpty()) {
                                         validateInventory.add(serialNumber);
                                     }
                                 }
-
                             }
+                            //DISABLE VALIDATING OF PASSIVE INVENTORY ----KOSI
+//                             else if (itemSerialized.equalsIgnoreCase("Yes") && activeOrPassive.equalsIgnoreCase("Passive")) {
+//                                //CHECK FROM PASSIVE SIDE 
+//                                if (serialNumber.length() > 1 && UpdateItemCode.length() > 1) {
+//                                    loggger.info("validating Passive Inventory: ");
+//                                    List<tbPassiveInventory> validateInventorylist = passiveRepo.findByItemCodeAndSerialNumber(newItem, serialNumber);
+//                                    if (validateInventorylist.isEmpty()) {
+//                                        validatePassiveInventory.add(serialNumber);
+//                                    }
+//                                }
+//                            }
                         } else {
                             tbPurchaseOrder podetails = PurchaseOrderRepo.findTopByPoNumberAndLineNumber(poNumber, polineitem);
                             String serialcontrol = podetails != null ? String.valueOf(podetails.getSerialControl()) : "";
@@ -1357,20 +1569,19 @@ public class APIController {
                                 }
                             }
                         }
-
                         if (serialNumber.length() > 1 && UpdateItemCode.length() > 1 && UpdateActualItemCode.length() < 1) {
-                        //if ((serialNumber.length() > 1 && UpdateItemCode.length() > 1 && (UpdateActualItemCode.equalsIgnoreCase("") || UpdateActualItemCode.isEmpty()))) {
+                            //if ((serialNumber.length() > 1 && UpdateItemCode.length() > 1 && (UpdateActualItemCode.equalsIgnoreCase("") || UpdateActualItemCode.isEmpty()))) {
 
                             validateDCCLineList = dcclnrepo.findBySerialNumberAndItemCode(serialNumber, UpdateItemCode);
 
                             if (!validateDCCLineList.isEmpty()) {
                                 DCCLineItem topRecordNo = dcclnrepo.findTopBySerialNumberAndItemCode(serialNumber, UpdateItemCode);
                                 String dccid = topRecordNo != null ? String.valueOf(topRecordNo.getDccId()) : "";
-                                if (dccid.length() > 1) {
+                                if (dccid.length() != 0) {
                                     DCC dccRecord = dccrepo.findByRecordNo(Integer.parseInt(dccid));
                                     String dccStatus = dccRecord != null ? String.valueOf(dccRecord.getStatus()) : "";
 
-                                    if (dccStatus.equalsIgnoreCase("inprocess") || dccStatus.equalsIgnoreCase("approved") || dccStatus.equalsIgnoreCase("returned") || dccStatus.equalsIgnoreCase("request-info")) {
+                                    if (dccStatus.equalsIgnoreCase("approved-received") || dccStatus.equalsIgnoreCase("inprocess") || dccStatus.equalsIgnoreCase("approved") || dccStatus.equalsIgnoreCase("returned") || dccStatus.equalsIgnoreCase("request-info")) {
 
                                         alreadyCreatedDCC.add(serialNumber);
                                         itemCodesList.add(UpdateItemCode);
@@ -1378,7 +1589,6 @@ public class APIController {
                                 }
                             }
                         }
-
                         if (serialNumber.length() > 1 && UpdateItemCode.length() > 1 && UpdateActualItemCode.length() > 1) {
 
                             validateSerialNumberActualItemCode = dcclnrepo.findBySerialNumberAndActualItemCode(serialNumber, UpdateActualItemCode);
@@ -1386,11 +1596,11 @@ public class APIController {
                             if (!validateSerialNumberActualItemCode.isEmpty()) {
                                 DCCLineItem topRecordNo = dcclnrepo.findTopBySerialNumberAndActualItemCode(serialNumber, UpdateActualItemCode);
                                 String dccid = topRecordNo != null ? String.valueOf(topRecordNo.getDccId()) : "";
-                                if (dccid.length() > 1) {
+                                if (dccid.length() != 0) {
                                     DCC dccRecord = dccrepo.findByRecordNo(Integer.parseInt(dccid));
                                     String dccStatus = dccRecord != null ? String.valueOf(dccRecord.getStatus()) : "";
 
-                                    if (dccStatus.equalsIgnoreCase("inprocess") || dccStatus.equalsIgnoreCase("approved") || dccStatus.equalsIgnoreCase("returned") || dccStatus.equalsIgnoreCase("request-info")) {
+                                    if (dccStatus.equalsIgnoreCase("approved-received") || dccStatus.equalsIgnoreCase("inprocess") || dccStatus.equalsIgnoreCase("approved") || dccStatus.equalsIgnoreCase("returned") || dccStatus.equalsIgnoreCase("request-info")) {
                                         alreadyCreatedDCCwithactualItemCode.add(serialNumber);
                                         updateditemCodesList.add(UpdateActualItemCode);
                                     }
@@ -1427,58 +1637,79 @@ public class APIController {
                             .filter(recordNoNew -> !recordNumbers.contains(recordNoNew))
                             .collect(Collectors.toList());
 
-                    if (!toDelete.isEmpty()) {
-                        dcclnrepo.deleteAllByIdInBatch(toDelete);
-                    }
+//                    if (!toDelete.isEmpty()) {
+//                        dcclnrepo.deleteAllByIdInBatch(toDelete);
+//                    }
                 }
             }
+
+            List<String> errorMessages = new ArrayList<>();
             Set<String> uniqueScope = new HashSet<>(ScopeOfworkList);
 
             if (uniqueScope.size() > 1) {
-                return response("Error", "You can only raise an acceptance request for one unique scope of work. The passed scopes are " + String.join(", ", uniqueScope));
+                errorMessages.add("You can only raise an acceptance request for one unique scope of work. The passed scopes are " + String.join(", ", uniqueScope));
 
             }
 
             Set<String> uniquelocation = new HashSet<>(locationList);
 
             if (uniquelocation.size() > 1) {
-                return response("Error", "You can only raise an acceptance request for one unique location. The passed locations are " + String.join(", ", uniquelocation));
+                errorMessages.add("You can only raise an acceptance request for one unique location. The passed locations are " + String.join(", ", uniquelocation));
             }
 
-            if (!missingItemCode.isEmpty()) {
-                return response("Error", "The given Item Codes " + String.join(", ", missingItemCode) + " are not valid. Please use existing  item codes");
+            if (!existingSerialNumbers.isEmpty()) {
+                errorMessages.add("The following serial Numbers  " + String.join(", ", existingSerialNumbers) + " with item codes " + String.join(", ", serialnumberItemCode) + " have already been received. Kindly raise an acceptance request for a different serial Number ");
+            }
+
+            if (!existingActualSerialNumbers.isEmpty()) {
+                errorMessages.add("The following serial Numbers  " + String.join(", ", existingActualSerialNumbers) + " with actual item codes " + String.join(", ", serialnumberActualItemCode) + " have already been received. Kindly raise an acceptance request for a different serial Number ");
             }
 
             if (!missingSerialsforNONUPLBased.isEmpty()) {
-                return response("Error", "PO line Item(s) " + String.join(", ", missingSerialsforNONUPLBased) + " are serialized and hence a serial number must be provided to raise an acceptance request");
+                errorMessages.add("PO line Item(s) " + String.join(", ", missingSerialsforNONUPLBased) + " are serialized and hence a serial number must be provided to raise an acceptance request");
             }
             if (!missingSerialsforUPLBased.isEmpty()) {
-                return response("Error", "UPL line Item(s) " + String.join(", ", missingSerialsforUPLBased) + " are serialized and hence a serial number must be provided to raise an acceptance request");
+                errorMessages.add("UPL line Item(s) " + String.join(", ", missingSerialsforUPLBased) + " are serialized and hence a serial number must be provided to raise an acceptance request");
             }
-            if (!validateInventory.isEmpty()) {
-                return response("Error", "An acceptance request cannot be raised for serial number  " + String.join(", ", validateInventory) + " since they are missing in the active inventory ");
-            }
-            if (!alreadyCreatedDCC.isEmpty()) {
-                return response("Error", "Acceptance request for serial numbers " + String.join(", ", alreadyCreatedDCC) + "  with item code " + String.join(", ", itemCodesList) + " has already been raised. Kindly raise an acceptance request for a different serial Number ");
+
+            if (!alreadyRaisedDCC.isEmpty()) {
+                errorMessages.add("Acceptance request for serial numbers " + String.join(", ", alreadyCreatedDCC) + "  with item code has already been raised. Kindly raise an acceptance request for a different serial Number ");
+                //return response("Error", "Acceptance request for serial numbers " + String.join(", ", alreadyCreatedDCC) + "  with item code " + String.join(", ", itemCodesList) + " has already been raised. Kindly raise an acceptance request for a different serial Number ");
             }
 
             if (!alreadyCreatedDCCwithactualItemCode.isEmpty()) {
-                return response("Error", "Acceptance request for serial numbers " + String.join(", ", alreadyCreatedDCCwithactualItemCode) + "  with actual item code " + String.join(", ", updateditemCodesList) + " has already been raised. Kindly raise an acceptance request for a different serial Number ");
+                errorMessages.add("Acceptance request for serial numbers " + String.join(", ", alreadyCreatedDCCwithactualItemCode) + "  with actual item code " + String.join(", ", updateditemCodesList) + " has already been raised. Kindly raise an acceptance request for a different serial Number ");
+            }
+
+            if (!validateInventory.isEmpty()) {
+                errorMessages.add("An acceptance request cannot be raised for serial number  " + String.join(", ", validateInventory) + " since its not available in the Active Inventory ");
+            }
+
+            if (!validatePassiveInventory.isEmpty()) {
+                errorMessages.add("An acceptance request cannot be raised for serial number  " + String.join(", ", validatePassiveInventory) + " since its not available in the  Passive Inventory ");
+            }
+
+            if (!missingItemCode.isEmpty()) {
+                errorMessages.add("The given Item Codes " + String.join(", ", missingItemCode) + " are not valid. Please use existing  item codes");
             }
 
 //            if (!alreadyCreatedSerialNumber.isEmpty()) {
 //                return response("Error", "Acceptance request for serial numbers " + String.join(", ", alreadyCreatedDCC) + " has already been raised. Kindly raise an acceptance request for a different serial Number ");
 //            }
             if (!missingApprovalLevel.isEmpty()) {
-                return response("Error", "Missing Approval Level Configurations for Scope(s):  " + String.join(", ", missingApprovalLevel) + " Please contact the OPCO.");
+                errorMessages.add("Missing Approval Level Configurations for Scope(s):  " + String.join(", ", missingApprovalLevel) + " Please contact the OPCO.");
             }
 
             if (!oldDateService.isEmpty()) {
-                return response("Error", "The dateInService for Upl Line Items(s) " + oldDateService + " is more than 6 months old. Validation failed.");
+                errorMessages.add("The dateInService for Upl Line Items(s) " + oldDateService + " is more than 6 months old. Validation failed.");
+            }
+            if (!extraValuesPassed.isEmpty()) {
+                errorMessages.add("The quantity you have entered for upl lines()  " + extraValuesPassed + " exceeds the Purchase order UPL Line quantities ");
             }
 
-            if (!existingSerialNumbers.isEmpty()) {
-                return response("Error", "The following serial Numbers  " + String.join(", ", existingSerialNumbers) + " have already been received. Kindly raise an acceptance request for a different serial Number ");
+            // If any errors found, return all in one response
+            if (!errorMessages.isEmpty()) {
+                return response("Error", String.join(" | ", errorMessages));
             }
 
             String createdByName = "";
@@ -1563,6 +1794,99 @@ public class APIController {
             System.out.println(excc.toString());
         }
         return response("Error", jsonArrayresponse.toString());
+    }
+
+    /**
+     * Validates the contents inside the RAR file using unrar CLI.
+     *
+     * @param rarInputStream InputStream of uploaded RAR file
+     * @param originalFileName Original file name (for logging/error messages)
+     * @return true if valid; false otherwise
+     * @throws IOException
+     * @throws InterruptedException
+     */
+    private boolean validateRarContents(InputStream rarInputStream, String originalFileName) throws IOException, InterruptedException {
+        // Step 1: Save uploaded InputStream to temp file
+
+        List<String> allowedExtensions = Arrays.asList(".pdf", ".doc", ".csv", ".docx", ".xlsx", ".jpeg", ".msg", ".jpg", ".png", ".xlsm", ".xls", ".zip", ".rar");
+
+        File tempRarFile = File.createTempFile("upload-", ".rar");
+        try (OutputStream outStream = new FileOutputStream(tempRarFile)) {
+            byte[] buffer = new byte[8192];
+            int bytesRead;
+            while ((bytesRead = rarInputStream.read(buffer)) != -1) {
+                outStream.write(buffer, 0, bytesRead);
+            }
+        }
+
+        try {
+            // Step 2: Execute `unrar lb tempRarFile` to list files inside
+            ProcessBuilder pb = new ProcessBuilder("unrar", "lb", tempRarFile.getAbsolutePath());
+            pb.redirectErrorStream(true);
+            Process process = pb.start();
+
+            List<String> entries = new ArrayList<>();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    line = line.trim();
+                    if (!line.isEmpty()) {
+                        entries.add(line);
+                    }
+                }
+            }
+
+            int exitCode = process.waitFor();
+            if (exitCode != 0) {
+                loggger.info("Unrar command failed with exit code: " + exitCode);
+                // System.err.println("Unrar command failed with exit code: " + exitCode);
+                return false;
+            }
+
+            // Step 3: Validate each entry's extension
+//            for (String entryName : entries) {
+//                // Skip directories usually indicated by trailing "/"
+//                if (entryName.endsWith("/")) {
+//                    continue;
+//                }
+//                int dotIndex = entryName.lastIndexOf('.');
+//                String ext = (dotIndex > 0) ? entryName.substring(dotIndex).toLowerCase() : "";
+//                 loggger.info("Validating entry inside rar: " + entryName);
+//                    loggger.info("EXT : " + ext);
+//               // System.out.println("Validating entry inside rar: " + entryName);
+//                if (!allowedExtensions.contains(ext)) {
+//                    loggger.info("Invalid file inside rar: " + entryName);
+//                   // System.err.println("Invalid file inside rar: " + entryName);
+//                    return false;  // invalid file found inside archive
+//                }
+//            }
+            for (String entryName : entries) {
+                // Skip entries that are clearly directories (end with / or no extension)
+                if (entryName.endsWith("/") || !entryName.contains(".")) {
+                    loggger.info("Skipping likely directory: " + entryName);
+                    continue;
+                }
+
+                int dotIndex = entryName.lastIndexOf('.');
+                String ext = (dotIndex > 0) ? entryName.substring(dotIndex).toLowerCase() : "";
+                loggger.info("Validating entry inside rar: " + entryName);
+                loggger.info("EXT : " + ext);
+
+                if (!allowedExtensions.contains(ext)) {
+                    loggger.info("Invalid file inside rar: " + entryName);
+                    // InvalidItems.add(entryName);
+                    return false;  // invalid file found inside archive
+                }
+            }
+
+            return true;  // all files valid
+
+        } finally {
+            // Step 4: Cleanup temp file
+            if (!tempRarFile.delete()) {
+                System.err.println("Warning: Temp file delete failed: " + tempRarFile.getAbsolutePath());
+            }
+        }
     }
 
     public String getIPAddress() {

@@ -46,6 +46,11 @@ public class ReportsController {
     @Autowired
     tbChargeAccountRepo chargeAccountRepo;
 
+    @Autowired
+    public ReportsController(JdbcTemplate jdbcTemplate) {
+        this.jdbcTemplate = jdbcTemplate;
+    }
+
     String genHeader(String msisdn, String reqid, String Channel) {
         return " | " + reqid + " | " + Channel + " | " + msisdn + " | ";
     }
@@ -143,7 +148,7 @@ public class ReportsController {
 
         //String sql = "SELECT * FROM `capitalizationReport` WHERE 1=1";
         ///
-          String whereClause = " WHERE 1=1";
+        String whereClause = " WHERE 1=1";
         List<Object> params = new ArrayList<>();
 
         if (!poNumber.equalsIgnoreCase("0")) {
@@ -155,8 +160,7 @@ public class ReportsController {
             whereClause += " AND " + columnName.toLowerCase() + " LIKE ?";
             params.add("%" + searchQuery + "%");
         }
-        
-        
+
         String countSql = "SELECT COUNT(*) FROM capitalizationReport " + whereClause;
         int totalRecords = jdbcTemplate.queryForObject(countSql, Integer.class, params.toArray());
 
@@ -186,8 +190,7 @@ public class ReportsController {
             paginationSql = " LIMIT " + size + " OFFSET " + offset;
         }
 
-       
-          String sql = "SELECT * FROM `capitalizationReport` "
+        String sql = "SELECT * FROM `capitalizationReport` "
                 + whereClause + paginationSql;
 
         List<Map<String, Object>> result = jdbcTemplate.queryForList(sql, params.toArray());
@@ -294,7 +297,6 @@ public class ReportsController {
     public Map<String, Object> getAllPurchaseOrders(@RequestBody String req) {
         JsonObject obj = new JsonParser().parse(req).getAsJsonObject();
         String supplierId = obj.get("supplierId").getAsString();
-
 
         String columnName = obj.has("columnName") ? obj.get("columnName").getAsString() : "";
         String searchQuery = obj.has("searchQuery") ? obj.get("searchQuery").getAsString() : "";
@@ -725,6 +727,602 @@ public class ReportsController {
         return response;
     }
 
+    //==================GET ALL CREATED ACCEPTANCE PER SUPPLIER NESTED =====
+    @PostMapping(value = "/reports/getNestedDccData", produces = "application/json")
+    @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
+    public Map<String, Object> getNestedDccData(@RequestBody String req) {
+        JsonObject obj = new JsonParser().parse(req).getAsJsonObject();
+        String supplierId = obj.get("supplierId").getAsString();
+        String columnName = obj.has("columnName") ? obj.get("columnName").getAsString() : "";
+        String searchQuery = obj.has("searchQuery") ? obj.get("searchQuery").getAsString() : "";
+        // Map<String, Object> response = new HashMap<>();
+        int page = obj.has("page") ? obj.get("page").getAsInt() : 1;
+        int size = obj.has("size") ? obj.get("size").getAsInt() : 20000;
+
+        String fixedColumnName = "";
+        // Validate page and size
+        page = Math.max(page, 1);
+        size = Math.max(size, 1);
+
+        jdbcTemplate.execute("SET SESSION sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''))");
+
+        String paginationSql = "";
+        String whereClause = " WHERE 1=1 ";
+
+        if (!supplierId.equalsIgnoreCase("0")) {
+            whereClause += " AND PO.supplierid='" + supplierId + "'";
+        }
+
+        if (!columnName.isEmpty() && !searchQuery.isEmpty()) {
+
+            if (columnName.equalsIgnoreCase("recordNo")) {
+                fixedColumnName = "dccRecordNo";
+            } else if (columnName.equalsIgnoreCase("projectName")) {
+                fixedColumnName = "dccProjectName";
+            } else if (columnName.equalsIgnoreCase("vendorName")) {
+                fixedColumnName = "dccVendorName";
+            } else {
+                fixedColumnName = columnName;
+            }
+
+            whereClause += " AND PO." + fixedColumnName + " LIKE '%" + searchQuery + "%'";
+        }
+
+        // Step 1: Fetch unique POs
+        String uniquePOsSql = "SELECT DISTINCT PO.dccRecordNo FROM dccPOCombinedView PO " + whereClause;
+        List<String> uniquePONumbers = jdbcTemplate.queryForList(uniquePOsSql, String.class);
+
+        // If page is 1 and size is 20000, return all unique POs
+        if (page == 1 && size == 20000) {
+            // Fetch line items for all unique POs
+            String lineItemsSql = "SELECT * FROM dccPOCombinedView PO WHERE PO.dccRecordNo IN ("
+                    + String.join(",", uniquePONumbers.stream()
+                            .map(po -> po.toString()) // no quotes, integer literals
+                            .collect(Collectors.toList()))
+                    + ")";
+
+            loggger.info("GET NESTED SQL 1  " + lineItemsSql);
+            //   String lineItemsSql = "SELECT * FROM dccPOCombinedView PO WHERE PO.dccRecordNo IN (" + String.join(",", uniquePONumbers.stream().map(po -> "'" + po + "'").collect(Collectors.toList())) + ")";
+            List<Map<String, Object>> lineItems = jdbcTemplate.queryForList(lineItemsSql);
+
+            // Step 3: Group line items by PO number
+            Map<String, Map<String, Object>> groupedResults = new LinkedHashMap<>();
+            lineItems.forEach(lineItem -> {
+                Object poNumberObj = lineItem.get("dccRecordNo");
+                String poNumber = String.valueOf(poNumberObj);
+                if (!groupedResults.containsKey(poNumber)) {
+                    Map<String, Object> groupedRow = new LinkedHashMap<>(lineItem);
+                    // Remove unnecessary fields
+                    groupedRow.put("recordNo", lineItem.get("dccRecordNo"));
+                    groupedRow.put("projectName", lineItem.get("dccProjectName"));
+                    groupedRow.put("vendorName", lineItem.get("dccVendorName"));
+                    groupedRow.put("vendorEmail", lineItem.get("dccVendorEmail"));
+                    groupedRow.put("vendorNumber", lineItem.get("supplierId"));
+                    groupedRow.put("dccCurrency", lineItem.get("dccCurrency"));
+
+                    groupedRow.remove("lnRecordNo");
+                    groupedRow.remove("lnProductName");
+                    groupedRow.remove("lnProductSerialNo");
+                    groupedRow.remove("lnDeliveredQty");
+                    groupedRow.remove("lnLocationName");
+                    groupedRow.remove("lnInserviceDate");
+                    groupedRow.remove("lnUnitPrice");
+                    groupedRow.remove("lnScopeOfWork");
+                    groupedRow.remove("lnRemarks");
+                    groupedRow.remove("lnItemCode");
+                    groupedRow.remove("linkId");
+                    groupedRow.remove("tagNumber");
+                    groupedRow.remove("dccCurrency");
+                    groupedRow.remove("lineNumber");
+                    groupedRow.remove("actualItemCode");
+                    groupedRow.remove("uplLineNumber");
+                    groupedRow.remove("UPLACPTRequestValue");
+                    groupedRow.remove("POAcceptanceQty");
+                    groupedRow.remove("POLineAcceptanceQty");
+                    groupedRow.remove("poPendingQuantity");
+                    groupedRow.remove("poOrderQuantity");
+                    groupedRow.remove("itemPartNumber");
+                    groupedRow.remove("poLineDescription");
+                    groupedRow.remove("uplLineQuantity");
+                    groupedRow.remove("poLineQuantity");
+                    groupedRow.remove("uplLineItemCode");
+                    groupedRow.remove("uplLineDescription");
+                    groupedRow.remove("unitOfMeasure");
+                    groupedRow.remove("activeOrPassive");
+                    groupedRow.remove("uplPendingQuantity");
+                    //groupedRow.remove("approverComment");
+
+                    // Add POlineItems key with an empty list
+                    groupedRow.put("lineItems", new ArrayList<Map<String, Object>>());
+                    groupedResults.put(poNumber, groupedRow);
+
+                    //remove them 
+                    groupedRow.remove("dccRecordNo");
+                    groupedRow.remove("dccProjectName");
+                    groupedRow.remove("dccVendorName");
+                    groupedRow.remove("dccVendorEmail");
+
+                }
+
+                Map<String, Object> poLineItem = new LinkedHashMap<>();
+                poLineItem.put("recordNo", lineItem.get("lnRecordNo"));
+                poLineItem.put("lnProductName", lineItem.get("lnProductName"));
+                poLineItem.put("serialNumber", lineItem.get("lnProductSerialNo"));
+                poLineItem.put("deliveredQty", lineItem.get("lnDeliveredQty"));
+                poLineItem.put("locationName", lineItem.get("lnLocationName"));
+                poLineItem.put("dateInService", (lineItem.get("lnInserviceDate")));
+                poLineItem.put("lnUnitPrice", (lineItem.get("lnUnitPrice")));
+                poLineItem.put("scopeOfWork", (lineItem.get("lnScopeOfWork")));
+                poLineItem.put("remarks", (lineItem.get("lnRemarks")));
+                poLineItem.put("itemCode", (lineItem.get("lnItemCode")));
+                poLineItem.put("linkId", (lineItem.get("linkId")));
+                poLineItem.put("tagNumber", lineItem.get("tagNumber"));
+                poLineItem.put("poLineNumber", lineItem.get("lineNumber"));
+                poLineItem.put("actualItemCode", lineItem.get("actualItemCode"));
+                poLineItem.put("uplLineNumber", lineItem.get("uplLineNumber"));
+                poLineItem.put("currency", lineItem.get("dccCurrency"));
+                poLineItem.put("poId", lineItem.get("poId"));
+                poLineItem.put("UPLACPTRequestValue", lineItem.get("UPLACPTRequestValue"));
+                poLineItem.put("POAcceptanceQty", lineItem.get("POAcceptanceQty"));
+                poLineItem.put("POLineAcceptanceQty", lineItem.get("POLineAcceptanceQty"));
+                poLineItem.put("poPendingQuantity", lineItem.get("poPendingQuantity"));
+                poLineItem.put("poOrderQuantity", lineItem.get("poOrderQuantity"));
+                poLineItem.put("itemPartNumber", lineItem.get("itemPartNumber"));
+                poLineItem.put("poLineDescription", lineItem.get("poLineDescription"));
+                poLineItem.put("uplLineQuantity", lineItem.get("uplLineQuantity"));
+                poLineItem.put("poLineQuantity", lineItem.get("poLineQuantity"));
+                poLineItem.put("uplLineItemCode", lineItem.get("uplLineItemCode"));
+                poLineItem.put("uplLineDescription", lineItem.get("uplLineDescription"));
+                poLineItem.put("uom", lineItem.get("unitOfMeasure"));
+                poLineItem.put("activeOrPassive", lineItem.get("activeOrPassive"));
+                poLineItem.put("uplPendingQuantity", lineItem.get("uplPendingQuantity"));
+                //   poLineItem.put("approverComment", lineItem.get("approverComment"));
+
+                // Add the line item to the POlineItems list
+                ((List<Map<String, Object>>) groupedResults.get(poNumber).get("lineItems")).add(poLineItem);
+
+            });
+            // Prepare the response
+            Map<String, Object> response = new HashMap<>();
+            response.put("currentPage", page);
+            response.put("pageSize", uniquePONumbers.size());
+            response.put("totalRecords", uniquePONumbers.size());
+            response.put("totalPages", 1); // Since we are returning all records
+//            response.put("currentPage", page);
+//            response.put("pageSize", size);
+//            response.put("totalRecords", uniquePONumbers.size());
+//            response.put("totalPages", (int) Math.ceil((double) uniquePONumbers.size() / size));
+            response.put("data", new ArrayList<>(groupedResults.values()));
+            return response;
+        }
+
+        // Step 1: Fetch unique POs with pagination
+        String uniquePOsSql2 = "SELECT DISTINCT PO.dccRecordNo FROM dccPOCombinedView PO " + whereClause + " LIMIT " + size + " OFFSET " + (page - 1) * size;
+        List<String> uniquePONumbers2 = jdbcTemplate.queryForList(uniquePOsSql2, String.class);
+
+        // Step 2: Fetch line items for the unique POs
+        if (uniquePONumbers2.isEmpty()) {
+            // If no unique POs found, return an empty response
+            Map<String, Object> response = new HashMap<>();
+            response.put("currentPage", page);
+            response.put("pageSize", size);
+            response.put("totalRecords", 0);
+            response.put("totalPages", 0);
+            response.put("data", new ArrayList<>());
+            return response;
+        }
+//        String lineItemsSql = "SELECT * FROM dccPOCombinedView PO WHERE PO.dccPoNumber IN ("
+//                + String.join(",", uniquePONumbers2.stream().map(po -> "'" + po + "'").collect(Collectors.toList()))
+//                + ") " + whereClause.replace("WHERE 1=1", "").trim()
+//                + " LIMIT " + size + " OFFSET " + (page - 1) * size;
+        String lineItemsSql = "SELECT * FROM dccPOCombinedView PO WHERE PO.dccRecordNo IN ("
+                + String.join(",", uniquePONumbers2.stream()
+                        .map(po -> po.toString()) // no quotes, integer literals
+                        .collect(Collectors.toList()))
+                + ")";
+
+        //String lineItemsSql = "SELECT * FROM dccPOCombinedView PO WHERE PO.dccRecordNo IN (" + String.join(",", uniquePONumbers2.stream().map(po -> "'" + po + "'").collect(Collectors.toList())) + ")";
+        List<Map<String, Object>> lineItems = jdbcTemplate.queryForList(lineItemsSql);
+
+        loggger.info("GET NESTED SQL 2  " + lineItemsSql);
+
+        Map<String, Map<String, Object>> paginatedGroupedResults = new LinkedHashMap<>();
+        lineItems.forEach(lineItem -> {
+            Object poNumberObj = lineItem.get("dccRecordNo");
+            String poNumber = String.valueOf(poNumberObj);
+            if (!paginatedGroupedResults.containsKey(poNumber)) {
+                Map<String, Object> groupedRow = new LinkedHashMap<>(lineItem);
+                // Remove unnecessary fields
+                groupedRow.put("recordNo", lineItem.get("dccRecordNo"));
+                groupedRow.put("projectName", lineItem.get("dccProjectName"));
+                groupedRow.put("vendorName", lineItem.get("dccVendorName"));
+                groupedRow.put("vendorEmail", lineItem.get("dccVendorEmail"));
+                groupedRow.put("vendorNumber", lineItem.get("supplierId"));
+                groupedRow.put("dccCurrency", lineItem.get("dccCurrency"));
+                groupedRow.remove("lnRecordNo");
+                groupedRow.remove("lnProductName");
+                groupedRow.remove("lnProductSerialNo");
+                groupedRow.remove("lnDeliveredQty");
+                groupedRow.remove("lnLocationName");
+                groupedRow.remove("lnInserviceDate");
+                groupedRow.remove("dccCurrency");
+                groupedRow.remove("lnUnitPrice");
+                groupedRow.remove("lnScopeOfWork");
+                groupedRow.remove("lnRemarks");
+                groupedRow.remove("lnItemCode");
+                groupedRow.remove("linkId");
+                groupedRow.remove("tagNumber");
+                groupedRow.remove("dccCurrency");
+                groupedRow.remove("lineNumber");
+                groupedRow.remove("actualItemCode");
+                groupedRow.remove("uplLineNumber");
+                groupedRow.remove("UPLACPTRequestValue");
+                groupedRow.remove("POAcceptanceQty");
+                groupedRow.remove("POLineAcceptanceQty");
+                groupedRow.remove("poPendingQuantity");
+                groupedRow.remove("poOrderQuantity");
+                groupedRow.remove("itemPartNumber");
+                groupedRow.remove("poLineDescription");
+                groupedRow.remove("uplLineQuantity");
+                groupedRow.remove("poLineQuantity");
+                groupedRow.remove("uplLineItemCode");
+                groupedRow.remove("uplLineDescription");
+                groupedRow.remove("unitOfMeasure");
+                groupedRow.remove("activeOrPassive");
+                groupedRow.remove("uplPendingQuantity");
+                //groupedRow.remove("approverComment");
+
+                // Add POlineItems key with an empty list
+                groupedRow.put("lineItems", new ArrayList<Map<String, Object>>());
+                paginatedGroupedResults.put(poNumber, groupedRow);
+
+                //remove them 
+                groupedRow.remove("dccRecordNo");
+                groupedRow.remove("dccProjectName");
+                groupedRow.remove("dccVendorName");
+                groupedRow.remove("dccVendorEmail");
+            }
+            Map<String, Object> poLineItem = new LinkedHashMap<>();
+            poLineItem.put("recordNo", lineItem.get("lnRecordNo"));
+            poLineItem.put("lnProductName", lineItem.get("lnProductName"));
+            poLineItem.put("serialNumber", lineItem.get("lnProductSerialNo"));
+            poLineItem.put("deliveredQty", lineItem.get("lnDeliveredQty"));
+            poLineItem.put("locationName", lineItem.get("lnLocationName"));
+            poLineItem.put("dateInService", (lineItem.get("lnInserviceDate")));
+            poLineItem.put("lnUnitPrice", (lineItem.get("lnUnitPrice")));
+            poLineItem.put("scopeOfWork", (lineItem.get("lnScopeOfWork")));
+            poLineItem.put("remarks", (lineItem.get("lnRemarks")));
+            poLineItem.put("itemCode", (lineItem.get("lnItemCode")));
+            poLineItem.put("linkId", (lineItem.get("linkId")));
+            poLineItem.put("tagNumber", lineItem.get("tagNumber"));
+            poLineItem.put("poLineNumber", lineItem.get("lineNumber"));
+            poLineItem.put("actualItemCode", lineItem.get("actualItemCode"));
+            poLineItem.put("uplLineNumber", lineItem.get("uplLineNumber"));
+            poLineItem.put("currency", lineItem.get("dccCurrency"));
+            poLineItem.put("poId", lineItem.get("poId"));
+
+            poLineItem.put("UPLACPTRequestValue", lineItem.get("UPLACPTRequestValue"));
+            poLineItem.put("POAcceptanceQty", lineItem.get("POAcceptanceQty"));
+            poLineItem.put("POLineAcceptanceQty", lineItem.get("POLineAcceptanceQty"));
+            poLineItem.put("poPendingQuantity", lineItem.get("poPendingQuantity"));
+
+            poLineItem.put("poOrderQuantity", lineItem.get("poOrderQuantity"));
+            poLineItem.put("itemPartNumber", lineItem.get("itemPartNumber"));
+            poLineItem.put("poLineDescription", lineItem.get("poLineDescription"));
+            poLineItem.put("uplLineQuantity", lineItem.get("uplLineQuantity"));
+            poLineItem.put("poLineQuantity", lineItem.get("poLineQuantity"));
+            poLineItem.put("uplLineItemCode", lineItem.get("uplLineItemCode"));
+            poLineItem.put("uplLineDescription", lineItem.get("uplLineDescription"));
+            poLineItem.put("uom", lineItem.get("unitOfMeasure"));
+            poLineItem.put("activeOrPassive", lineItem.get("activeOrPassive"));
+            poLineItem.put("uplPendingQuantity", lineItem.get("uplPendingQuantity"));
+            // poLineItem.put("approverComment", lineItem.get("approverComment"));
+
+            // Add the line item to the POlineItems list
+            ((List<Map<String, Object>>) paginatedGroupedResults.get(poNumber).get("lineItems")).add(poLineItem);
+
+        });
+        // Prepare the response
+        Map<String, Object> response = new HashMap<>();
+        response.put("currentPage", page);
+        response.put("pageSize", size);
+        response.put("totalRecords", uniquePONumbers.size());
+        response.put("totalPages", (int) Math.ceil((double) uniquePONumbers.size() / size));
+        response.put("data", new ArrayList<>(paginatedGroupedResults.values()));
+
+        return response;
+    }
+
+    //==================GET ALL CREATED ACCEPTANCE PER SUPPLIER NESTED =====
+    @PostMapping(value = "/reports/agingReport", produces = "application/json")
+    @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
+    public Map<String, Object> getAgingReport(@RequestBody String req) {
+        JsonObject obj = new JsonParser().parse(req).getAsJsonObject();
+        String supplierId = obj.get("supplierId").getAsString();
+        String columnName = obj.has("columnName") ? obj.get("columnName").getAsString() : "";
+        String searchQuery = obj.has("searchQuery") ? obj.get("searchQuery").getAsString() : "";
+        // Map<String, Object> response = new HashMap<>();
+        int page = obj.has("page") ? obj.get("page").getAsInt() : 1;
+        int size = obj.has("size") ? obj.get("size").getAsInt() : 20000;
+
+        String fixedColumnName = "";
+        // Validate page and size
+        page = Math.max(page, 1);
+        size = Math.max(size, 1);
+
+        jdbcTemplate.execute("SET SESSION sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''))");
+
+        String paginationSql = "";
+        String whereClause = " WHERE 1=1 ";
+
+        if (!supplierId.equalsIgnoreCase("0")) {
+            whereClause += " AND PO.supplierid='" + supplierId + "'";
+        }
+
+        if (!columnName.isEmpty() && !searchQuery.isEmpty()) {
+
+            if (columnName.equalsIgnoreCase("recordNo")) {
+                fixedColumnName = "dccRecordNo";
+            } else if (columnName.equalsIgnoreCase("projectName")) {
+                fixedColumnName = "dccProjectName";
+            } else if (columnName.equalsIgnoreCase("vendorName")) {
+                fixedColumnName = "dccVendorName";
+            } else {
+                fixedColumnName = columnName;
+            }
+
+            whereClause += " AND PO." + fixedColumnName + " LIKE '%" + searchQuery + "%'";
+        }
+
+        // Step 1: Fetch unique POs
+        String uniquePOsSql = "SELECT DISTINCT PO.dccRecordNo FROM dccPOCombinedView PO " + whereClause;
+        List<String> uniquePONumbers = jdbcTemplate.queryForList(uniquePOsSql, String.class);
+
+        if (page == 1 && size == 20000) {
+            // Fetch line items for all unique POs
+            String lineItemsSql = "SELECT * FROM dccPOCombinedView PO WHERE PO.dccRecordNo IN ("
+                    + String.join(",", uniquePONumbers.stream()
+                            .map(po -> po.toString()) // no quotes, integer literals
+                            .collect(Collectors.toList()))
+                    + ")";
+
+            loggger.info("GET NESTED SQL 1  " + lineItemsSql);
+            //   String lineItemsSql = "SELECT * FROM dccPOCombinedView PO WHERE PO.dccRecordNo IN (" + String.join(",", uniquePONumbers.stream().map(po -> "'" + po + "'").collect(Collectors.toList())) + ")";
+            List<Map<String, Object>> lineItems = jdbcTemplate.queryForList(lineItemsSql);
+
+            // Step 3: Group line items by PO number
+            Map<String, Map<String, Object>> groupedResults = new LinkedHashMap<>();
+            lineItems.forEach(lineItem -> {
+                Object poNumberObj = lineItem.get("dccRecordNo");
+                String poNumber = String.valueOf(poNumberObj);
+                if (!groupedResults.containsKey(poNumber)) {
+                    Map<String, Object> groupedRow = new LinkedHashMap<>(lineItem);
+                 
+                    groupedRow.put("recordNo", lineItem.get("dccRecordNo"));
+                    groupedRow.put("projectName", lineItem.get("dccProjectName"));
+                    groupedRow.put("vendorName", lineItem.get("dccVendorName"));
+                    groupedRow.put("vendorEmail", lineItem.get("dccVendorEmail"));
+                    groupedRow.put("vendorNumber", lineItem.get("supplierId"));
+                    groupedRow.put("dccCurrency", lineItem.get("dccCurrency"));
+
+                    groupedRow.remove("lnRecordNo");
+                    groupedRow.remove("lnProductName");
+                    groupedRow.remove("lnProductSerialNo");
+                    groupedRow.remove("lnDeliveredQty");
+                    groupedRow.remove("lnLocationName");
+                    groupedRow.remove("lnInserviceDate");
+                    groupedRow.remove("lnUnitPrice");
+                    groupedRow.remove("lnScopeOfWork");
+                    groupedRow.remove("lnRemarks");
+                    groupedRow.remove("lnItemCode");
+                    groupedRow.remove("linkId");
+                    groupedRow.remove("tagNumber");
+                    groupedRow.remove("dccCurrency");
+                    groupedRow.remove("lineNumber");
+                    groupedRow.remove("actualItemCode");
+                    groupedRow.remove("uplLineNumber");
+                    groupedRow.remove("UPLACPTRequestValue");
+                    groupedRow.remove("POAcceptanceQty");
+                    groupedRow.remove("POLineAcceptanceQty");
+                    groupedRow.remove("poPendingQuantity");
+                    groupedRow.remove("poOrderQuantity");
+                    groupedRow.remove("itemPartNumber");
+                    groupedRow.remove("poLineDescription");
+                    groupedRow.remove("uplLineQuantity");
+                    groupedRow.remove("poLineQuantity");
+                    groupedRow.remove("uplLineItemCode");
+                    groupedRow.remove("uplLineDescription");
+                    groupedRow.remove("unitOfMeasure");
+                    groupedRow.remove("activeOrPassive");
+                    groupedRow.remove("uplPendingQuantity");
+                    //groupedRow.remove("approverComment");
+
+                    // Add POlineItems key with an empty list
+                    groupedResults.put(poNumber, groupedRow);
+
+                    //remove them 
+                    groupedRow.remove("dccRecordNo");
+                    groupedRow.remove("dccProjectName");
+                    groupedRow.remove("dccVendorName");
+                    groupedRow.remove("dccVendorEmail");
+
+                }
+
+            });
+            // Prepare the response
+            Map<String, Object> response = new HashMap<>();
+            response.put("currentPage", page);
+            response.put("pageSize", uniquePONumbers.size());
+            response.put("totalRecords", uniquePONumbers.size());
+            response.put("totalPages", 1);
+            response.put("data", new ArrayList<>(groupedResults.values()));
+            return response;
+        }
+
+        // Step 1: Fetch unique POs with pagination
+        String uniquePOsSql2 = "SELECT DISTINCT PO.dccRecordNo FROM dccPOCombinedView PO " + whereClause + " LIMIT " + size + " OFFSET " + (page - 1) * size;
+        List<String> uniquePONumbers2 = jdbcTemplate.queryForList(uniquePOsSql2, String.class);
+
+        // Step 2: Fetch line items for the unique POs
+        if (uniquePONumbers2.isEmpty()) {
+            // If no unique POs found, return an empty response
+            Map<String, Object> response = new HashMap<>();
+            response.put("currentPage", page);
+            response.put("pageSize", size);
+            response.put("totalRecords", 0);
+            response.put("totalPages", 0);
+            response.put("data", new ArrayList<>());
+            return response;
+        }
+//        String lineItemsSql = "SELECT * FROM dccPOCombinedView PO WHERE PO.dccPoNumber IN ("
+//                + String.join(",", uniquePONumbers2.stream().map(po -> "'" + po + "'").collect(Collectors.toList()))
+//                + ") " + whereClause.replace("WHERE 1=1", "").trim()
+//                + " LIMIT " + size + " OFFSET " + (page - 1) * size;
+        String lineItemsSql = "SELECT * FROM dccPOCombinedView PO WHERE PO.dccRecordNo IN ("
+                + String.join(",", uniquePONumbers2.stream()
+                        .map(po -> po.toString()) // no quotes, integer literals
+                        .collect(Collectors.toList()))
+                + ")";
+
+        //String lineItemsSql = "SELECT * FROM dccPOCombinedView PO WHERE PO.dccRecordNo IN (" + String.join(",", uniquePONumbers2.stream().map(po -> "'" + po + "'").collect(Collectors.toList())) + ")";
+        List<Map<String, Object>> lineItems = jdbcTemplate.queryForList(lineItemsSql);
+
+        loggger.info("GET NESTED SQL 2  " + lineItemsSql);
+
+        Map<String, Map<String, Object>> paginatedGroupedResults = new LinkedHashMap<>();
+        lineItems.forEach(lineItem -> {
+            Object poNumberObj = lineItem.get("dccRecordNo");
+            String poNumber = String.valueOf(poNumberObj);
+            if (!paginatedGroupedResults.containsKey(poNumber)) {
+                Map<String, Object> groupedRow = new LinkedHashMap<>(lineItem);
+                // Remove unnecessary fields
+                groupedRow.put("recordNo", lineItem.get("dccRecordNo"));
+                groupedRow.put("projectName", lineItem.get("dccProjectName"));
+                groupedRow.put("vendorName", lineItem.get("dccVendorName"));
+                groupedRow.put("vendorEmail", lineItem.get("dccVendorEmail"));
+                groupedRow.put("vendorNumber", lineItem.get("supplierId"));
+                groupedRow.put("dccCurrency", lineItem.get("dccCurrency"));
+                groupedRow.remove("lnRecordNo");
+                groupedRow.remove("lnProductName");
+                groupedRow.remove("lnProductSerialNo");
+                groupedRow.remove("lnDeliveredQty");
+                groupedRow.remove("lnLocationName");
+                groupedRow.remove("lnInserviceDate");
+                groupedRow.remove("dccCurrency");
+                groupedRow.remove("lnUnitPrice");
+                groupedRow.remove("lnScopeOfWork");
+                groupedRow.remove("lnRemarks");
+                groupedRow.remove("lnItemCode");
+                groupedRow.remove("linkId");
+                groupedRow.remove("tagNumber");
+                groupedRow.remove("dccCurrency");
+                groupedRow.remove("lineNumber");
+                groupedRow.remove("actualItemCode");
+                groupedRow.remove("uplLineNumber");
+                groupedRow.remove("UPLACPTRequestValue");
+                groupedRow.remove("POAcceptanceQty");
+                groupedRow.remove("POLineAcceptanceQty");
+                groupedRow.remove("poPendingQuantity");
+                groupedRow.remove("poOrderQuantity");
+                groupedRow.remove("itemPartNumber");
+                groupedRow.remove("poLineDescription");
+                groupedRow.remove("uplLineQuantity");
+                groupedRow.remove("poLineQuantity");
+                groupedRow.remove("uplLineItemCode");
+                groupedRow.remove("uplLineDescription");
+                groupedRow.remove("unitOfMeasure");
+                groupedRow.remove("activeOrPassive");
+                groupedRow.remove("uplPendingQuantity");
+                //groupedRow.remove("approverComment");
+
+                // Add POlineItems key with an empty list
+                paginatedGroupedResults.put(poNumber, groupedRow);
+
+                //remove them 
+                groupedRow.remove("dccRecordNo");
+                groupedRow.remove("dccProjectName");
+                groupedRow.remove("dccVendorName");
+                groupedRow.remove("dccVendorEmail");
+            }
+
+        });
+        // Prepare the response
+        Map<String, Object> response = new HashMap<>();
+        response.put("currentPage", page);
+        response.put("pageSize", size);
+        response.put("totalRecords", uniquePONumbers.size());
+        response.put("totalPages", (int) Math.ceil((double) uniquePONumbers.size() / size));
+        response.put("data", new ArrayList<>(paginatedGroupedResults.values()));
+
+        return response;
+    }
+
+    //==================GET ALL CREATED ACCEPTANCE PER SUPPLIER  =====
+    //BACK UP 20250512
+    //==================GET ALL CREATED ACCEPTANCE PER SUPPLIER  =====
+    @PostMapping(value = "/reports/getdccdata", produces = "application/json")
+    @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
+    public Map<String, Object> getdccdata(@RequestBody String req) {
+        JsonObject obj = new JsonParser().parse(req).getAsJsonObject();
+        String supplierId = obj.get("supplierId").getAsString();
+        String columnName = obj.has("columnName") ? obj.get("columnName").getAsString() : "";
+        String searchQuery = obj.has("searchQuery") ? obj.get("searchQuery").getAsString() : "";
+
+        int page = obj.has("page") ? obj.get("page").getAsInt() : 1;
+        int size = obj.has("size") ? obj.get("size").getAsInt() : 20000;
+
+        page = Math.max(page, 0);
+        size = Math.max(size, 0);
+
+        jdbcTemplate.execute("SET SESSION sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''))");
+
+        String paginationSql = "";
+        String whereClause = " WHERE 1=1 ";
+
+        if (!supplierId.equalsIgnoreCase("0")) {
+            whereClause += " AND PO.supplierid='" + supplierId + "'";
+        }
+
+        if (!columnName.isEmpty() && !searchQuery.isEmpty()) {
+            whereClause += " AND PO." + columnName + " LIKE '%" + searchQuery + "%'";
+        }
+
+        String countSql = "SELECT COUNT(*) FROM dccPOCombinedView PO " + whereClause;
+        int totalRecords = jdbcTemplate.queryForObject(countSql, Integer.class);
+
+        if (page == 0 && size == 0) {
+            paginationSql = "";
+        } else if (page == 1 && size == 20000) {
+            page = 0;
+            size = totalRecords;
+            page = Math.max(page, 1); // Ensure page is at least 1 if not 0
+            size = Math.max(size, 1); // Ensure size is at least 1 if not 0
+            int offset = (page - 1) * size;
+
+            paginationSql = " LIMIT " + size + " OFFSET " + offset;
+        } else {
+            page = Math.max(page, 1); // Ensure page is at least 1 if not 0
+            size = Math.max(size, 1); // Ensure size is at least 1 if not 0
+            int offset = (page - 1) * size;
+            paginationSql = " LIMIT " + size + " OFFSET " + offset;
+        }
+
+        String sql = " SELECT * FROM ALM_ZAIN_KSA.dccPOCombinedView  PO " + whereClause + paginationSql;
+
+        List<Map<String, Object>> result = jdbcTemplate.queryForList(sql);
+
+        //   List<Map<String, Object>> result = jdbcTemplate.queryForList(finalSql);
+        // Create a response map to include pagination details
+        Map<String, Object> response = new HashMap<>();
+        response.put("data", result);
+        response.put("totalRecords", totalRecords);
+        response.put("currentPage", page);
+        response.put("pageSize", size);
+        response.put("totalPages", (int) Math.ceil((double) totalRecords / size));
+
+        return response;
+    }
+
     private Object getNullIfZero(Object value) {
         if (value instanceof Number) {
             return ((Number) value).doubleValue() == 0.0 ? null : value;
@@ -744,9 +1342,8 @@ public class ReportsController {
         String searchQuery = obj.has("searchQuery") ? obj.get("searchQuery").getAsString() : "";
         String dateFrom = obj.has("dateFrom") ? obj.get("dateFrom").getAsString() : "";
         String dateTo = obj.has("dateTo") ? obj.get("dateTo").getAsString() : "";
-        
-                jdbcTemplate.execute("SET SESSION sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''))");
 
+        jdbcTemplate.execute("SET SESSION sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''))");
 
         int page = obj.has("page") ? obj.get("page").getAsInt() : 1;
         int size = obj.has("size") ? obj.get("size").getAsInt() : 20000;
@@ -800,7 +1397,6 @@ public class ReportsController {
         String sql = "SELECT * FROM combinedPurchaseOrderView" + whereClause + paginationSql;
         List<Map<String, Object>> result = jdbcTemplate.queryForList(sql, params.toArray());
 
-
         Map<String, Object> response = new HashMap<>();
         response.put("data", result);
         response.put("totalRecords", totalRecords);
@@ -824,9 +1420,8 @@ public class ReportsController {
 
         int page = obj.has("page") ? obj.get("page").getAsInt() : 1;
         int size = obj.has("size") ? obj.get("size").getAsInt() : 20000;
-        
-        jdbcTemplate.execute("SET SESSION sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''))");
 
+        jdbcTemplate.execute("SET SESSION sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''))");
 
         page = Math.max(page, 0);
         size = Math.max(size, 0);
@@ -867,82 +1462,12 @@ public class ReportsController {
                 + "UPL.poLineDescription, UPL.uplLineItemType, UPL.uplLineItemCode, UPL.uplLineDescription, UPL.zainItemCategoryCode, "
                 + "UPL.zainItemCategoryDescription, UPL.uplItemSerialized, UPL.activeOrPassive, UPL.uom, UPL.currency, "
                 + "UPL.poLineQuantity, UPL.poLineUnitPrice, UPL.uplLineQuantity, UPL.uplLineUnitPrice, UPL.substituteItemCode, "
-                + "UPL.remarks, UPL.dptApprover1, UPL.dptApprover2, UPL.dptApprover3, UPL.dptApprover4, UPL.regionalApprover, "
+                + "UPL.remarks,  UPL.regionalApprover, "
                 + "UPL.createdBy, UPL.createdByName, UPL.uplModifiedBy AS updatedByName, UPL.uplModifiedDate AS updatedDatetime "
                 + "FROM tb_PurchaseOrderUPL UPL " + whereClause + paginationSql;
 
         List<Map<String, Object>> result = jdbcTemplate.queryForList(sql);
 
-        Map<String, Object> response = new HashMap<>();
-        response.put("data", result);
-        response.put("totalRecords", totalRecords);
-        response.put("currentPage", page);
-        response.put("pageSize", size);
-        response.put("totalPages", (int) Math.ceil((double) totalRecords / size));
-
-        return response;
-    }
-
-    //==================GET ALL CREATED ACCEPTANCE PER SUPPLIER  =====
-
-    //BACK UP 20250225
-
-    //==================GET ALL CREATED ACCEPTANCE PER SUPPLIER  =====
-    @PostMapping(value = "/reports/getdccdata", produces = "application/json")
-    @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
-    public Map<String, Object> getdccdata(@RequestBody String req) {
-        JsonObject obj = new JsonParser().parse(req).getAsJsonObject();
-        String supplierId = obj.get("supplierId").getAsString();
-        String columnName = obj.has("columnName") ? obj.get("columnName").getAsString() : "";
-        String searchQuery = obj.has("searchQuery") ? obj.get("searchQuery").getAsString() : "";
-
-        int page = obj.has("page") ? obj.get("page").getAsInt() : 1;
-        int size = obj.has("size") ? obj.get("size").getAsInt() : 20000;
-
-        page = Math.max(page, 0);
-        size = Math.max(size, 0);
-
-        jdbcTemplate.execute("SET SESSION sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''))");
-
-        String paginationSql = "";
-        String whereClause = " WHERE 1=1 ";
-
-        if (!supplierId.equalsIgnoreCase("0")) {
-            whereClause += " AND PO.supplierid='" + supplierId + "'";
-        }
-
-        if (!columnName.isEmpty() && !searchQuery.isEmpty()) {
-            whereClause += " AND PO." + columnName + " LIKE '%" + searchQuery + "%'";
-        }
-
-        String countSql = "SELECT COUNT(*) FROM dccPOCombinedView PO " + whereClause;
-        int totalRecords = jdbcTemplate.queryForObject(countSql, Integer.class);
-
-
-        if (page == 0 && size == 0) {
-            paginationSql = "";
-        } else if (page == 1 && size == 20000) {
-            page = 0;
-            size = totalRecords;
-            page = Math.max(page, 1); // Ensure page is at least 1 if not 0
-            size = Math.max(size, 1); // Ensure size is at least 1 if not 0
-            int offset = (page - 1) * size;
-
-            paginationSql = " LIMIT " + size + " OFFSET " + offset;
-        } else {
-            page = Math.max(page, 1); // Ensure page is at least 1 if not 0
-            size = Math.max(size, 1); // Ensure size is at least 1 if not 0
-            int offset = (page - 1) * size;
-            paginationSql = " LIMIT " + size + " OFFSET " + offset;
-        }
-
-
-        String sql = " SELECT * FROM ALM_ZAIN_KSA.dccPOCombinedView  PO " + whereClause + paginationSql;
-
-        List<Map<String, Object>> result = jdbcTemplate.queryForList(sql);
-
-        //   List<Map<String, Object>> result = jdbcTemplate.queryForList(finalSql);
-        // Create a response map to include pagination details
         Map<String, Object> response = new HashMap<>();
         response.put("data", result);
         response.put("totalRecords", totalRecords);
@@ -977,14 +1502,8 @@ public class ReportsController {
 
         String sql = "SELECT * FROM ALM_ZAIN_KSA.dccPOCombinedView " + whereClause;
 
-
         List<Map<String, Object>> result = jdbcTemplate.queryForList(sql);
         return result;
-    }
-
-    @Autowired
-    public ReportsController(JdbcTemplate jdbcTemplate) {
-        this.jdbcTemplate = jdbcTemplate;
     }
 
     @PostMapping(value = "/reports/getdccstatusdata")

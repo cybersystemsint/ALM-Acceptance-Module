@@ -15,9 +15,8 @@ public interface DccLineRepo extends JpaRepository<DCCLineItem, Long> {
     DCCLineItem findByRecordNo(long recordNo);
 
     List<DCCLineItem> findBySerialNumberAndItemCode(String serialNumber, String itemCode);
-    
-     List<DCCLineItem> findBySerialNumber(String serialNumber);
 
+    List<DCCLineItem> findBySerialNumber(String serialNumber);
 
     List<DCCLineItem> findByPoIdAndLineNumberAndUplLineNumber(String poId, String lineNumber, String uplLineNumber);
 
@@ -29,19 +28,21 @@ public interface DccLineRepo extends JpaRepository<DCCLineItem, Long> {
     @Query(value = "SELECT * FROM tb_DCC_LN d WHERE d.serialNumber = :serialNumber and d.actualItemCode = :actualItemCode ORDER BY d.recordNo DESC LIMIT 1", nativeQuery = true)
     DCCLineItem findTopBySerialNumberAndActualItemCode(@Param("serialNumber") String serialNumber, @Param("actualItemCode") String actualItemCode);
 
-    
-    
     // New Methods
     List<DCCLineItem> findAllByDccId(String dccId);
-    
-    
-    
+
     @Query(value = "SELECT * FROM tb_DCC_LN d WHERE d.serialNumber = :serialNumber ORDER BY d.recordNo DESC LIMIT 1", nativeQuery = true)
     DCCLineItem findTopBySerialNumber(@Param("serialNumber") String serialNumber);
-
 
     @Modifying
     @Transactional
     @Query("DELETE FROM DCCLineItem d WHERE d.recordNo IN :recordNos")
     void deleteAllByIdInBatch(@Param("recordNos") List<Long> recordNos);
+
+    @Query("SELECT COALESCE(SUM(d.deliveredQty), 0) FROM DCCLineItem d WHERE d.dccId  IN :dccIds AND d.poId = :poId AND d.lineNumber = :lineNumber AND d.uplLineNumber  = :uplLineNumber")
+    Double sumDeliveredQtyByDccIdsAndPoLineInfo(@Param("dccIds") List<String> dccIds,
+            @Param("poId") String poNumber,
+            @Param("lineNumber") String lineNumber,
+            @Param("uplLineNumber") String upLineNumber);
+
 }

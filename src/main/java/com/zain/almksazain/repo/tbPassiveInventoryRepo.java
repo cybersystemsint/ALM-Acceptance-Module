@@ -4,7 +4,7 @@
  */
 package com.zain.almksazain.repo;
 
-import com.zain.almksazain.model.tbSerialNumber;
+import com.zain.almksazain.model.tbPassiveInventory;
 import java.util.List;
 import org.springframework.data.jpa.repository.JpaRepository;
 
@@ -12,10 +12,8 @@ import org.springframework.data.jpa.repository.JpaRepository;
  *
  * @author jgithu
  */
-public interface tbSerialNumberRepo extends JpaRepository<tbSerialNumber, Long> {
 
-    List<tbSerialNumber> findBySerialNumber(String serialNumber);
+public interface tbPassiveInventoryRepo extends JpaRepository<tbPassiveInventory, Long> {
 
-    List<tbSerialNumber> findBySerialNumberAndItemCode(String serialNumber, String itemCode);
-    
+    List<tbPassiveInventory> findByItemCodeAndSerialNumber(String itemCode, String serialNumber);
 }
