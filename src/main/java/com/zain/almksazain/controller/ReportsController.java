@@ -425,8 +425,8 @@ public class ReportsController {
         List<String> uniquePONumbers = jdbcTemplate.queryForList(uniquePOsSql, params2.toArray(), String.class);
 
         loggger.info("GET NESTED SQL 1  " + uniquePOsSql);
-        // If page is 1 and size is 20000, return all unique POs
-        if (page == 1 && size == 20000) {
+        // If page is 1 and size is 1000, return all unique POs
+        if (page == 1 && size == 100) {
             // No pagination needed, just fetch all unique POs
             // Fetch line items for all unique POs
             String lineItemsSql = "SELECT * FROM tb_PurchaseOrder PO WHERE PO.poNumber IN (" + String.join(",", uniquePONumbers.stream().map(po -> "'" + po + "'").collect(Collectors.toList())) + ")";
@@ -836,7 +836,7 @@ public class ReportsController {
                     groupedRow.put("lineItems", new ArrayList<Map<String, Object>>());
                     groupedResults.put(poNumber, groupedRow);
 
-                    //remove them 
+                    //remove them
                     groupedRow.remove("dccRecordNo");
                     groupedRow.remove("dccProjectName");
                     groupedRow.remove("dccVendorName");
@@ -976,7 +976,7 @@ public class ReportsController {
                 groupedRow.put("lineItems", new ArrayList<Map<String, Object>>());
                 paginatedGroupedResults.put(poNumber, groupedRow);
 
-                //remove them 
+                //remove them
                 groupedRow.remove("dccRecordNo");
                 groupedRow.remove("dccProjectName");
                 groupedRow.remove("dccVendorName");
@@ -1097,7 +1097,7 @@ public class ReportsController {
                 String poNumber = String.valueOf(poNumberObj);
                 if (!groupedResults.containsKey(poNumber)) {
                     Map<String, Object> groupedRow = new LinkedHashMap<>(lineItem);
-                 
+
                     groupedRow.put("recordNo", lineItem.get("dccRecordNo"));
                     groupedRow.put("projectName", lineItem.get("dccProjectName"));
                     groupedRow.put("vendorName", lineItem.get("dccVendorName"));
@@ -1140,7 +1140,7 @@ public class ReportsController {
                     // Add POlineItems key with an empty list
                     groupedResults.put(poNumber, groupedRow);
 
-                    //remove them 
+                    //remove them
                     groupedRow.remove("dccRecordNo");
                     groupedRow.remove("dccProjectName");
                     groupedRow.remove("dccVendorName");
@@ -1238,7 +1238,7 @@ public class ReportsController {
                 // Add POlineItems key with an empty list
                 paginatedGroupedResults.put(poNumber, groupedRow);
 
-                //remove them 
+                //remove them
                 groupedRow.remove("dccRecordNo");
                 groupedRow.remove("dccProjectName");
                 groupedRow.remove("dccVendorName");
@@ -1408,7 +1408,7 @@ public class ReportsController {
 
     }
 
-    //==================GET NEW UPLS CREATED  =====    
+    //==================GET NEW UPLS CREATED  =====
     @PostMapping(value = "/reports/getAllCreatedUPLs", produces = "application/json")
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
     public Map<String, Object> getAllCreatedUPLs(@RequestBody String req) {

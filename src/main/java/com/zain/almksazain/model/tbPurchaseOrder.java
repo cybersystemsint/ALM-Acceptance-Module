@@ -13,6 +13,7 @@ import java.sql.Date;
  */
 @Entity
 @Table(name = "tb_PurchaseOrder")
+//@Table(name = "tb_PurchaseOrderUAT")
 public class tbPurchaseOrder {
 
     @Id
@@ -72,10 +73,10 @@ public class tbPurchaseOrder {
     public Date approvedDate;
     public Date createdDate;
     public Integer createdBy;
+    public String newProjectName;
     public String createdByName;
     public Double descopedLinePriceInPoCurrency;
     public Double newLinePriceInPoCurrency;
-
     public Double getNewLinePriceInPoCurrency() {
         return newLinePriceInPoCurrency;
     }
@@ -109,6 +110,11 @@ public class tbPurchaseOrder {
     public void setRecordNo(long recordNo) {
         this.recordNo = recordNo;
     }
+
+    public String getNewProjectName() {
+        return newProjectName;
+    }
+
 
     public String getPoNumber() {
         return poNumber;

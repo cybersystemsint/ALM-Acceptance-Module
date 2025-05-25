@@ -1,7 +1,6 @@
 package com.zain.almksazain.model;
 
 import javax.persistence.*;
-import java.math.BigDecimal;
 import java.sql.Date;
 
 @Entity
@@ -16,35 +15,33 @@ public class DCCLineItem {
     private double deliveredQty;
     private String locationName;
     private String inserviceDate;
-    private BigDecimal unitPrice;
+    private Double unitPrice;
     private String scopeOfWork;
     private String remarks;
     private String dccId;
     private String itemCode;
     private String actualItemCode;
-    //NEW 
     private String poId;
     private String lineNumber;
     private String UoM;
     private Integer orderQuantity;
-    private BigDecimal VAT;
-    private BigDecimal linePrice;
+    private Double VAT;
+    private Double linePrice;
     private String uplLineNumber;
     private String serialNumber;
     private Date dateInService;
     private String uplItemCode;
     private String uplItemDescription;
-
     private String linkId;
     private String tagNumber;
 
-    // Constructors, getters, and setters
-    // Constructor
-//    public DCCLineItem() {
-//    }
     // Getters and Setters
     public String getItemCode() {
         return itemCode;
+    }
+
+    public void setItemCode(String itemCode) {
+        this.itemCode = itemCode;
     }
 
     public String getActualItemCode() {
@@ -69,10 +66,6 @@ public class DCCLineItem {
 
     public void setTagNumber(String tagNumber) {
         this.tagNumber = tagNumber;
-    }
-
-    public void setItemCode(String itemCode) {
-        this.itemCode = itemCode;
     }
 
     public String getUplItemCode() {
@@ -147,11 +140,11 @@ public class DCCLineItem {
         this.inserviceDate = inserviceDate;
     }
 
-    public BigDecimal getUnitPrice() {
+    public Double getUnitPrice() {
         return unitPrice;
     }
 
-    public void setUnitPrice(BigDecimal unitPrice) {
+    public void setUnitPrice(Double unitPrice) {
         this.unitPrice = unitPrice;
     }
 
@@ -203,19 +196,19 @@ public class DCCLineItem {
         this.orderQuantity = orderQuantity;
     }
 
-    public BigDecimal getVAT() {
+    public Double getVAT() {
         return VAT;
     }
 
-    public void setVAT(BigDecimal VAT) {
+    public void setVAT(Double VAT) {
         this.VAT = VAT;
     }
 
-    public BigDecimal getLinePrice() {
+    public Double getLinePrice() {
         return linePrice;
     }
 
-    public void setLinePrice(BigDecimal linePrice) {
+    public void setLinePrice(Double linePrice) {
         this.linePrice = linePrice;
     }
 
@@ -242,5 +235,4 @@ public class DCCLineItem {
     public void setDateInService(Date dateInService) {
         this.dateInService = dateInService;
     }
-
 }

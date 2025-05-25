@@ -24,7 +24,8 @@ public class DCC {
     private Date createdDate;
     private String dccId;
     private String currency;
-
+    private String newProjectName;
+    private Date approvedDate;
     private String poDate;
     private String supplierId;
     private Integer totalQty;
@@ -45,21 +46,9 @@ public class DCC {
     private String createdBy;
     private String vendorComment;
 
-    // Constructors, getters, and setters
-    // Constructor
-    public DCC() {
-    }
-
+    // Getters and Setters
     public long getRecordNo() {
         return recordNo;
-    }
-
-    public String getVendorComment() {
-        return vendorComment;
-    }
-
-    public void setVendorComment(String vendorComment) {
-        this.vendorComment = vendorComment;
     }
 
     public void setRecordNo(long recordNo) {
@@ -85,11 +74,24 @@ public class DCC {
     public String getVendorEmail() {
         return vendorEmail;
     }
+    public Date getApprovedDate() {
+        return approvedDate;
+    }
+
+    public void setApprovedDate(Date approvedDate) {
+        this.approvedDate = approvedDate;
+    }
 
     public void setVendorEmail(String vendorEmail) {
         this.vendorEmail = vendorEmail;
     }
+    public String getNewProjectName() {
+        return newProjectName;
+    }
 
+    public void setNewProjectName(String newProjectName) {
+        this.newProjectName = newProjectName;
+    }
     public String getBoqId() {
         return boqId;
     }
@@ -290,4 +292,11 @@ public class DCC {
         this.createdBy = createdBy;
     }
 
+    public String getVendorComment() {
+        return vendorComment;
+    }
+
+    public void setVendorComment(String vendorComment) {
+        this.vendorComment = vendorComment;
+    }
 }
