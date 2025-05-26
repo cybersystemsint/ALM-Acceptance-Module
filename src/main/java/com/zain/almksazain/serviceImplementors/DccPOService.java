@@ -64,15 +64,15 @@ public class DccPOService {
     private JdbcTemplate jdbcTemplate;
 
     /**
-     * Public method to asynchronously retrieve paginated DccPOCombinedViewDTO objects.
+     * Public method to asynchronously retrieve paginated DccPOCombinedViewDTO objects with total counts.
      * @param supplierId Supplier ID to filter DCC records (use "0" for all suppliers).
      * @param page Page number (1-based).
      * @param size Number of parent DCC records per page.
      * @param columnName Column to filter on (mapped to database field).
      * @param searchQuery Search term for filtering.
-     * @return CompletableFuture containing the list of DTOs.
+     * @return CompletableFuture containing the fetch result with data and total counts.
      */
-    public CompletableFuture<List<DccPOCombinedViewDTO>> getDccPOCombinedView(String supplierId, int page, int size, String columnName, String searchQuery) {
+    public CompletableFuture<DccPOFetchResult> getDccPOCombinedView(String supplierId, int page, int size, String columnName, String searchQuery) {
         try {
             logger.info("Starting retrieval of DCC PO Combined View with supplierId: {}, page: {}, size: {}, columnName: {}, searchQuery: {}",
                     supplierId, page, size, columnName, searchQuery);
@@ -93,11 +93,11 @@ public class DccPOService {
      * @param size Number of parent DCC records per page.
      * @param columnName Column to filter on.
      * @param searchQuery Search term for filtering.
-     * @return List of DccPOCombinedViewDTO objects.
+     * @return DccPOFetchResult containing the list of DTOs and total counts.
      */
     @Async("taskExecutor")
-    @Cacheable(value = "dccPOCombinedViewCache", unless = "#result == null || #result.isEmpty()")
-    private List<DccPOCombinedViewDTO> fetchDccPOCombinedView(String supplierId, int page, int size, String columnName, String searchQuery) {
+    @Cacheable(value = "dccPOCombinedViewCache", unless = "#result.data == null || #result.data.isEmpty()")
+    private DccPOFetchResult fetchDccPOCombinedView(String supplierId, int page, int size, String columnName, String searchQuery) {
         try {
             // Initialize result list and set to track invalid linkId logs
             List<DccPOCombinedViewDTO> result = new ArrayList<>();
@@ -116,25 +116,41 @@ public class DccPOService {
                 whereClause.append(" AND p.vendorNumber = ?");
                 params.add(supplierId);
             }
-            if (columnName != null && !columnName.isEmpty() && searchQuery != null && !searchQuery.isEmpty()) {
+            boolean hasFilter = columnName != null && !columnName.isEmpty() && searchQuery != null && !searchQuery.isEmpty();
+            if (hasFilter) {
                 String dbColumnName = mapColumnToDbField(columnName);
                 if (dbColumnName != null) {
-                    whereClause.append(" AND LOWER(").append(dbColumnName).append(") LIKE ?");
-                    params.add("%" + searchQuery.toLowerCase() + "%");
+                    if (columnName.toLowerCase().equals("recordno")) {
+                        // For recordNo, use exact match since it's a numeric field
+                        whereClause.append(" AND ").append(dbColumnName).append(" = ?");
+                        try {
+                            params.add(Long.parseLong(searchQuery));
+                        } catch (NumberFormatException e) {
+                            logger.warn("Invalid searchQuery for recordNo: {}. Expected a number.", searchQuery);
+                            return new DccPOFetchResult(result, 0L, 0L); // Return empty result with zero counts
+                        }
+                    } else {
+                        // For other fields, use LIKE with LOWER for string matching
+                        whereClause.append(" AND LOWER(").append(dbColumnName).append(") LIKE ?");
+                        params.add("%" + searchQuery.toLowerCase() + "%");
+                    }
                 }
             }
 
-            // SCount total distinct dccRecordNo values
+            // Step 1: Count total distinct dccRecordNo values in the entire database (ignoring filters except JOIN)
+            String totalUnfilteredRecordsSql = "SELECT COUNT(DISTINCT d.recordNo) FROM tb_DCC d JOIN tb_PurchaseOrder p ON d.poNumber = p.poNumber";
+            Long totalUnfilteredRecords = jdbcTemplate.queryForObject(totalUnfilteredRecordsSql, new Object[]{}, Long.class);
+            if (totalUnfilteredRecords == null) totalUnfilteredRecords = 0L;
+            logger.info("Total unfiltered distinct dccRecordNo in the database: {}", totalUnfilteredRecords);
+
+            // Step 2: Count distinct dccRecordNo values after applying filters
             String countSql = "SELECT COUNT(DISTINCT d.recordNo) FROM tb_DCC d JOIN tb_PurchaseOrder p ON d.poNumber = p.poNumber" +
                     whereClause.toString();
-            Long totalRecords = jdbcTemplate.queryForObject(countSql, params.toArray(), Long.class);
-            if (totalRecords == null || totalRecords == 0) {
-                logger.info("No DCC records found after filtering with supplierId: {}, columnName: {}, searchQuery: {}",
-                        supplierId, columnName, searchQuery);
-                return result;
-            }
+            Long totalFilteredRecords = jdbcTemplate.queryForObject(countSql, params.toArray(), Long.class);
+            if (totalFilteredRecords == null) totalFilteredRecords = 0L;
+            logger.info("Total filtered distinct dccRecordNo: {}", totalFilteredRecords);
 
-            // Step 2: Fetch paginated distinct dccRecordNo values
+            // Step 3: Fetch paginated distinct dccRecordNo values
             params.add(size);
             params.add((page - 1) * size);
             String dccSql = "SELECT DISTINCT d.recordNo FROM tb_DCC d JOIN tb_PurchaseOrder p ON d.poNumber = p.poNumber" +
@@ -144,14 +160,14 @@ public class DccPOService {
             logger.debug("Paginated dccRecordNo query took {} ms", (System.nanoTime() - startTime) / 1_000_000);
             if (paginatedRecordNos.isEmpty()) {
                 logger.info("No DCC records found for page {} with size {}", page, size);
-                return result;
+                return new DccPOFetchResult(result, totalUnfilteredRecords, totalFilteredRecords);
             }
 
-            // Step 3: Fetch full DCC details for paginated recordNos
+            // Step 4: Fetch full DCC details for paginated recordNos
             List<DCC> dccList = tbDccRepository.findByRecordNoIn(paginatedRecordNos);
             if (dccList.isEmpty()) {
                 logger.warn("No DCC records found for recordNos: {}. Possible data inconsistency.", paginatedRecordNos);
-                return result;
+                return new DccPOFetchResult(result, totalUnfilteredRecords, totalFilteredRecords);
             }
 
             // Validate that all DCC records have a valid poNumber
@@ -337,11 +353,11 @@ public class DccPOService {
                             // Pending approvers
                             Optional<TbCategoryApprovals> readyForApproval = filteredApprovals.stream()
                                     .filter(a -> "readyForApproval".equals(a.getApprovalStatus()))
-                                    .sorted(Comparator.comparing(TbCategoryApprovals::getApprovalId)) // Fixed: Use comparing for Long
+                                    .sorted(Comparator.comparing(TbCategoryApprovals::getApprovalId))
                                     .findFirst();
                             List<TbCategoryApprovals> pendingApproversList = filteredApprovals.stream()
                                     .filter(a -> Arrays.asList("pending", "readyForApproval", "request-info").contains(a.getApprovalStatus()))
-                                    .sorted(Comparator.comparing(TbCategoryApprovals::getApprovalId)) // Fixed: Use comparing for Long
+                                    .sorted(Comparator.comparing(TbCategoryApprovals::getApprovalId))
                                     .collect(Collectors.toList());
                             String pendingApproverName = readyForApproval
                                     .map(TbCategoryApprovals::getApproverName)
@@ -408,7 +424,7 @@ public class DccPOService {
             }
 
             logger.info("Completed retrieval of DCC PO Combined View with {} DTOs for page {} with size {}", result.size(), page, size);
-            return result;
+            return new DccPOFetchResult(result, hasFilter ? totalFilteredRecords : totalUnfilteredRecords, totalFilteredRecords);
         } catch (DataAccessException ex) {
             logger.error("Database error in fetchDccPOCombinedView for supplierId: {}, page: {}, size: {}", supplierId, page, size, ex);
             throw new DccPOProcessingException("Database error fetching DCC PO Combined View", ex);
@@ -421,6 +437,25 @@ public class DccPOService {
     }
 
     /**
+     * Inner class to hold the fetch result including data and total counts.
+     */
+    public static class DccPOFetchResult {
+        private final List<DccPOCombinedViewDTO> data;
+        private final Long totalRecordsInDb; // Adjusted to reflect filtered count when filter is applied
+        private final Long totalFilteredRecords;
+
+        public DccPOFetchResult(List<DccPOCombinedViewDTO> data, Long totalRecordsInDb, Long totalFilteredRecords) {
+            this.data = data;
+            this.totalRecordsInDb = totalRecordsInDb;
+            this.totalFilteredRecords = totalFilteredRecords;
+        }
+
+        public List<DccPOCombinedViewDTO> getData() { return data; }
+        public Long getTotalRecordsInDb() { return totalRecordsInDb; }
+        public Long getTotalFilteredRecords() { return totalFilteredRecords; }
+    }
+
+    /**
      * Maps DTO column names to database fields for filtering.
      * @param columnName DTO column name.
      * @return Corresponding database field name or null if invalid.
@@ -428,6 +463,7 @@ public class DccPOService {
     private String mapColumnToDbField(String columnName) {
         if (columnName == null) return null;
         switch (columnName.toLowerCase()) {
+            case "recordno": return "d.recordNo";
             case "dccponumber": return "d.poNumber";
             case "newprojectname": return "p.newProjectName";
             case "dccacceptancetype": return "d.acceptanceType";

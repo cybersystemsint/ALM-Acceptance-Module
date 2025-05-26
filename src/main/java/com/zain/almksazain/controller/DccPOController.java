@@ -7,6 +7,7 @@ import com.zain.almksazain.DTO.DccPOResponseDTO;
 import com.zain.almksazain.DTO.DccPORequestDTO;
 import com.zain.almksazain.exception.DccPOProcessingException;
 import com.zain.almksazain.serviceImplementors.DccPOService;
+import com.zain.almksazain.serviceImplementors.DccPOService.DccPOFetchResult;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -38,11 +39,15 @@ public class DccPOController {
         int page = Math.max(request.getPage(), 1);
         int size = Math.max(request.getSize(), 1);
 
-        CompletableFuture<List<DccPOCombinedViewDTO>> future = dccPOService.getDccPOCombinedView(
+        CompletableFuture<DccPOFetchResult> future = dccPOService.getDccPOCombinedView(
                 request.getSupplierId(), page, size, request.getColumnName(), request.getSearchQuery());
         future.thenAccept(result -> {
+            List<DccPOCombinedViewDTO> data = result.getData();
+            Long totalRecordsInDb = result.getTotalRecordsInDb();
+            Long totalFilteredRecords = result.getTotalFilteredRecords();
+
             // Group by dccRecordNo
-            Map<Long, List<DccPOCombinedViewDTO>> groupedByDccRecordNo = result.stream()
+            Map<Long, List<DccPOCombinedViewDTO>> groupedByDccRecordNo = data.stream()
                     .collect(Collectors.groupingBy(DccPOCombinedViewDTO::getDccRecordNo));
 
             // Transform into hierarchical structure
@@ -120,9 +125,9 @@ public class DccPOController {
 
             // Build response
             DccPOResponseDTO responseDTO = new DccPOResponseDTO();
-            responseDTO.setTotalRecords((long) parentDTOs.size());
+            responseDTO.setTotalRecords(totalRecordsInDb); // Use totalRecordsInDb for the full database count
             responseDTO.setData(parentDTOs);
-            responseDTO.setTotalPages((int) Math.ceil((double) parentDTOs.size() / size));
+            responseDTO.setTotalPages((int) Math.ceil((double) totalFilteredRecords / size)); // Use filtered count for pagination
             responseDTO.setPageSize(size);
             responseDTO.setCurrentPage(page);
 

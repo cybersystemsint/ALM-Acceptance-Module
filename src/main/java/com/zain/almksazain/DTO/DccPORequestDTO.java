@@ -4,6 +4,7 @@ public class DccPORequestDTO {
     private String supplierId;
     private int page;
     private int size;
+    private Long recordNo;
     private String columnName;
     private String searchQuery;
 
@@ -18,6 +19,13 @@ public class DccPORequestDTO {
 
     public int getPage() {
         return page;
+    }
+    public Long getRecordNo() {
+        return recordNo;
+    }
+
+    public void setRecordNo(Long recordNo) {
+        this.recordNo = recordNo;
     }
 
     public void setPage(int page) {
