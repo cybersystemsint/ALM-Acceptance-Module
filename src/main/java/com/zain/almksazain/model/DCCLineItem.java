@@ -1,12 +1,13 @@
 package com.zain.almksazain.model;
 
+import java.io.Serializable;
 import javax.persistence.*;
 import java.math.BigDecimal;
 import java.sql.Date;
 
 @Entity
 @Table(name = "tb_DCC_LN")
-public class DCCLineItem {
+public class DCCLineItem implements Serializable {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

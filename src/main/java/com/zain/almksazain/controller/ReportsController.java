@@ -26,6 +26,17 @@ import java.util.stream.Collectors;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Collections;
+import java.util.Map.Entry;
+import static java.util.Map.entry;
+
 @RestController
 public class ReportsController {
 
@@ -79,12 +90,10 @@ public class ReportsController {
             whereClause += " AND poNumber = ?";
             params.add(poNumber);
         }
-
         if (!columnName.isEmpty() && !searchQuery.isEmpty()) {
             whereClause += " AND " + columnName.toLowerCase() + " LIKE ?";
             params.add("%" + searchQuery + "%");
         }
-
         jdbcTemplate.execute("SET SESSION sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''))");
 
         String countDetails = "SELECT COUNT(*) FROM acceptanceReport" + whereClause;
@@ -351,7 +360,6 @@ public class ReportsController {
             paginationSql = " LIMIT " + size + " OFFSET " + offset;
         }
 
-        // Main data retrieval query
         String sql = "SELECT PO.recordNo, PO.poNumber, PO.typeLookUpCode, PO.blanketTotalAmount, PO.releaseNum, PO.lineNumber, "
                 + "PO.prNum, PO.projectName, PO.lineCancelFlag, PO.cancelReason, PO.itemPartNumber, PO.prSubAllow, "
                 + "PO.countryOfOrigin, PO.poOrderQuantity, PO.poQtyNew, PO.quantityReceived, PO.quantityDueOld, PO.quantityDueNew, "
@@ -437,6 +445,8 @@ public class ReportsController {
             // Step 3: Group line items by PO number
             Map<String, Map<String, Object>> groupedResults = new LinkedHashMap<>();
             for (Map<String, Object> lineItem : lineItems) {
+                String Linecancel = "";
+                String subAllow = "";
                 String poNumber = (String) lineItem.get("poNumber");
 
                 if (!groupedResults.containsKey(poNumber)) {
@@ -467,6 +477,20 @@ public class ReportsController {
                     groupedRow.remove("FACategoryDescription");
                     groupedRow.remove("descopedLinePriceInPoCurrency");
                     groupedRow.remove("newLinePriceInPoCurrency");
+
+                    Linecancel = lineItem.get("lineCancelFlag").toString();
+                    subAllow = lineItem.get("prSubAllow").toString();
+
+                    if (Linecancel.equalsIgnoreCase("false")) {
+                        groupedRow.put("lineCancelFlag", "N");
+                    } else {
+                        groupedRow.put("lineCancelFlag", "Y");
+                    }
+                    if (subAllow.equalsIgnoreCase("false")) {
+                        groupedRow.put("prSubAllow", "N");
+                    } else {
+                        groupedRow.put("prSubAllow", "Y");
+                    }
 
                     // Initialize totals
                     groupedRow.put("totalPoQtyNew", 0.0);
@@ -595,6 +619,8 @@ public class ReportsController {
         Map<String, Map<String, Object>> paginatedGroupedResults = new LinkedHashMap<>();
         for (Map<String, Object> lineItem : lineItems) {
             String poNumber = (String) lineItem.get("poNumber");
+            String Linecancel = "";
+            String subAllow = "";
 
             if (!paginatedGroupedResults.containsKey(poNumber)) {
                 Map<String, Object> groupedRow = new LinkedHashMap<>(lineItem);
@@ -625,6 +651,21 @@ public class ReportsController {
                 groupedRow.remove("descopedLinePriceInPoCurrency");
                 groupedRow.remove("newLinePriceInPoCurrency");
 
+                Linecancel = lineItem.get("lineCancelFlag").toString();
+                subAllow = lineItem.get("prSubAllow").toString();
+
+                if (Linecancel.equalsIgnoreCase("false")) {
+                    groupedRow.put("lineCancelFlag", "N");
+                } else {
+                    groupedRow.put("lineCancelFlag", "Y");
+                }
+                if (subAllow.equalsIgnoreCase("false")) {
+                    groupedRow.put("prSubAllow", "N");
+                } else {
+                    groupedRow.put("prSubAllow", "Y");
+                }
+
+                //  lineCancelFlag
                 // Initialize totals
                 groupedRow.put("totalPoQtyNew", 0.0);
                 groupedRow.put("totalQuantityReceived", 0.0);
@@ -728,6 +769,27 @@ public class ReportsController {
     }
 
     //==================GET ALL CREATED ACCEPTANCE PER SUPPLIER NESTED =====
+    private String getFixedColumnName(String columnName) {
+        if ("recordno".equalsIgnoreCase(columnName)) {
+            return "dccRecordNo";
+        } else if ("projectname".equalsIgnoreCase(columnName)) {
+            return "dccProjectName";
+        } else if ("vendorname".equalsIgnoreCase(columnName)) {
+            return "dccVendorName";
+        }
+        return columnName;
+    }
+
+    private Map<String, Object> buildEmptyResponse(int page, int size) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("currentPage", page);
+        response.put("pageSize", size);
+        response.put("totalRecords", 0);
+        response.put("totalPages", 0);
+        response.put("data", Collections.emptyList());
+        return response;
+    }
+
     @PostMapping(value = "/reports/getNestedDccData", produces = "application/json")
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
     public Map<String, Object> getNestedDccData(@RequestBody String req) {
@@ -772,20 +834,17 @@ public class ReportsController {
         String uniquePOsSql = "SELECT DISTINCT PO.dccRecordNo FROM dccPOCombinedView PO " + whereClause;
         List<String> uniquePONumbers = jdbcTemplate.queryForList(uniquePOsSql, String.class);
 
-        // If page is 1 and size is 20000, return all unique POs
         if (page == 1 && size == 20000) {
-            // Fetch line items for all unique POs
             String lineItemsSql = "SELECT * FROM dccPOCombinedView PO WHERE PO.dccRecordNo IN ("
                     + String.join(",", uniquePONumbers.stream()
-                            .map(po -> po.toString()) // no quotes, integer literals
+                            .map(po -> po.toString()) // 
                             .collect(Collectors.toList()))
                     + ")";
 
             loggger.info("GET NESTED SQL 1  " + lineItemsSql);
-            //   String lineItemsSql = "SELECT * FROM dccPOCombinedView PO WHERE PO.dccRecordNo IN (" + String.join(",", uniquePONumbers.stream().map(po -> "'" + po + "'").collect(Collectors.toList())) + ")";
             List<Map<String, Object>> lineItems = jdbcTemplate.queryForList(lineItemsSql);
+            loggger.info("GET NESTED SQL RESPONSE  " + lineItemsSql);
 
-            // Step 3: Group line items by PO number
             Map<String, Map<String, Object>> groupedResults = new LinkedHashMap<>();
             lineItems.forEach(lineItem -> {
                 Object poNumberObj = lineItem.get("dccRecordNo");
@@ -830,13 +889,10 @@ public class ReportsController {
                     groupedRow.remove("unitOfMeasure");
                     groupedRow.remove("activeOrPassive");
                     groupedRow.remove("uplPendingQuantity");
-                    //groupedRow.remove("approverComment");
 
-                    // Add POlineItems key with an empty list
                     groupedRow.put("lineItems", new ArrayList<Map<String, Object>>());
                     groupedResults.put(poNumber, groupedRow);
 
-                    //remove them 
                     groupedRow.remove("dccRecordNo");
                     groupedRow.remove("dccProjectName");
                     groupedRow.remove("dccVendorName");
@@ -876,33 +932,23 @@ public class ReportsController {
                 poLineItem.put("uom", lineItem.get("unitOfMeasure"));
                 poLineItem.put("activeOrPassive", lineItem.get("activeOrPassive"));
                 poLineItem.put("uplPendingQuantity", lineItem.get("uplPendingQuantity"));
-                //   poLineItem.put("approverComment", lineItem.get("approverComment"));
 
-                // Add the line item to the POlineItems list
                 ((List<Map<String, Object>>) groupedResults.get(poNumber).get("lineItems")).add(poLineItem);
 
             });
-            // Prepare the response
             Map<String, Object> response = new HashMap<>();
             response.put("currentPage", page);
             response.put("pageSize", uniquePONumbers.size());
             response.put("totalRecords", uniquePONumbers.size());
-            response.put("totalPages", 1); // Since we are returning all records
-//            response.put("currentPage", page);
-//            response.put("pageSize", size);
-//            response.put("totalRecords", uniquePONumbers.size());
-//            response.put("totalPages", (int) Math.ceil((double) uniquePONumbers.size() / size));
+            response.put("totalPages", 1);
             response.put("data", new ArrayList<>(groupedResults.values()));
             return response;
         }
 
-        // Step 1: Fetch unique POs with pagination
         String uniquePOsSql2 = "SELECT DISTINCT PO.dccRecordNo FROM dccPOCombinedView PO " + whereClause + " LIMIT " + size + " OFFSET " + (page - 1) * size;
         List<String> uniquePONumbers2 = jdbcTemplate.queryForList(uniquePOsSql2, String.class);
 
-        // Step 2: Fetch line items for the unique POs
         if (uniquePONumbers2.isEmpty()) {
-            // If no unique POs found, return an empty response
             Map<String, Object> response = new HashMap<>();
             response.put("currentPage", page);
             response.put("pageSize", size);
@@ -1029,11 +1075,10 @@ public class ReportsController {
         response.put("totalRecords", uniquePONumbers.size());
         response.put("totalPages", (int) Math.ceil((double) uniquePONumbers.size() / size));
         response.put("data", new ArrayList<>(paginatedGroupedResults.values()));
-
         return response;
     }
+//==================GET ALL CREATED ACCEPTANCE PER SUPPLIER NESTED =====
 
-    //==================GET ALL CREATED ACCEPTANCE PER SUPPLIER NESTED =====
     @PostMapping(value = "/reports/agingReport", produces = "application/json")
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
     public Map<String, Object> getAgingReport(@RequestBody String req) {
@@ -1070,13 +1115,13 @@ public class ReportsController {
             } else {
                 fixedColumnName = columnName;
             }
-
             whereClause += " AND PO." + fixedColumnName + " LIKE '%" + searchQuery + "%'";
         }
 
         // Step 1: Fetch unique POs
         String uniquePOsSql = "SELECT DISTINCT PO.dccRecordNo FROM dccPOCombinedView PO " + whereClause;
-        List<String> uniquePONumbers = jdbcTemplate.queryForList(uniquePOsSql, String.class);
+        List<String> uniquePONumbers = jdbcTemplate.queryForList(uniquePOsSql, String.class
+        );
 
         if (page == 1 && size == 20000) {
             // Fetch line items for all unique POs
@@ -1097,7 +1142,7 @@ public class ReportsController {
                 String poNumber = String.valueOf(poNumberObj);
                 if (!groupedResults.containsKey(poNumber)) {
                     Map<String, Object> groupedRow = new LinkedHashMap<>(lineItem);
-                 
+
                     groupedRow.put("recordNo", lineItem.get("dccRecordNo"));
                     groupedRow.put("projectName", lineItem.get("dccProjectName"));
                     groupedRow.put("vendorName", lineItem.get("dccVendorName"));
@@ -1161,7 +1206,8 @@ public class ReportsController {
 
         // Step 1: Fetch unique POs with pagination
         String uniquePOsSql2 = "SELECT DISTINCT PO.dccRecordNo FROM dccPOCombinedView PO " + whereClause + " LIMIT " + size + " OFFSET " + (page - 1) * size;
-        List<String> uniquePONumbers2 = jdbcTemplate.queryForList(uniquePOsSql2, String.class);
+        List<String> uniquePONumbers2 = jdbcTemplate.queryForList(uniquePOsSql2, String.class
+        );
 
         // Step 2: Fetch line items for the unique POs
         if (uniquePONumbers2.isEmpty()) {
@@ -1288,7 +1334,8 @@ public class ReportsController {
         }
 
         String countSql = "SELECT COUNT(*) FROM dccPOCombinedView PO " + whereClause;
-        int totalRecords = jdbcTemplate.queryForObject(countSql, Integer.class);
+        int totalRecords = jdbcTemplate.queryForObject(countSql, Integer.class
+        );
 
         if (page == 0 && size == 0) {
             paginationSql = "";
@@ -1374,7 +1421,8 @@ public class ReportsController {
         }
 
         String countSql = "SELECT COUNT(*) FROM combinedPurchaseOrderView" + whereClause;
-        int totalRecords = jdbcTemplate.queryForObject(countSql, Integer.class, params.toArray());
+        int totalRecords = jdbcTemplate.queryForObject(countSql, Integer.class,
+                params.toArray());
 
         //  int totalRecords = jdbcTemplate.queryForObject(countSql, Integer.class);
         if (page == 0 && size == 0) {
@@ -1438,7 +1486,8 @@ public class ReportsController {
         }
 
         String countSql = "SELECT COUNT(*) FROM tb_PurchaseOrderUPL UPL" + whereClause;
-        int totalRecords = jdbcTemplate.queryForObject(countSql, Integer.class);
+        int totalRecords = jdbcTemplate.queryForObject(countSql, Integer.class
+        );
 
         if (page == 0 && size == 0) {
             paginationSql = "";
@@ -1462,8 +1511,8 @@ public class ReportsController {
                 + "UPL.poLineDescription, UPL.uplLineItemType, UPL.uplLineItemCode, UPL.uplLineDescription, UPL.zainItemCategoryCode, "
                 + "UPL.zainItemCategoryDescription, UPL.uplItemSerialized, UPL.activeOrPassive, UPL.uom, UPL.currency, "
                 + "UPL.poLineQuantity, UPL.poLineUnitPrice, UPL.uplLineQuantity, UPL.uplLineUnitPrice, UPL.substituteItemCode, "
-                + "UPL.remarks,  UPL.regionalApprover, "
-                + "UPL.createdBy, UPL.createdByName, UPL.uplModifiedBy AS updatedByName, UPL.uplModifiedDate AS updatedDatetime "
+                + "UPL.remarks,"
+                + "UPL.createdByName, UPL.uplModifiedBy AS updatedByName, UPL.uplModifiedDate AS updatedDatetime "
                 + "FROM tb_PurchaseOrderUPL UPL " + whereClause + paginationSql;
 
         List<Map<String, Object>> result = jdbcTemplate.queryForList(sql);
@@ -1569,4 +1618,184 @@ public class ReportsController {
         return null;
     }
 
+    @PostMapping("/filter")
+    @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
+    public ResponseEntity<Map<String, Object>> filterPurchaseOrders(
+            @RequestBody Map<String, String> filters,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "100") int size,
+            @RequestParam(defaultValue = "recordNo") String sortBy,
+            @RequestParam(defaultValue = "asc") String sortDir) {
+        try {
+            // Validate page and size
+            page = Math.max(page, 0);
+            size = Math.max(size, 1);
+
+            // Initialize WHERE clause and parameters
+            String whereClause = " WHERE 1=1";
+            List<Object> params = new ArrayList<>();
+
+            // Build WHERE clause for filters
+            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+
+            // String filters
+            if (filters.containsKey("poNumber") && !filters.get("poNumber").isEmpty()) {
+                whereClause += " AND PO.poNumber = ?";
+                params.add(filters.get("poNumber"));
+            }
+            if (filters.containsKey("projectName") && !filters.get("projectName").isEmpty()) {
+                whereClause += " AND PO.projectName = ?";
+                params.add(filters.get("projectName"));
+            }
+            if (filters.containsKey("prNum") && !filters.get("prNum").isEmpty()) {
+                whereClause += " AND PO.prNum = ?";
+                params.add(filters.get("prNum"));
+            }
+            if (filters.containsKey("typeLookUpCode") && !filters.get("typeLookUpCode").isEmpty()) {
+                whereClause += " AND PO.typeLookUpCode = ?";
+                params.add(filters.get("typeLookUpCode"));
+            }
+            if (filters.containsKey("vendorName") && !filters.get("vendorName").isEmpty()) {
+                whereClause += " AND PO.vendorName = ?";
+                params.add(filters.get("vendorName"));
+            }
+            if (filters.containsKey("currencyCode") && !filters.get("currencyCode").isEmpty()) {
+                whereClause += " AND PO.currencyCode = ?";
+                params.add(filters.get("currencyCode"));
+            }
+
+            // Numeric filters
+            if (filters.containsKey("totalPoQtyNew") && !filters.get("totalPoQtyNew").isEmpty()) {
+                try {
+                    Double value = Double.parseDouble(filters.get("totalPoQtyNew"));
+                    whereClause += " AND PO.poQtyNew = ?";
+                    params.add(value);
+                } catch (NumberFormatException e) {
+                    loggger.error("Invalid totalPoQtyNew format: " + filters.get("totalPoQtyNew"), e);
+                }
+            }
+            if (filters.containsKey("totalpoOrderQuantity") && !filters.get("totalpoOrderQuantity").isEmpty()) {
+                try {
+                    Double value = Double.parseDouble(filters.get("totalpoOrderQuantity"));
+                    whereClause += " AND PO.poOrderQuantity = ?";
+                    params.add(value);
+                } catch (NumberFormatException e) {
+                    loggger.error("Invalid totalpoOrderQuantity format: " + filters.get("totalpoOrderQuantity"), e);
+                }
+            }
+            if (filters.containsKey("totalQuantityReceived") && !filters.get("totalQuantityReceived").isEmpty()) {
+                try {
+                    Double value = Double.parseDouble(filters.get("totalQuantityReceived"));
+                    whereClause += " AND PO.quantityReceived = ?";
+                    params.add(value);
+                } catch (NumberFormatException e) {
+                    loggger.error("Invalid totalQuantityReceived format: " + filters.get("totalQuantityReceived"), e);
+                }
+            }
+            if (filters.containsKey("totalQuantityDueOld") && !filters.get("totalQuantityDueOld").isEmpty()) {
+                try {
+                    Double value = Double.parseDouble(filters.get("totalQuantityDueOld"));
+                    whereClause += " AND PO.quantityDueOld = ?";
+                    params.add(value);
+                } catch (NumberFormatException e) {
+                    loggger.error("Invalid totalQuantityDueOld format: " + filters.get("totalQuantityDueOld"), e);
+                }
+            }
+            if (filters.containsKey("totalQuantityDueNew") && !filters.get("totalQuantityDueNew").isEmpty()) {
+                try {
+                    Double value = Double.parseDouble(filters.get("totalQuantityDueNew"));
+                    whereClause += " AND PO.quantityDueNew = ?";
+                    params.add(value);
+                } catch (NumberFormatException e) {
+                    loggger.error("Invalid totalQuantityDueNew format: " + filters.get("totalQuantityDueNew"), e);
+                }
+            }
+            if (filters.containsKey("totalQuantityBilled") && !filters.get("totalQuantityBilled").isEmpty()) {
+                try {
+                    Double value = Double.parseDouble(filters.get("totalQuantityBilled"));
+                    whereClause += " AND PO.quantityBilled = ?";
+                    params.add(value);
+                } catch (NumberFormatException e) {
+                    loggger.error("Invalid totalQuantityBilled format: " + filters.get("totalQuantityBilled"), e);
+                }
+            }
+            if (filters.containsKey("totallinePriceInSAR") && !filters.get("totallinePriceInSAR").isEmpty()) {
+                try {
+                    Double value = Double.parseDouble(filters.get("totallinePriceInSAR"));
+                    whereClause += " AND PO.linePriceInSAR = ?";
+                    params.add(value);
+                } catch (NumberFormatException e) {
+                    loggger.error("Invalid totallinePriceInSAR format: " + filters.get("totallinePriceInSAR"), e);
+                }
+            }
+
+            // Date range filters
+            try {
+                if (filters.containsKey("createdDateStart") && !filters.get("createdDateStart").isEmpty()) {
+                    whereClause += " AND PO.createdDate >= ?";
+                    params.add(filters.get("createdDateStart"));
+                }
+                if (filters.containsKey("createdDateEnd") && !filters.get("createdDateEnd").isEmpty()) {
+                    whereClause += " AND PO.createdDate <= ?";
+                    params.add(filters.get("createdDateEnd"));
+                }
+                if (filters.containsKey("approvedDateStart") && !filters.get("approvedDateStart").isEmpty()) {
+                    whereClause += " AND PO.approvedDate >= ?";
+                    params.add(filters.get("approvedDateStart"));
+                }
+                if (filters.containsKey("approvedDateEnd") && !filters.get("approvedDateEnd").isEmpty()) {
+                    whereClause += " AND PO.approvedDate <= ?";
+                    params.add(filters.get("approvedDateEnd"));
+                }
+            } catch (Exception e) {
+                loggger.error("Error parsing date filters", e);
+            }
+
+            // Count total records
+            String countSql = "SELECT COUNT(*) FROM tb_PurchaseOrder PO" + whereClause;
+            int totalRecords = jdbcTemplate.queryForObject(countSql, params.toArray(), Integer.class
+            );
+
+            // Build pagination
+            String paginationSql = "";
+            if (size > 0) {
+                int offset = page * size;
+                paginationSql = " LIMIT ? OFFSET ?";
+                params.add(size);
+                params.add(offset);
+            }
+
+            // Build sorting
+            String orderBy = "";
+            if (!sortBy.isEmpty()) {
+                orderBy = " ORDER BY PO." + sortBy + (sortDir.equalsIgnoreCase("asc") ? " ASC" : " DESC");
+            }
+
+            // Main query (limited to relevant columns)
+            String sql = "SELECT PO.recordNo, PO.poNumber, PO.projectName, PO.prNum, PO.typeLookUpCode, PO.vendorName, "
+                    + "PO.currencyCode, PO.poQtyNew, PO.poOrderQuantity, PO.quantityReceived, PO.quantityDueOld, "
+                    + "PO.quantityDueNew, PO.quantityBilled, PO.linePriceInSAR, PO.createdDate, PO.approvedDate "
+                    + "FROM tb_PurchaseOrder PO" + whereClause + orderBy + paginationSql;
+
+            List<Map<String, Object>> result = jdbcTemplate.queryForList(sql, params.toArray());
+
+            // Prepare response
+            Map<String, Object> response = new HashMap<>();
+            response.put("reports", result); // Match frontend's expected key
+            response.put("currentPage", page);
+            response.put("totalItems", totalRecords);
+            response.put("totalPages", (int) Math.ceil((double) totalRecords / size));
+            response.put("first", page == 0);
+            response.put("last", result.size() < size || (page + 1) * size >= totalRecords);
+            response.put("size", size);
+            response.put("sort", sortBy + "," + sortDir);
+
+            loggger.info("Purchase Order Filter Query: " + sql);
+            return new ResponseEntity<>(response, HttpStatus.OK);
+        } catch (Exception e) {
+            loggger.error("Error filtering purchase orders", e);
+            return new ResponseEntity<>(Collections.singletonMap("message", "Error filtering purchase orders: " + e.getMessage()),
+                    HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+    }
 }

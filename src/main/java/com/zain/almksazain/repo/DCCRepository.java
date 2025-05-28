@@ -20,6 +20,4 @@ public interface DCCRepository extends JpaRepository<DCC, Long> {
     @Query("SELECT d.recordNo  FROM DCC  d WHERE d.poNumber  = :poNumber AND LOWER(d.status) IN :statuses")
     List<Integer> findByPoNumberAndStatus(@Param("poNumber") String poNumber, @Param("statuses") List<String> statuses);
 
-//    @Query("SELECT d FROM DCC d WHERE d.poNumber = :poNumber ORDER BY d.recordNo DESC")
-//    DCC findTopByPoNumber(@Param("poNumber") String poNumber);
 }

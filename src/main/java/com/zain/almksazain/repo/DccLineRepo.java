@@ -1,5 +1,6 @@
 package com.zain.almksazain.repo;
 
+import com.zain.almksazain.model.DCC;
 import com.zain.almksazain.model.DCCLineItem;
 import java.util.List;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -34,15 +35,24 @@ public interface DccLineRepo extends JpaRepository<DCCLineItem, Long> {
     @Query(value = "SELECT * FROM tb_DCC_LN d WHERE d.serialNumber = :serialNumber ORDER BY d.recordNo DESC LIMIT 1", nativeQuery = true)
     DCCLineItem findTopBySerialNumber(@Param("serialNumber") String serialNumber);
 
-    @Modifying
-    @Transactional
-    @Query("DELETE FROM DCCLineItem d WHERE d.recordNo IN :recordNos")
-    void deleteAllByIdInBatch(@Param("recordNos") List<Long> recordNos);
+//    @Modifying
+//    @Transactional
+//    @Query("DELETE FROM DCCLineItem d WHERE d.recordNo IN :recordNos")
+//    void deleteAllByIdInBatch(@Param("recordNos") List<Long> recordNos);
 
     @Query("SELECT COALESCE(SUM(d.deliveredQty), 0) FROM DCCLineItem d WHERE d.dccId  IN :dccIds AND d.poId = :poId AND d.lineNumber = :lineNumber AND d.uplLineNumber  = :uplLineNumber")
     Double sumDeliveredQtyByDccIdsAndPoLineInfo(@Param("dccIds") List<String> dccIds,
             @Param("poId") String poNumber,
             @Param("lineNumber") String lineNumber,
             @Param("uplLineNumber") String upLineNumber);
+
+    @Query("SELECT COALESCE(SUM(d.deliveredQty), 0) FROM DCCLineItem d WHERE d.dccId  IN :dccIds AND d.poId = :poId AND d.lineNumber = :lineNumber AND d.uplLineNumber  = :uplLineNumber")
+    Double sumDeliveredQtyByDccIdsAndPoLine(@Param("dccIds") List<String> dccIds,
+            @Param("poId") String poNumber,
+            @Param("lineNumber") String lineNumber,
+            @Param("uplLineNumber") String upLineNumber);
+
+//    //NEW CODE 
+//    List<DCCLineItem> findByDcc(DCC dcc);
 
 }

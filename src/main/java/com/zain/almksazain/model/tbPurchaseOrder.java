@@ -4,6 +4,7 @@
  */
 package com.zain.almksazain.model;
 
+import java.io.Serializable;
 import javax.persistence.*;
 import java.sql.Date;
 
@@ -13,7 +14,7 @@ import java.sql.Date;
  */
 @Entity
 @Table(name = "tb_PurchaseOrder")
-public class tbPurchaseOrder {
+public class tbPurchaseOrder implements Serializable {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
