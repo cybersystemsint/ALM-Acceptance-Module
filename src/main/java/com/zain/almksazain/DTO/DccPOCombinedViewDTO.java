@@ -56,6 +56,7 @@ public class DccPOCombinedViewDTO {
     private String approverComment;
     private String userAging;
     private String totalAging;
+    private String itemCode;
 
     // Getters and Setters
     public Long getDccRecordNo() {
@@ -488,5 +489,13 @@ public class DccPOCombinedViewDTO {
 
     public void setTotalAging(String totalAging) {
         this.totalAging = totalAging;
+    }
+
+    public String getItemCode() {
+        return itemCode;
+    }
+
+    public void setItemCode(String itemCode) {
+        this.itemCode = itemCode;
     }
 }

@@ -4,6 +4,7 @@ public class DccPORequestDTO {
     private String supplierId;
     private int page;
     private int size;
+    private String pendingApprovers;
     private Long recordNo;
     private String columnName;
     private String searchQuery;
@@ -12,6 +13,8 @@ public class DccPORequestDTO {
     public String getSupplierId() {
         return supplierId;
     }
+    public String getPendingApprovers() { return pendingApprovers; }
+    public void setPendingApprovers(String pendingApprovers) { this.pendingApprovers = pendingApprovers; }
 
     public void setSupplierId(String supplierId) {
         this.supplierId = supplierId;

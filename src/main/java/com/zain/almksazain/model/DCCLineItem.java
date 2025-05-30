@@ -1,7 +1,7 @@
 package com.zain.almksazain.model;
 
 import javax.persistence.*;
-import java.sql.Date;
+import java.util.Date;
 
 @Entity
 @Table(name = "tb_DCC_LN")
@@ -9,79 +9,89 @@ public class DCCLineItem {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private long recordNo;
-    private String productName;
-    private String productSerialNo;
-    private double deliveredQty;
-    private String locationName;
-    private String inserviceDate;
-    private Double unitPrice;
-    private String scopeOfWork;
-    private String remarks;
+    @Column(name = "recordNo")
+    private Long recordNo;
+
+    @Column(name = "dccId")
     private String dccId;
-    private String itemCode;
-    private String actualItemCode;
-    private String poId;
-    private String lineNumber;
-    private String UoM;
-    private Integer orderQuantity;
-    private Double VAT;
-    private Double linePrice;
-    private String uplLineNumber;
+
+    @Column(name = "productName")
+    private String productName;
+
+    @Column(name = "productSerialNo")
+    private String productSerialNo;
+
+    @Column(name = "serialNumber")
     private String serialNumber;
+
+    @Column(name = "deliveredQty")
+    private Double deliveredQty;
+
+    @Column(name = "locationName")
+    private String locationName;
+
+    @Column(name = "inserviceDate")
+    private String inserviceDate;
+
+    @Column(name = "dateInService")
+    @Temporal(TemporalType.TIMESTAMP)
     private Date dateInService;
+
+    @Column(name = "unitPrice")
+    private Double unitPrice;
+
+    @Column(name = "scopeOfWork")
+    private String scopeOfWork;
+
+    @Column(name = "remarks")
+    private String remarks;
+
+    @Column(name = "itemCode")
+    private String itemCode;
+
+    @Column(name = "actualItemCode")
+    private String actualItemCode;
+
+    @Column(name = "poId")
+    private String poId;
+
+    @Column(name = "lineNumber")
+    private String lineNumber;
+
+    @Column(name = "UoM")
+    private String uom;
+
+    @Column(name = "orderQuantity")
+    private Integer orderQuantity;
+
+    @Column(name = "VAT")
+    private Double vat;
+
+    @Column(name = "linePrice")
+    private Double linePrice;
+
+    @Column(name = "uplLineNumber")
+    private String uplLineNumber;
+
+    @Column(name = "uplItemCode")
     private String uplItemCode;
+
+    @Column(name = "uplItemDescription")
     private String uplItemDescription;
+
+    @Column(name = "linkId")
     private String linkId;
+
+    @Column(name = "tagNumber")
     private String tagNumber;
 
     // Getters and Setters
-    public String getItemCode() {
-        return itemCode;
+    public Long getRecordNo() {
+        return recordNo;
     }
 
-    public void setItemCode(String itemCode) {
-        this.itemCode = itemCode;
-    }
-
-    public String getActualItemCode() {
-        return actualItemCode;
-    }
-
-    public void setActualItemCode(String actualItemCode) {
-        this.actualItemCode = actualItemCode;
-    }
-
-    public String getLinkId() {
-        return linkId;
-    }
-
-    public void setLinkId(String linkId) {
-        this.linkId = linkId;
-    }
-
-    public String getTagNumber() {
-        return tagNumber;
-    }
-
-    public void setTagNumber(String tagNumber) {
-        this.tagNumber = tagNumber;
-    }
-
-    public String getUplItemCode() {
-        return uplItemCode;
-    }
-
-    public void setUplItemCode(String uplItemCode) {
-        this.uplItemCode = uplItemCode;
-    }
-
-    public String getUplItemDescription() {
-        return uplItemDescription;
-    }
-
-    public void setUplItemDescription(String uplItemDescription) {
-        this.uplItemDescription = uplItemDescription;
+    public void setRecordNo(Long recordNo) {
+        this.recordNo = recordNo;
     }
 
     public String getDccId() {
@@ -90,14 +100,6 @@ public class DCCLineItem {
 
     public void setDccId(String dccId) {
         this.dccId = dccId;
-    }
-
-    public long getRecordNo() {
-        return recordNo;
-    }
-
-    public void setRecordNo(long recordNo) {
-        this.recordNo = recordNo;
     }
 
     public String getProductName() {
@@ -116,11 +118,19 @@ public class DCCLineItem {
         this.productSerialNo = productSerialNo;
     }
 
-    public double getDeliveredQty() {
+    public String getSerialNumber() {
+        return serialNumber;
+    }
+
+    public void setSerialNumber(String serialNumber) {
+        this.serialNumber = serialNumber;
+    }
+
+    public Double getDeliveredQty() {
         return deliveredQty;
     }
 
-    public void setDeliveredQty(double deliveredQty) {
+    public void setDeliveredQty(Double deliveredQty) {
         this.deliveredQty = deliveredQty;
     }
 
@@ -138,6 +148,14 @@ public class DCCLineItem {
 
     public void setInserviceDate(String inserviceDate) {
         this.inserviceDate = inserviceDate;
+    }
+
+    public Date getDateInService() {
+        return dateInService;
+    }
+
+    public void setDateInService(Date dateInService) {
+        this.dateInService = dateInService;
     }
 
     public Double getUnitPrice() {
@@ -164,6 +182,22 @@ public class DCCLineItem {
         this.remarks = remarks;
     }
 
+    public String getItemCode() {
+        return itemCode;
+    }
+
+    public void setItemCode(String itemCode) {
+        this.itemCode = itemCode;
+    }
+
+    public String getActualItemCode() {
+        return actualItemCode;
+    }
+
+    public void setActualItemCode(String actualItemCode) {
+        this.actualItemCode = actualItemCode;
+    }
+
     public String getPoId() {
         return poId;
     }
@@ -180,12 +214,12 @@ public class DCCLineItem {
         this.lineNumber = lineNumber;
     }
 
-    public String getUoM() {
-        return UoM;
+    public String getUom() {
+        return uom;
     }
 
-    public void setUoM(String UoM) {
-        this.UoM = UoM;
+    public void setUom(String uom) {
+        this.uom = uom;
     }
 
     public Integer getOrderQuantity() {
@@ -196,12 +230,12 @@ public class DCCLineItem {
         this.orderQuantity = orderQuantity;
     }
 
-    public Double getVAT() {
-        return VAT;
+    public Double getVat() {
+        return vat;
     }
 
-    public void setVAT(Double VAT) {
-        this.VAT = VAT;
+    public void setVat(Double vat) {
+        this.vat = vat;
     }
 
     public Double getLinePrice() {
@@ -220,19 +254,35 @@ public class DCCLineItem {
         this.uplLineNumber = uplLineNumber;
     }
 
-    public String getSerialNumber() {
-        return serialNumber;
+    public String getUplItemCode() {
+        return uplItemCode;
     }
 
-    public void setSerialNumber(String serialNumber) {
-        this.serialNumber = serialNumber;
+    public void setUplItemCode(String uplItemCode) {
+        this.uplItemCode = uplItemCode;
     }
 
-    public Date getDateInService() {
-        return dateInService;
+    public String getUplItemDescription() {
+        return uplItemDescription;
     }
 
-    public void setDateInService(Date dateInService) {
-        this.dateInService = dateInService;
+    public void setUplItemDescription(String uplItemDescription) {
+        this.uplItemDescription = uplItemDescription;
+    }
+
+    public String getLinkId() {
+        return linkId;
+    }
+
+    public void setLinkId(String linkId) {
+        this.linkId = linkId;
+    }
+
+    public String getTagNumber() {
+        return tagNumber;
+    }
+
+    public void setTagNumber(String tagNumber) {
+        this.tagNumber = tagNumber;
     }
 }

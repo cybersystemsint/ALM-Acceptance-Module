@@ -1,10 +1,6 @@
 package com.zain.almksazain.model;
 
-import javax.persistence.Entity;
-import javax.persistence.GeneratedValue;
-import javax.persistence.GenerationType;
-import javax.persistence.Id;
-import javax.persistence.Table;
+import javax.persistence.*;
 import java.util.Date;
 
 @Entity
@@ -13,45 +9,110 @@ public class DCC {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private long recordNo;
+    @Column(name = "recordNo")
+    private Long recordNo;
+
+    @Column(name = "poNumber")
     private String poNumber;
+
+    @Column(name = "vendorName")
     private String vendorName;
+
+    @Column(name = "vendorEmail")
     private String vendorEmail;
+
+    @Column(name = "boqId")
     private String boqId;
+
+    @Column(name = "projectName")
     private String projectName;
-    private String acceptanceType;
-    private String status;
-    private Date createdDate;
-    private String dccId;
-    private String currency;
+
+    @Column(name = "newProjectName")
     private String newProjectName;
-    private Date approvedDate;
+
+    @Column(name = "acceptanceType")
+    private String acceptanceType;
+
+    @Column(name = "status")
+    private String status;
+
+    @Column(name = "createdDate")
+    @Temporal(TemporalType.TIMESTAMP)
+    private Date createdDate;
+
+    @Column(name = "dccId")
+    private String dccId;
+
+    @Column(name = "currency")
+    private String currency;
+
+    @Column(name = "poDate")
     private String poDate;
+
+    @Column(name = "supplierId")
     private String supplierId;
+
+    @Column(name = "totalQty")
     private Integer totalQty;
+
+    @Column(name = "totalNoofSites")
     private Integer totalNoofSites;
+
+    @Column(name = "newFACategory")
     private String newFACategory;
-    private String L1;
-    private String L2;
-    private String L3;
-    private String L4;
+
+    @Column(name = "L1")
+    private String l1;
+
+    @Column(name = "L2")
+    private String l2;
+
+    @Column(name = "L3")
+    private String l3;
+
+    @Column(name = "L4")
+    private String l4;
+
+    @Column(name = "oldFACategory")
     private String oldFACategory;
+
+    @Column(name = "accDepreciationCode")
     private String accDepreciationCode;
+
+    @Column(name = "depreciationCode")
     private String depreciationCode;
+
+    @Column(name = "vendorNumber")
     private String vendorNumber;
+
+    @Column(name = "projectNumber")
     private String projectNumber;
+
+    @Column(name = "partNumber")
     private String partNumber;
+
+    @Column(name = "costCenter")
     private String costCenter;
+
+    @Column(name = "termsAndConditions")
     private String termsAndConditions;
+
+    @Column(name = "createdBy")
     private String createdBy;
+
+    @Column(name = "approvedDate")
+    @Temporal(TemporalType.TIMESTAMP)
+    private Date approvedDate;
+
+    @Column(name = "vendorComment")
     private String vendorComment;
 
     // Getters and Setters
-    public long getRecordNo() {
+    public Long getRecordNo() {
         return recordNo;
     }
 
-    public void setRecordNo(long recordNo) {
+    public void setRecordNo(Long recordNo) {
         this.recordNo = recordNo;
     }
 
@@ -74,24 +135,11 @@ public class DCC {
     public String getVendorEmail() {
         return vendorEmail;
     }
-    public Date getApprovedDate() {
-        return approvedDate;
-    }
-
-    public void setApprovedDate(Date approvedDate) {
-        this.approvedDate = approvedDate;
-    }
 
     public void setVendorEmail(String vendorEmail) {
         this.vendorEmail = vendorEmail;
     }
-    public String getNewProjectName() {
-        return newProjectName;
-    }
 
-    public void setNewProjectName(String newProjectName) {
-        this.newProjectName = newProjectName;
-    }
     public String getBoqId() {
         return boqId;
     }
@@ -106,6 +154,14 @@ public class DCC {
 
     public void setProjectName(String projectName) {
         this.projectName = projectName;
+    }
+
+    public String getNewProjectName() {
+        return newProjectName;
+    }
+
+    public void setNewProjectName(String newProjectName) {
+        this.newProjectName = newProjectName;
     }
 
     public String getAcceptanceType() {
@@ -189,35 +245,35 @@ public class DCC {
     }
 
     public String getL1() {
-        return L1;
+        return l1;
     }
 
-    public void setL1(String L1) {
-        this.L1 = L1;
+    public void setL1(String l1) {
+        this.l1 = l1;
     }
 
     public String getL2() {
-        return L2;
+        return l2;
     }
 
-    public void setL2(String L2) {
-        this.L2 = L2;
+    public void setL2(String l2) {
+        this.l2 = l2;
     }
 
     public String getL3() {
-        return L3;
+        return l3;
     }
 
-    public void setL3(String L3) {
-        this.L3 = L3;
+    public void setL3(String l3) {
+        this.l3 = l3;
     }
 
     public String getL4() {
-        return L4;
+        return l4;
     }
 
-    public void setL4(String L4) {
-        this.L4 = L4;
+    public void setL4(String l4) {
+        this.l4 = l4;
     }
 
     public String getOldFACategory() {
@@ -290,6 +346,14 @@ public class DCC {
 
     public void setCreatedBy(String createdBy) {
         this.createdBy = createdBy;
+    }
+
+    public Date getApprovedDate() {
+        return approvedDate;
+    }
+
+    public void setApprovedDate(Date approvedDate) {
+        this.approvedDate = approvedDate;
     }
 
     public String getVendorComment() {

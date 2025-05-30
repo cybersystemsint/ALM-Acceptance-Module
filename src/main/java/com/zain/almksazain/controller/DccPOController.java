@@ -21,6 +21,10 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
+/**
+ * REST Controller for handling DCC PO Combined View requests.
+ * Provides an endpoint to fetch paginated DCC records with related Purchase Order, UPL, Line Item, and Approval data.
+ */
 @RestController
 @RequestMapping("/dcc-po")
 public class DccPOController {
@@ -30,6 +34,14 @@ public class DccPOController {
     @Autowired
     private DccPOService dccPOService;
 
+    /**
+     * Endpoint to retrieve paginated DCC PO Combined View data.
+     * Accepts a request body with supplierId, pendingApprovers, pagination parameters, and optional search filters.
+     * Returns a DeferredResult containing a hierarchical response with parent and line item data.
+     *
+     * @param request The request DTO containing supplierId, pendingApprovers, page, size, columnName, and searchQuery.
+     * @return DeferredResult containing the ResponseEntity with DccPOResponseDTO or an error message.
+     */
     @PostMapping("/combined-view")
     public DeferredResult<ResponseEntity<DccPOResponseDTO>> getDccPOCombinedView(
             @RequestBody DccPORequestDTO request) {
@@ -39,22 +51,29 @@ public class DccPOController {
         int page = Math.max(request.getPage(), 1);
         int size = Math.max(request.getSize(), 1);
 
+        // Call service with all parameters, including pendingApprovers
         CompletableFuture<DccPOFetchResult> future = dccPOService.getDccPOCombinedView(
-                request.getSupplierId(), page, size, request.getColumnName(), request.getSearchQuery());
+                request.getSupplierId(),
+                request.getPendingApprovers(),
+                page,
+                size,
+                request.getColumnName(),
+                request.getSearchQuery());
+
         future.thenAccept(result -> {
             List<DccPOCombinedViewDTO> data = result.getData();
-            Long totalRecordsInDb = result.getTotalRecordsInDb();
             Long totalFilteredRecords = result.getTotalFilteredRecords();
 
-            // Group by dccRecordNo
+            // Group by dccRecordNo to create hierarchical structure
             Map<Long, List<DccPOCombinedViewDTO>> groupedByDccRecordNo = data.stream()
                     .collect(Collectors.groupingBy(DccPOCombinedViewDTO::getDccRecordNo));
 
-            // Transform into hierarchical structure
+            // Transform into hierarchical structure (parent and line items)
             List<DccPOParentDTO> parentDTOs = groupedByDccRecordNo.entrySet().stream()
                     .map(entry -> {
                         DccPOCombinedViewDTO firstRecord = entry.getValue().get(0);
                         DccPOParentDTO parentDTO = new DccPOParentDTO();
+                        // Populate parent-level fields
                         parentDTO.setRecordNo(firstRecord.getDccRecordNo());
                         parentDTO.setDccPoNumber(firstRecord.getDccPoNumber());
                         parentDTO.setNewProjectName(firstRecord.getNewProjectName());
@@ -92,7 +111,7 @@ public class DccPOController {
                                     lineItem.setLnUnitPrice(dto.getLnUnitPrice());
                                     lineItem.setScopeOfWork(dto.getLnScopeOfWork());
                                     lineItem.setRemarks(dto.getLnRemarks());
-                                    lineItem.setItemCode(dto.getLnItemCode());
+                                    lineItem.setItemCode(dto.getUplLineItemCode());
                                     lineItem.setLinkId(dto.getLinkId() != null ? String.valueOf(dto.getLinkId()) : "");
                                     lineItem.setTagNumber(dto.getTagNumber());
                                     lineItem.setPoLineNumber(dto.getLineNumber());
@@ -120,19 +139,19 @@ public class DccPOController {
                         parentDTO.setLineItems(lineItems);
                         return parentDTO;
                     })
-                    .sorted((a, b) -> b.getRecordNo().compareTo(a.getRecordNo()))
+                    .sorted((a, b) -> b.getRecordNo().compareTo(a.getRecordNo())) // Sort by recordNo descending
                     .collect(Collectors.toList());
 
             // Build response
             DccPOResponseDTO responseDTO = new DccPOResponseDTO();
-            responseDTO.setTotalRecords(totalRecordsInDb); // Use totalRecordsInDb for the full database count
+            responseDTO.setTotalRecords(totalFilteredRecords); // Use filtered count for totalRecords
             responseDTO.setData(parentDTOs);
-            responseDTO.setTotalPages((int) Math.ceil((double) totalFilteredRecords / size)); // Use filtered count for pagination
+            responseDTO.setTotalPages((int) Math.ceil((double) totalFilteredRecords / size));
             responseDTO.setPageSize(size);
             responseDTO.setCurrentPage(page);
 
-            logger.info("Successfully retrieved DCC PO Combined View with {} parent records (page: {}, size: {}, supplierId: {}, columnName: {}, searchQuery: {})",
-                    parentDTOs.size(), page, size, request.getSupplierId(), request.getColumnName(), request.getSearchQuery());
+            logger.info("Successfully retrieved DCC PO Combined View with {} parent records (page: {}, size: {}, supplierId: {}, pendingApprovers: {}, columnName: {}, searchQuery: {})",
+                    parentDTOs.size(), page, size, request.getSupplierId(), request.getPendingApprovers(), request.getColumnName(), request.getSearchQuery());
             deferredResult.setResult(ResponseEntity.ok(responseDTO));
         }).exceptionally(throwable -> {
             logger.error("Error processing DCC PO Combined View request", throwable);
@@ -149,6 +168,12 @@ public class DccPOController {
         return deferredResult;
     }
 
+    /**
+     * Exception handler for DccPOProcessingException.
+     *
+     * @param ex The DccPOProcessingException thrown during processing.
+     * @return ResponseEntity with error message and 500 status.
+     */
     @ExceptionHandler(DccPOProcessingException.class)
     public ResponseEntity<String> handleDccPOProcessingException(DccPOProcessingException ex) {
         logger.error("DCC PO Processing Exception: {}", ex.getMessage());
@@ -156,6 +181,12 @@ public class DccPOController {
                 .body("Error: " + ex.getMessage());
     }
 
+    /**
+     * Exception handler for general exceptions.
+     *
+     * @param ex The Exception thrown during processing.
+     * @return ResponseEntity with error message and 500 status.
+     */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<String> handleGeneralException(Exception ex) {
         logger.error("Unexpected error in DCC PO Controller", ex);

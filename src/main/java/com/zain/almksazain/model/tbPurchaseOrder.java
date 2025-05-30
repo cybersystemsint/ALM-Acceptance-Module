@@ -1,120 +1,200 @@
-/*
- * Click nbfs://nbhost/SystemFileSystem/Templates/Licenses/license-default.txt to change this license
- * Click nbfs://nbhost/SystemFileSystem/Templates/Classes/Class.java to edit this template
- */
 package com.zain.almksazain.model;
 
 import javax.persistence.*;
-import java.sql.Date;
+import java.util.Date;
 
-/**
- *
- * @author jgithu
- */
 @Entity
 @Table(name = "tb_PurchaseOrder")
-//@Table(name = "tb_PurchaseOrderUAT")
 public class tbPurchaseOrder {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    public long recordNo;
-    public String poNumber;
-    public String typeLookUpCode;
-    public double blanketTotalAmount;
-    public String releaseNum;
-    public Integer lineNumber;
-    public String prNum;
-    public String projectName;
-    public boolean lineCancelFlag;
-    public String cancelReason;
-    public String itemPartNumber;
-    public boolean prSubAllow;
-    public String countryOfOrigin;
-    public double poOrderQuantity;
-    public double poQtyNew;
-    public double quantityReceived;
-    public double quantityDueOld;
-    public double quantityDueNew;
-    public double quantityBilled;
-    public String currencyCode;
-    public double unitPriceInPoCurrency;
-    public double unitPriceInSAR;
-    public double linePriceInPoCurrency;
-    public double linePriceInSAR;
-    public double amountReceived;
-    public double amountDue;
-    public double amountDueNew;
-    public double amountBilled;
-    public String poLineDescription;
-    public String organizationName;
-    public String organizationCode;
-    public String subInventoryCode;
-    public String receiptRouting;
-    public String authorisationStatus;
-    public String poClosureStatus;
-    public String departmentName;
-    public String businessOwner;
-    public String poLineType;
-    public String acceptanceType;
-    public String costCenter;
-    public String chargeAccount;
-    public String serialControl;
-    public String vendorSerialNumberYN;
-    public String itemType;
-    public String itemCategoryInventory;
-    public String inventoryCategoryDescription;
-    public String itemCategoryFA;
-    public String FACategoryDescription;
-    public String itemCategoryPurchasing;
-    public String PurchasingCategoryDescription;
-    public String vendorName;
-    public String vendorNumber;
-    public Date approvedDate;
-    public Date createdDate;
-    public Integer createdBy;
-    public String newProjectName;
-    public String createdByName;
-    public Double descopedLinePriceInPoCurrency;
-    public Double newLinePriceInPoCurrency;
-    public Double getNewLinePriceInPoCurrency() {
-        return newLinePriceInPoCurrency;
-    }
+    @Column(name = "recordNo")
+    private Long recordNo;
 
-    public void setNewLinePriceInPoCurrency(Double newLinePriceInPoCurrency) {
-        this.newLinePriceInPoCurrency = newLinePriceInPoCurrency;
-    }
+    @Column(name = "poNumber")
+    private String poNumber;
 
-    
-    
-    public Integer getCreatedBy() {
-        return createdBy;
-    }
+    @Column(name = "typeLookUpCode")
+    private String typeLookUpCode;
 
-    public void setCreatedBy(Integer createdBy) {
-        this.createdBy = createdBy;
-    }
+    @Column(name = "blanketTotalAmount")
+    private Double blanketTotalAmount;
 
-    public String getCreatedByName() {
-        return createdByName;
-    }
+    @Column(name = "releaseNum")
+    private String releaseNum;
 
-    public void setCreatedByName(String createdByName) {
-        this.createdByName = createdByName;
-    }
+    @Column(name = "lineNumber")
+    private Integer lineNumber;
 
-    public long getRecordNo() {
+    @Column(name = "prNum")
+    private String prNum;
+
+    @Column(name = "projectName")
+    private String projectName;
+
+    @Column(name = "newProjectName")
+    private String newProjectName;
+
+    @Column(name = "lineCancelFlag")
+    private Boolean lineCancelFlag;
+
+    @Column(name = "cancelReason")
+    private String cancelReason;
+
+    @Column(name = "itemPartNumber")
+    private String itemPartNumber;
+
+    @Column(name = "prSubAllow")
+    private Boolean prSubAllow;
+
+    @Column(name = "countryOfOrigin")
+    private String countryOfOrigin;
+
+    @Column(name = "poOrderQuantity")
+    private Double amountDueLine;
+
+    @Column(name = "poQtyNew")
+    private Double poQtyNew;
+
+    @Column(name = "quantityReceived")
+    private Double quantityReceived;
+
+    @Column(name = "quantityDueOld")
+    private Double quantityDueOld;
+
+    @Column(name = "quantityDueNew")
+    private Double quantityDueNew;
+
+    @Column(name = "quantityBilled")
+    private Double quantityBilled;
+
+    @Column(name = "currencyCode")
+    private String currencyCode;
+
+    @Column(name = "unitPriceInPoCurrency")
+    private Double unitPriceInPoCurrency;
+
+    @Column(name = "unitPriceInSAR")
+    private Double unitPriceInSAR;
+
+    @Column(name = "linePriceInPoCurrency")
+    private Double linePriceInPoCurrency;
+
+    @Column(name = "linePriceInSAR")
+    private Double linePriceInSAR;
+
+    @Column(name = "amountReceived")
+    private Double amountReceived;
+
+    @Column(name = "amountDue")
+    private Double amountDue;
+
+    @Column(name = "amountDueNew")
+    private Double amountDueNew;
+
+    @Column(name = "amountBilled")
+    private Double amountBilled;
+
+    @Column(name = "poLineDescription")
+    private String poLineDescription;
+
+    @Column(name = "organizationName")
+    private String organizationName;
+
+    @Column(name = "organizationCode")
+    private String organizationCode;
+
+    @Column(name = "subInventoryCode")
+    private String subInventoryCode;
+
+    @Column(name = "receiptRouting")
+    private String receiptRouting;
+
+    @Column(name = "authorisationStatus")
+    private String authorizationStatus;
+
+    @Column(name = "poClosureStatus")
+    private String poClosureStatus;
+
+    @Column(name = "departmentName")
+    private String departmentName;
+
+    @Column(name = "businessOwner")
+    private String businessOwner;
+
+    @Column(name = "poLineType")
+    private String poLineType;
+
+    @Column(name = "acceptanceType")
+    private String acceptanceType;
+
+    @Column(name = "costCenter")
+    private String costCenter;
+
+    @Column(name = "chargeAccount")
+    private String chargeAccount;
+
+    @Column(name = "serialControl")
+    private String serialControl;
+
+    @Column(name = "vendorSerialNumberYN")
+    private String vendorSerialNumberYN;
+
+    @Column(name = "itemType")
+    private String itemType;
+
+    @Column(name = "itemCategoryInventory")
+    private String itemCategoryInventory;
+
+    @Column(name = "inventoryCategoryDescription")
+    private String inventoryCategoryDescription;
+
+    @Column(name = "itemCategoryFA")
+    private String itemCategoryFA;
+
+    @Column(name = "FACategoryDescription")
+    private String faCategoryDescription;
+
+    @Column(name = "itemCategoryPurchasing")
+    private String itemCategoryPurchasing;
+
+    @Column(name = "PurchasingCategoryDescription")
+    private String purchasingCategoryDescription;
+
+    @Column(name = "vendorName")
+    private String vendorName;
+
+    @Column(name = "vendorNumber")
+    private String vendorNumber;
+
+    @Column(name = "approvedDate")
+    @Temporal(TemporalType.TIMESTAMP)
+    private Date approvedDate;
+
+    @Column(name = "createdDate")
+    @Temporal(TemporalType.TIMESTAMP)
+    private Date createdDate;
+
+    @Column(name = "createdBy")
+    private Integer createdBy;
+
+    @Column(name = "createdByName")
+    private String createdByName;
+
+    @Column(name = "descopedLinePriceInPoCurrency")
+    private Double descopedLinePriceInPoCurrency;
+
+    @Column(name = "newLinePriceInPoCurrency")
+    private Double newLinePriceInPoCurrency;
+
+    // Getters and Setters
+    public Long getRecordNo() {
         return recordNo;
     }
 
-    public void setRecordNo(long recordNo) {
+    public void setRecordNo(Long recordNo) {
         this.recordNo = recordNo;
     }
-
-    public String getNewProjectName() {
-        return newProjectName;
-    }
-
 
     public String getPoNumber() {
         return poNumber;
@@ -132,11 +212,11 @@ public class tbPurchaseOrder {
         this.typeLookUpCode = typeLookUpCode;
     }
 
-    public double getBlanketTotalAmount() {
+    public Double getBlanketTotalAmount() {
         return blanketTotalAmount;
     }
 
-    public void setBlanketTotalAmount(double blanketTotalAmount) {
+    public void setBlanketTotalAmount(Double blanketTotalAmount) {
         this.blanketTotalAmount = blanketTotalAmount;
     }
 
@@ -172,11 +252,19 @@ public class tbPurchaseOrder {
         this.projectName = projectName;
     }
 
-    public boolean isLineCancelFlag() {
+    public String getNewProjectName() {
+        return newProjectName;
+    }
+
+    public void setNewProjectName(String newProjectName) {
+        this.newProjectName = newProjectName;
+    }
+
+    public Boolean getLineCancelFlag() {
         return lineCancelFlag;
     }
 
-    public void setLineCancelFlag(boolean lineCancelFlag) {
+    public void setLineCancelFlag(Boolean lineCancelFlag) {
         this.lineCancelFlag = lineCancelFlag;
     }
 
@@ -196,11 +284,11 @@ public class tbPurchaseOrder {
         this.itemPartNumber = itemPartNumber;
     }
 
-    public boolean isPrSubAllow() {
+    public Boolean getPrSubAllow() {
         return prSubAllow;
     }
 
-    public void setPrSubAllow(boolean prSubAllow) {
+    public void setPrSubAllow(Boolean prSubAllow) {
         this.prSubAllow = prSubAllow;
     }
 
@@ -212,51 +300,51 @@ public class tbPurchaseOrder {
         this.countryOfOrigin = countryOfOrigin;
     }
 
-    public double getPoOrderQuantity() {
-        return poOrderQuantity;
+    public Double getAmountDueLine() {
+        return amountDueLine;
     }
 
-    public void setPoOrderQuantity(double poOrderQuantity) {
-        this.poOrderQuantity = poOrderQuantity;
+    public void setAmountDueLine(Double amountDueLine) {
+        this.amountDueLine = amountDueLine;
     }
 
-    public double getPoQtyNew() {
+    public Double getPoQtyNew() {
         return poQtyNew;
     }
 
-    public void setPoQtyNew(double poQtyNew) {
+    public void setPoQtyNew(Double poQtyNew) {
         this.poQtyNew = poQtyNew;
     }
 
-    public double getQuantityReceived() {
+    public Double getQuantityReceived() {
         return quantityReceived;
     }
 
-    public void setQuantityReceived(double quantityReceived) {
+    public void setQuantityReceived(Double quantityReceived) {
         this.quantityReceived = quantityReceived;
     }
 
-    public double getQuantityDueOld() {
+    public Double getQuantityDueOld() {
         return quantityDueOld;
     }
 
-    public void setQuantityDueOld(double quantityDueOld) {
+    public void setQuantityDueOld(Double quantityDueOld) {
         this.quantityDueOld = quantityDueOld;
     }
 
-    public double getQuantityDueNew() {
+    public Double getQuantityDueNew() {
         return quantityDueNew;
     }
 
-    public void setQuantityDueNew(double quantityDueNew) {
+    public void setQuantityDueNew(Double quantityDueNew) {
         this.quantityDueNew = quantityDueNew;
     }
 
-    public double getQuantityBilled() {
+    public Double getQuantityBilled() {
         return quantityBilled;
     }
 
-    public void setQuantityBilled(double quantityBilled) {
+    public void setQuantityBilled(Double quantityBilled) {
         this.quantityBilled = quantityBilled;
     }
 
@@ -268,67 +356,67 @@ public class tbPurchaseOrder {
         this.currencyCode = currencyCode;
     }
 
-    public double getUnitPriceInPoCurrency() {
+    public Double getUnitPriceInPoCurrency() {
         return unitPriceInPoCurrency;
     }
 
-    public void setUnitPriceInPoCurrency(double unitPriceInPoCurrency) {
+    public void setUnitPriceInPoCurrency(Double unitPriceInPoCurrency) {
         this.unitPriceInPoCurrency = unitPriceInPoCurrency;
     }
 
-    public double getUnitPriceInSAR() {
+    public Double getUnitPriceInSAR() {
         return unitPriceInSAR;
     }
 
-    public void setUnitPriceInSAR(double unitPriceInSAR) {
+    public void setUnitPriceInSAR(Double unitPriceInSAR) {
         this.unitPriceInSAR = unitPriceInSAR;
     }
 
-    public double getLinePriceInPoCurrency() {
+    public Double getLinePriceInPoCurrency() {
         return linePriceInPoCurrency;
     }
 
-    public void setLinePriceInPoCurrency(double linePriceInPoCurrency) {
+    public void setLinePriceInPoCurrency(Double linePriceInPoCurrency) {
         this.linePriceInPoCurrency = linePriceInPoCurrency;
     }
 
-    public double getLinePriceInSAR() {
+    public Double getLinePriceInSAR() {
         return linePriceInSAR;
     }
 
-    public void setLinePriceInSAR(double linePriceInSAR) {
+    public void setLinePriceInSAR(Double linePriceInSAR) {
         this.linePriceInSAR = linePriceInSAR;
     }
 
-    public double getAmountReceived() {
+    public Double getAmountReceived() {
         return amountReceived;
     }
 
-    public void setAmountReceived(double amountReceived) {
+    public void setAmountReceived(Double amountReceived) {
         this.amountReceived = amountReceived;
     }
 
-    public double getAmountDue() {
+    public Double getAmountDue() {
         return amountDue;
     }
 
-    public void setAmountDue(double amountDue) {
+    public void setAmountDue(Double amountDue) {
         this.amountDue = amountDue;
     }
 
-    public double getAmountDueNew() {
+    public Double getAmountDueNew() {
         return amountDueNew;
     }
 
-    public void setAmountDueNew(double amountDueNew) {
+    public void setAmountDueNew(Double amountDueNew) {
         this.amountDueNew = amountDueNew;
     }
 
-    public double getAmountBilled() {
+    public Double getAmountBilled() {
         return amountBilled;
     }
 
-    public void setAmountBilled(double amountBilled) {
+    public void setAmountBilled(Double amountBilled) {
         this.amountBilled = amountBilled;
     }
 
@@ -372,12 +460,12 @@ public class tbPurchaseOrder {
         this.receiptRouting = receiptRouting;
     }
 
-    public String getAuthorisationStatus() {
-        return authorisationStatus;
+    public String getAuthorizationStatus() {
+        return authorizationStatus;
     }
 
-    public void setAuthorisationStatus(String authorisationStatus) {
-        this.authorisationStatus = authorisationStatus;
+    public void setAuthorizationStatus(String authorizationStatus) {
+        this.authorizationStatus = authorizationStatus;
     }
 
     public String getPoClosureStatus() {
@@ -484,12 +572,12 @@ public class tbPurchaseOrder {
         this.itemCategoryFA = itemCategoryFA;
     }
 
-    public String getFACategoryDescription() {
-        return FACategoryDescription;
+    public String getFaCategoryDescription() {
+        return faCategoryDescription;
     }
 
-    public void setFACategoryDescription(String FACategoryDescription) {
-        this.FACategoryDescription = FACategoryDescription;
+    public void setFaCategoryDescription(String faCategoryDescription) {
+        this.faCategoryDescription = faCategoryDescription;
     }
 
     public String getItemCategoryPurchasing() {
@@ -501,11 +589,11 @@ public class tbPurchaseOrder {
     }
 
     public String getPurchasingCategoryDescription() {
-        return PurchasingCategoryDescription;
+        return purchasingCategoryDescription;
     }
 
-    public void setPurchasingCategoryDescription(String PurchasingCategoryDescription) {
-        this.PurchasingCategoryDescription = PurchasingCategoryDescription;
+    public void setPurchasingCategoryDescription(String purchasingCategoryDescription) {
+        this.purchasingCategoryDescription = purchasingCategoryDescription;
     }
 
     public String getVendorName() {
@@ -540,7 +628,23 @@ public class tbPurchaseOrder {
         this.createdDate = createdDate;
     }
 
-    public double getDescopedLinePriceInPoCurrency() {
+    public Integer getCreatedBy() {
+        return createdBy;
+    }
+
+    public void setCreatedBy(Integer createdBy) {
+        this.createdBy = createdBy;
+    }
+
+    public String getCreatedByName() {
+        return createdByName;
+    }
+
+    public void setCreatedByName(String createdByName) {
+        this.createdByName = createdByName;
+    }
+
+    public Double getDescopedLinePriceInPoCurrency() {
         return descopedLinePriceInPoCurrency;
     }
 
@@ -548,5 +652,11 @@ public class tbPurchaseOrder {
         this.descopedLinePriceInPoCurrency = descopedLinePriceInPoCurrency;
     }
 
+    public Double getNewLinePriceInPoCurrency() {
+        return newLinePriceInPoCurrency;
+    }
 
+    public void setNewLinePriceInPoCurrency(Double newLinePriceInPoCurrency) {
+        this.newLinePriceInPoCurrency = newLinePriceInPoCurrency;
+    }
 }

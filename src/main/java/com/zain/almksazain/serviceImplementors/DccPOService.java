@@ -18,8 +18,10 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.annotation.Cacheable;
-import org.springframework.dao.DataAccessException;
-import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
@@ -29,14 +31,10 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
-/**
- * Service class to fetch and combine DCC, Purchase Order, UPL, Line Item, and Approval data
- * into DccPOCombinedViewDTO objects, matching the dccPOCombinedView MySQL view.
- * Applies pagination on distinct dccRecordNo values to avoid truncating related data.
- * Enforces that every Tb_DCC record has a valid poNumber in tb_PurchaseOrder.
- */
 @Service
 public class DccPOService {
 
@@ -60,117 +58,44 @@ public class DccPOService {
     @Autowired
     private TbCategoryApprovalsRepository tbCategoryApprovalsRepository;
 
-    @Autowired
-    private JdbcTemplate jdbcTemplate;
-
-    /**
-     * Public method to asynchronously retrieve paginated DccPOCombinedViewDTO objects with total counts.
-     * @param supplierId Supplier ID to filter DCC records (use "0" for all suppliers).
-     * @param page Page number (1-based).
-     * @param size Number of parent DCC records per page.
-     * @param columnName Column to filter on (mapped to database field).
-     * @param searchQuery Search term for filtering.
-     * @return CompletableFuture containing the fetch result with data and total counts.
-     */
-    public CompletableFuture<DccPOFetchResult> getDccPOCombinedView(String supplierId, int page, int size, String columnName, String searchQuery) {
+    public CompletableFuture<DccPOFetchResult> getDccPOCombinedView(String supplierId, String pendingApprovers, int page, int size, String columnName, String searchQuery) {
         try {
-            logger.info("Starting retrieval of DCC PO Combined View with supplierId: {}, page: {}, size: {}, columnName: {}, searchQuery: {}",
-                    supplierId, page, size, columnName, searchQuery);
-            return CompletableFuture.supplyAsync(() -> fetchDccPOCombinedView(supplierId, page, size, columnName, searchQuery));
+            logger.info("Starting retrieval of DCC PO Combined View with supplierId: {}, pendingApprovers: {}, page: {}, size: {}, columnName: {}, searchQuery: {}",
+                    supplierId, pendingApprovers, page, size, columnName, searchQuery);
+            return CompletableFuture.supplyAsync(() -> fetchDccPOCombinedView(supplierId, pendingApprovers, page, size, columnName, searchQuery));
         } catch (Exception ex) {
             logger.error("Error initiating retrieval of DCC PO Combined View", ex);
             throw new DccPOProcessingException("Failed to initiate DCC PO Combined View retrieval", ex);
         }
     }
 
-    /**
-     * Fetches paginated DCC records and their related data, building DccPOCombinedViewDTO objects.
-     * Paginates only distinct dccRecordNo values to match the view's grouping.
-     * Enforces that every Tb_DCC record has a valid poNumber in tb_PurchaseOrder.
-     * Aligns calculations with the dccPOCombinedView MySQL view.
-     * @param supplierId Supplier ID filter.
-     * @param page Page number (1-based).
-     * @param size Number of parent DCC records per page.
-     * @param columnName Column to filter on.
-     * @param searchQuery Search term for filtering.
-     * @return DccPOFetchResult containing the list of DTOs and total counts.
-     */
     @Async("taskExecutor")
-    @Cacheable(value = "dccPOCombinedViewCache", unless = "#result.data == null || #result.data.isEmpty()")
-    private DccPOFetchResult fetchDccPOCombinedView(String supplierId, int page, int size, String columnName, String searchQuery) {
+    @Cacheable(value = "dccPOCombinedViewCache",
+            key = "{#supplierId, #pendingApprovers, #page, #size, #columnName, #searchQuery}",
+            unless = "#result.data == null || #result.data.isEmpty()")
+    private DccPOFetchResult fetchDccPOCombinedView(String supplierId, String pendingApprovers, int page, int size, String columnName, String searchQuery) {
         try {
-            // Initialize result list and set to track invalid linkId logs
-            List<DccPOCombinedViewDTO> result = new ArrayList<>();
-            Set<Long> loggedInvalidLinkIds = new HashSet<>();
-
-            // Validate input parameters
             if (page < 1 || size < 1) {
                 logger.error("Invalid pagination parameters: page={}, size={}", page, size);
                 throw new IllegalArgumentException("Page and size must be positive");
             }
 
-            // Build dynamic WHERE clause for filtering
-            StringBuilder whereClause = new StringBuilder(" WHERE 1=1");
-            List<Object> params = new ArrayList<>();
-            if (!"0".equals(supplierId)) {
-                whereClause.append(" AND p.vendorNumber = ?");
-                params.add(supplierId);
-            }
-            boolean hasFilter = columnName != null && !columnName.isEmpty() && searchQuery != null && !searchQuery.isEmpty();
-            if (hasFilter) {
-                String dbColumnName = mapColumnToDbField(columnName);
-                if (dbColumnName != null) {
-                    if (columnName.toLowerCase().equals("recordno")) {
-                        // For recordNo, use exact match since it's a numeric field
-                        whereClause.append(" AND ").append(dbColumnName).append(" = ?");
-                        try {
-                            params.add(Long.parseLong(searchQuery));
-                        } catch (NumberFormatException e) {
-                            logger.warn("Invalid searchQuery for recordNo: {}. Expected a number.", searchQuery);
-                            return new DccPOFetchResult(result, 0L, 0L); // Return empty result with zero counts
-                        }
-                    } else {
-                        // For other fields, use LIKE with LOWER for string matching
-                        whereClause.append(" AND LOWER(").append(dbColumnName).append(") LIKE ?");
-                        params.add("%" + searchQuery.toLowerCase() + "%");
-                    }
-                }
-            }
+            Pageable pageable = PageRequest.of(page - 1, size, Sort.by(Sort.Direction.DESC, "recordNo"));
 
-            // Step 1: Count total distinct dccRecordNo values in the entire database (ignoring filters except JOIN)
-            String totalUnfilteredRecordsSql = "SELECT COUNT(DISTINCT d.recordNo) FROM tb_DCC d JOIN tb_PurchaseOrder p ON d.poNumber = p.poNumber";
-            Long totalUnfilteredRecords = jdbcTemplate.queryForObject(totalUnfilteredRecordsSql, new Object[]{}, Long.class);
-            if (totalUnfilteredRecords == null) totalUnfilteredRecords = 0L;
-            logger.info("Total unfiltered distinct dccRecordNo in the database: {}", totalUnfilteredRecords);
+            long totalUnfilteredRecords = tbDccRepository.countByPoNumberIsNotNull();
+            logger.info("Total unfiltered distinct dccRecordNo: {}", totalUnfilteredRecords);
 
-            // Step 2: Count distinct dccRecordNo values after applying filters
-            String countSql = "SELECT COUNT(DISTINCT d.recordNo) FROM tb_DCC d JOIN tb_PurchaseOrder p ON d.poNumber = p.poNumber" +
-                    whereClause.toString();
-            Long totalFilteredRecords = jdbcTemplate.queryForObject(countSql, params.toArray(), Long.class);
-            if (totalFilteredRecords == null) totalFilteredRecords = 0L;
-            logger.info("Total filtered distinct dccRecordNo: {}", totalFilteredRecords);
+            DccSpecification spec = new DccSpecification(supplierId, pendingApprovers, columnName, searchQuery);
+            Page<DCC> dccPage = tbDccRepository.findAll(spec, pageable);
+            List<DCC> dccList = dccPage.getContent();
+            long totalFilteredRecords = dccPage.getTotalElements();
+            logger.info("Total filtered valid dccRecordNo: {}", totalFilteredRecords);
 
-            // Step 3: Fetch paginated distinct dccRecordNo values
-            params.add(size);
-            params.add((page - 1) * size);
-            String dccSql = "SELECT DISTINCT d.recordNo FROM tb_DCC d JOIN tb_PurchaseOrder p ON d.poNumber = p.poNumber" +
-                    whereClause.toString() + " ORDER BY d.recordNo DESC LIMIT ? OFFSET ?";
-            long startTime = System.nanoTime();
-            List<Long> paginatedRecordNos = jdbcTemplate.query(dccSql, params.toArray(), (rs, rowNum) -> rs.getLong("recordNo"));
-            logger.debug("Paginated dccRecordNo query took {} ms", (System.nanoTime() - startTime) / 1_000_000);
-            if (paginatedRecordNos.isEmpty()) {
-                logger.info("No DCC records found for page {} with size {}", page, size);
-                return new DccPOFetchResult(result, totalUnfilteredRecords, totalFilteredRecords);
-            }
-
-            // Step 4: Fetch full DCC details for paginated recordNos
-            List<DCC> dccList = tbDccRepository.findByRecordNoIn(paginatedRecordNos);
             if (dccList.isEmpty()) {
-                logger.warn("No DCC records found for recordNos: {}. Possible data inconsistency.", paginatedRecordNos);
-                return new DccPOFetchResult(result, totalUnfilteredRecords, totalFilteredRecords);
+                logger.info("No DCC records found for page {}", page);
+                return new DccPOFetchResult(new ArrayList<>(), totalFilteredRecords, totalUnfilteredRecords);
             }
 
-            // Validate that all DCC records have a valid poNumber
             List<DCC> invalidDccRecords = dccList.stream()
                     .filter(dcc -> dcc.getPoNumber() == null || dcc.getPoNumber().isEmpty())
                     .collect(Collectors.toList());
@@ -181,270 +106,317 @@ public class DccPOService {
                 throw new DccPOProcessingException("Invalid DCC records detected with missing poNumber");
             }
 
-            // Batch fetch related data
-            Set<String> poNumbers = dccList.stream().map(DCC::getPoNumber).collect(Collectors.toSet());
+            // Batch fetch all related data
+            Set<String> poNumbersSet = dccList.stream().map(DCC::getPoNumber).collect(Collectors.toSet());
+            List<String> poNumbers = new ArrayList<>(poNumbersSet);
+            List<Long> dccIds = dccList.stream().map(DCC::getRecordNo).collect(Collectors.toList());
             Map<String, List<tbPurchaseOrder>> purchaseOrderMap = tbPurchaseOrderRepository.findByPoNumberIn(poNumbers)
                     .stream().collect(Collectors.groupingBy(tbPurchaseOrder::getPoNumber));
             Map<String, List<tb_PurchaseOrderUPL>> uplMap = tbPurchaseOrderUplRepository.findByPoNumberIn(poNumbers)
                     .stream().collect(Collectors.groupingBy(tb_PurchaseOrderUPL::getPoNumber));
-            Map<String, List<DCCLineItem>> dccLnMap = tbDccLnRepository.findByDccIdIn(
-                            paginatedRecordNos.stream().map(String::valueOf).collect(Collectors.toList()))
-                    .stream().collect(Collectors.groupingBy(DCCLineItem::getDccId));
+            Map<Long, List<DCCLineItem>> dccLnMap = tbDccLnRepository.findByDccIdIn(dccIds.stream().map(String::valueOf).collect(Collectors.toList()))
+                    .stream().collect(Collectors.groupingBy(dccLn -> Long.parseLong(dccLn.getDccId())));
+            Map<Long, List<TbCategoryApprovalRequests>> approvalRequestMap = tbCategoryApprovalRequestsRepository
+                    .findByAcceptanceRequestRecordNoIn(dccIds)
+                    .stream().collect(Collectors.groupingBy(TbCategoryApprovalRequests::getAcceptanceRequestRecordNo));
 
-            // Step 5: Build DccPOCombinedViewDTO objects
+            // Precompute DCC Line Items by UPL key
+            Map<String, List<DCCLineItem>> dccLnByUplLineNumber = dccLnMap.values().stream()
+                    .flatMap(List::stream)
+                    .collect(Collectors.groupingBy(dccLn -> dccLn.getUplLineNumber() + "-" + dccLn.getLineNumber() + "-" + dccLn.getPoId()));
+
+            // Process records in parallel
+            Set<Long> processedRecordNos = ConcurrentHashMap.newKeySet();
+            Set<Long> loggedInvalidLinkIds = ConcurrentHashMap.newKeySet();
             SimpleDateFormat dateFormat = new SimpleDateFormat("d-MMM-yyyy");
-            for (DCC dcc : dccList) {
-                // Verify Purchase Order exists (enforced by JOIN, but added for robustness)
-                List<tbPurchaseOrder> purchaseOrderList = purchaseOrderMap.getOrDefault(dcc.getPoNumber(), Collections.emptyList());
-                if (purchaseOrderList.isEmpty()) {
-                    logger.error("No Purchase Order found for poNumber: {} in DCC record with recordNo: {}. Data inconsistency detected.",
-                            dcc.getPoNumber(), dcc.getRecordNo());
-                    throw new DccPOProcessingException("Missing Purchase Order for DCC record: " + dcc.getRecordNo());
-                }
-                tbPurchaseOrder purchaseOrder = purchaseOrderList.get(0);
 
-                // Fetch approval requests (mimics LatestApprovalRequests CTE)
-                List<TbCategoryApprovalRequests> approvalRequests = tbCategoryApprovalRequestsRepository
-                        .findByAcceptanceRequestRecordNoOrderByRecordDateTimeDesc(dcc.getRecordNo());
-                TbCategoryApprovalRequests latestApprovalRequest = approvalRequests.isEmpty() ? null : approvalRequests.get(0);
+            List<DccPOCombinedViewDTO> result = dccList.parallelStream()
+                    .filter(dcc -> !processedRecordNos.contains(dcc.getRecordNo()))
+                    .flatMap(dcc -> {
+                        List<tbPurchaseOrder> purchaseOrderList = purchaseOrderMap.getOrDefault(dcc.getPoNumber(), Collections.emptyList());
+                        if (purchaseOrderList.isEmpty()) {
+                            logger.error("No Purchase Order found for poNumber: {} in DCC record: {}.",
+                                    dcc.getPoNumber(), dcc.getRecordNo());
+                            throw new DccPOProcessingException("Missing Purchase Order for DCC record: " + dcc.getRecordNo());
+                        }
+                        tbPurchaseOrder purchaseOrder = purchaseOrderList.get(0);
 
-                // Fetch line items
-                List<DCCLineItem> dccLnList = dccLnMap.getOrDefault(String.valueOf(dcc.getRecordNo()), Collections.emptyList());
-                if (dccLnList.isEmpty()) {
-                    logger.warn("No DCC_LN records found for DCC ID: {}. Skipping DTO creation.", dcc.getRecordNo());
-                    continue; // Optionally create partial DTO if required
-                }
+                        List<tb_PurchaseOrderUPL> uplList = uplMap.getOrDefault(dcc.getPoNumber(), Collections.emptyList());
+                        List<DCCLineItem> dccLnList = dccLnMap.getOrDefault(dcc.getRecordNo(), Collections.emptyList());
+                        List<TbCategoryApprovalRequests> approvalRequests = approvalRequestMap.getOrDefault(dcc.getRecordNo(), Collections.emptyList());
+                        TbCategoryApprovalRequests latestApprovalRequest = approvalRequests.isEmpty() ? null : approvalRequests.get(0);
 
-                // Fetch UPLs
-                List<tb_PurchaseOrderUPL> uplList = uplMap.getOrDefault(dcc.getPoNumber(), Collections.emptyList());
-                if (uplList.isEmpty()) {
-                    logger.warn("No PurchaseOrderUPL records found for PO Number: {}. Skipping DTO creation.", dcc.getPoNumber());
-                    continue; // Optionally create partial DTO if required
-                }
-
-                // Precompute DCC Line Items by UPL key for efficiency
-                Map<String, List<DCCLineItem>> dccLnByUplLineNumber = new HashMap<>();
-                for (tb_PurchaseOrderUPL upl : uplList) {
-                    String key = upl.getPoLineNumber() + "-" + upl.getPoLineNumber() + "-" + upl.getPoNumber();
-                    dccLnByUplLineNumber.computeIfAbsent(key, k -> tbDccLnRepository.findByUplLineNumberAndLineNumberAndPoId(
-                            upl.getPoLineNumber(), upl.getPoLineNumber(), upl.getPoNumber()));
-                }
-
-                // Iterate over line items and UPLs to build DTOs
-                for (DCCLineItem dccLn : dccLnList) {
-                    for (tb_PurchaseOrderUPL upl : uplList) {
-                        // Match line item with UPL or Purchase Order (mimics view's CASE condition)
-                        boolean condition = (dccLn.getUplLineNumber() != null && !dccLn.getUplLineNumber().isEmpty())
-                                ? (dccLn.getUplLineNumber().equals(upl.getUplLine()) &&
-                                upl.getPoLineNumber().equals(dccLn.getLineNumber()) &&
-                                upl.getPoNumber().equals(dcc.getPoNumber()))
-                                : (purchaseOrder.getLineNumber().equals(dccLn.getLineNumber()) &&
-                                purchaseOrder.getPoNumber().equals(dcc.getPoNumber()));
-                        if (!condition) continue;
-
-                        DccPOCombinedViewDTO dto = new DccPOCombinedViewDTO();
-
-                        // Set DCC fields
-                        dto.setDccRecordNo(dcc.getRecordNo());
-                        dto.setDccPoNumber(dcc.getPoNumber());
-                        dto.setDccVendorName(dcc.getVendorName());
-                        dto.setDccVendorEmail(dcc.getVendorEmail());
-                        dto.setDccProjectName(dcc.getProjectName());
-                        dto.setNewProjectName(dcc.getNewProjectName());
-                        dto.setDccAcceptanceType(dcc.getAcceptanceType());
-                        dto.setDccStatus(dcc.getStatus());
-                        dto.setDccCreatedDate(dcc.getCreatedDate() != null ? dateFormat.format(dcc.getCreatedDate()) : null);
-                        dto.setVendorComment(dcc.getVendorComment());
-                        dto.setDccId(dcc.getDccId());
-                        dto.setDccCurrency(dcc.getCurrency());
-
-                        // Set approval date
-                        if (latestApprovalRequest != null && latestApprovalRequest.getApprovedDate() != null) {
-                            Date approvedDate = Date.from(latestApprovalRequest.getApprovedDate().atZone(ZoneId.of("UTC")).toInstant());
-                            dto.setDateApproved(dateFormat.format(approvedDate));
+                        if (dccLnList.isEmpty() || uplList.isEmpty()) {
+                            logger.warn("No DCC_LN or UPL records found for DCC ID: {}. Skipping.", dcc.getRecordNo());
+                            processedRecordNos.add(dcc.getRecordNo());
+                            return Stream.empty();
                         }
 
-                        // Set Line Item fields
-                        dto.setLnRecordNo(dccLn.getRecordNo());
-                        dto.setLnProductName(dccLn.getProductName());
-                        dto.setLnProductSerialNo(dccLn.getSerialNumber());
-                        dto.setLnDeliveredQty(dccLn.getDeliveredQty());
-                        dto.setLnLocationName(dccLn.getLocationName());
-                        dto.setLnInserviceDate(dccLn.getDateInService() != null ? dateFormat.format(dccLn.getDateInService()) : null);
-                        dto.setLnUnitPrice(dccLn.getUnitPrice() != null ? dccLn.getUnitPrice() : 0.0);
-                        dto.setLnScopeOfWork(dccLn.getScopeOfWork());
-                        dto.setLnRemarks(dccLn.getRemarks());
-                        dto.setLinkId(parseLinkId(dccLn.getLinkId(), dccLn.getRecordNo(), loggedInvalidLinkIds));
-                        dto.setTagNumber(dccLn.getTagNumber());
-                        dto.setLineNumber(dccLn.getLineNumber());
-                        dto.setActualItemCode(dccLn.getActualItemCode());
-                        dto.setUplLineNumber(dccLn.getUplLineNumber());
-                        dto.setPoId(purchaseOrder.getPoNumber());
+                        return buildDccPOCombinedViewDTOs(dcc, purchaseOrder, uplList, dccLnList, latestApprovalRequest,
+                                dccLnByUplLineNumber, dateFormat, loggedInvalidLinkIds, processedRecordNos).stream();
+                    })
+                    .collect(Collectors.toList());
 
-                        // Set Purchase Order and UPL fields
-                        dto.setProjectName(purchaseOrder.getProjectName());
-                        dto.setSupplierId(purchaseOrder.getVendorNumber());
-                        dto.setVendorNumber(purchaseOrder.getVendorNumber());
-                        dto.setVendorName(purchaseOrder.getVendorName());
-                        dto.setCreatedBy(dcc.getCreatedBy());
-                        dto.setCreatedByName(dcc.getCreatedBy());
-                        dto.setItemPartNumber(dccLn.getUplLineNumber() != null && !dccLn.getUplLineNumber().isEmpty()
-                                ? upl.getUplLineItemCode() : purchaseOrder.getItemPartNumber());
-                        double poOrderQty = (dccLn.getUplLineNumber() != null && !dccLn.getUplLineNumber().isEmpty())
-                                ? upl.getPoLineQuantity()
-                                : parsePoOrderQuantity(purchaseOrder);
-                        dto.setPoOrderQuantity(poOrderQty);
-                        dto.setPoLineDescription(dccLn.getUplLineNumber() != null && !dccLn.getUplLineNumber().isEmpty()
-                                ? upl.getUplLineDescription() : purchaseOrder.getPoLineDescription());
-                        dto.setUplLineQuantity(upl.getUplLineQuantity());
-                        dto.setUplLineItemCode(upl.getUplLineItemCode());
-                        dto.setUplLineDescription(upl.getUplLineDescription());
-                        dto.setUnitOfMeasure(upl.getUom());
-                        dto.setActiveOrPassive(upl.getActiveOrPassive());
-
-                        // Calculate quantities (aligned with view)
-                        String key = upl.getPoLineNumber() + "-" + upl.getPoLineNumber() + "-" + upl.getPoNumber();
-                        double totalDelivered = upl.getUplLineQuantity() > 0
-                                ? dccLnByUplLineNumber.getOrDefault(key, Collections.emptyList()).stream()
-                                .filter(d -> !Arrays.asList("incomplete", "rejected").contains(dcc.getStatus()))
-                                .mapToDouble(DCCLineItem::getDeliveredQty)
-                                .sum()
-                                : 0.0;
-                        dto.setUPLACPTRequestValue(totalDelivered);
-
-                        // POAcceptanceQty: Use specific UPL denominator
-                        double specificDenominator = upl.getUplLineQuantity() > 0
-                                ? dccLnByUplLineNumber.getOrDefault(key, Collections.emptyList()).stream()
-                                .mapToDouble(d -> upl.getPoLineQuantity() * upl.getUnitPrice())
-                                .sum()
-                                : 0.0;
-                        dto.setPOAcceptanceQty(specificDenominator != 0 ? totalDelivered / specificDenominator : 0.0);
-
-                        // POLineAcceptanceQty
-                        double poLineAcceptanceQty = uplList.stream()
-                                .filter(u -> u.getPoNumber().equals(upl.getPoNumber()) && u.getPoLineNumber().equals(upl.getPoLineNumber()))
-                                .mapToDouble(u -> {
-                                    double denominator = u.getPoLineQuantity() * u.getUnitPrice();
-                                    return denominator != 0 ? (u.getUplLineQuantity() * u.getPoLineQuantity()) / denominator : 0.0;
-                                })
-                                .sum();
-                        dto.setPOLineAcceptanceQty(poLineAcceptanceQty);
-
-                        // poPendingQuantity: Corrected uplLineNumber
-                        boolean exists = tbDccLnRepository.existsByPoIdAndLineNumberAndUplLineNumber(
-                                upl.getPoNumber(), upl.getPoLineNumber(), upl.getUplLine());
-                        dto.setPoPendingQuantity(exists ? poLineAcceptanceQty : upl.getPoLineQuantity());
-
-                        // uplPendingQuantity
-                        dto.setUplPendingQuantity(upl.getUplLineQuantity() - totalDelivered);
-
-                        // Approval and aging calculations
-                        if (latestApprovalRequest != null) {
-                            // Fetch approvals with view's criteria
-                            List<TbCategoryApprovals> filteredApprovals = tbCategoryApprovalsRepository
-                                    .findByApprovalRecordIdAndStatusAndApprovalStatusIn(
-                                            latestApprovalRequest.getRecordNo(), "pending",
-                                            Arrays.asList("pending", "readyForApproval", "request-info"))
-                                    .stream()
-                                    .filter(a -> "pending".equals(latestApprovalRequest.getStatus()) || "request-info".equals(latestApprovalRequest.getStatus()))
-                                    .collect(Collectors.toList());
-                            dto.setApprovalCount((long) filteredApprovals.size());
-
-                            // Pending approvers
-                            Optional<TbCategoryApprovals> readyForApproval = filteredApprovals.stream()
-                                    .filter(a -> "readyForApproval".equals(a.getApprovalStatus()))
-                                    .sorted(Comparator.comparing(TbCategoryApprovals::getApprovalId))
-                                    .findFirst();
-                            List<TbCategoryApprovals> pendingApproversList = filteredApprovals.stream()
-                                    .filter(a -> Arrays.asList("pending", "readyForApproval", "request-info").contains(a.getApprovalStatus()))
-                                    .sorted(Comparator.comparing(TbCategoryApprovals::getApprovalId))
-                                    .collect(Collectors.toList());
-                            String pendingApproverName = readyForApproval
-                                    .map(TbCategoryApprovals::getApproverName)
-                                    .orElseGet(() -> pendingApproversList.stream()
-                                            .findFirst()
-                                            .map(TbCategoryApprovals::getApproverName)
-                                            .orElse(null));
-                            dto.setPendingApprovers(pendingApproverName);
-
-                            // Approver comments
-                            List<TbCategoryApprovals> comments = tbCategoryApprovalsRepository
-                                    .findByApprovalRecordIdAndApprovalStatusNotIn(
-                                            latestApprovalRequest.getRecordNo(),
-                                            Arrays.asList("pending", "readyForApproval"))
-                                    .stream()
-                                    .filter(a -> a.getComments() != null)
-                                    .sorted(Comparator.comparing(TbCategoryApprovals::getApprovalId).reversed())
-                                    .collect(Collectors.toList());
-                            dto.setApproverComment(comments.isEmpty() ? null : comments.get(0).getComments());
-
-                            // User aging: Use all approvals
-                            LocalDateTime now = LocalDateTime.now(ZoneId.of("UTC"));
-                            List<TbCategoryApprovals> allApprovals = tbCategoryApprovalsRepository
-                                    .findByApprovalRecordId(latestApprovalRequest.getRecordNo());
-                            LocalDateTime maxDate = allApprovals.stream()
-                                    .map(a -> a.getApprovedDate() != null ? a.getApprovedDate() : a.getRecordDateTime())
-                                    .max(LocalDateTime::compareTo)
-                                    .orElse(now);
-                            long minutes = Duration.between(maxDate, now).toMinutes();
-                            dto.setUserAging(String.format("%d days %d hrs %d mins", minutes / 1440, (minutes / 60) % 24, minutes % 60));
-
-                            // Total aging
-                            long totalMinutes;
-                            List<TbCategoryApprovals> pendingApprovals = tbCategoryApprovalsRepository
-                                    .findByApprovalRecordIdAndStatusAndApprovalStatus(
-                                            latestApprovalRequest.getRecordNo(), "pending", "pending")
-                                    .stream()
-                                    .filter(a -> "pending".equals(latestApprovalRequest.getStatus()))
-                                    .collect(Collectors.toList());
-                            if (pendingApprovals.isEmpty()) {
-                                LocalDateTime minRecordDateTime = allApprovals.stream()
-                                        .map(TbCategoryApprovals::getRecordDateTime)
-                                        .min(LocalDateTime::compareTo)
-                                        .orElse(now);
-                                LocalDateTime maxApprovedDate = allApprovals.stream()
-                                        .map(TbCategoryApprovals::getApprovedDate)
-                                        .filter(Objects::nonNull)
-                                        .max(LocalDateTime::compareTo)
-                                        .orElse(now);
-                                totalMinutes = Duration.between(minRecordDateTime, maxApprovedDate).toMinutes();
-                            } else {
-                                LocalDateTime minRecordDateTime = pendingApprovals.stream()
-                                        .map(TbCategoryApprovals::getRecordDateTime)
-                                        .min(LocalDateTime::compareTo)
-                                        .orElse(now);
-                                totalMinutes = Duration.between(minRecordDateTime, now).toMinutes();
-                            }
-                            dto.setTotalAging(String.format("%d days %d hrs %d mins", totalMinutes / 1440, (totalMinutes / 60) % 24, totalMinutes % 60));
-                        }
-
-                        result.add(dto);
-                    }
-                }
-            }
-
-            logger.info("Completed retrieval of DCC PO Combined View with {} DTOs for page {} with size {}", result.size(), page, size);
-            return new DccPOFetchResult(result, hasFilter ? totalFilteredRecords : totalUnfilteredRecords, totalFilteredRecords);
-        } catch (DataAccessException ex) {
-            logger.error("Database error in fetchDccPOCombinedView for supplierId: {}, page: {}, size: {}", supplierId, page, size, ex);
-            throw new DccPOProcessingException("Database error fetching DCC PO Combined View", ex);
-        } catch (DccPOProcessingException ex) {
-            throw ex; // Re-throw custom exceptions for data inconsistencies
+            logger.info("Retrieved {} records for page {}, size {}", result.size(), page, size);
+            return new DccPOFetchResult(result, totalFilteredRecords, totalUnfilteredRecords);
         } catch (Exception ex) {
-            logger.error("Unexpected error in fetchDccPOCombinedView for supplierId: {}, page: {}, size: {}", supplierId, page, size, ex);
+            logger.error("Error in fetchDccPOCombinedView for supplierId: {}, pendingApprovers: {}, page: {}, size: {}, columnName: {}, searchQuery: {}",
+                    supplierId, pendingApprovers, page, size, columnName, searchQuery, ex);
             throw new DccPOProcessingException("Failed to fetch DCC PO Combined View", ex);
         }
     }
 
-    /**
-     * Inner class to hold the fetch result including data and total counts.
-     */
+    private List<DccPOCombinedViewDTO> buildDccPOCombinedViewDTOs(
+            DCC dcc, tbPurchaseOrder purchaseOrder, List<tb_PurchaseOrderUPL> uplList,
+            List<DCCLineItem> dccLnList, TbCategoryApprovalRequests latestApprovalRequest,
+            Map<String, List<DCCLineItem>> dccLnByUplLineNumber, SimpleDateFormat dateFormat,
+            Set<Long> loggedInvalidLinkIds, Set<Long> processedRecordNos) {
+        List<DccPOCombinedViewDTO> dtos = new ArrayList<>();
+
+        for (DCCLineItem dccLn : dccLnList) {
+            for (tb_PurchaseOrderUPL upl : uplList) {
+                boolean condition = (dccLn.getUplLineNumber() != null && !dccLn.getUplLineNumber().isEmpty())
+                        ? (dccLn.getUplLineNumber().equals(upl.getUplLine()) &&
+                        upl.getPoLineNumber().equals(dccLn.getLineNumber()) &&
+                        upl.getPoNumber().equals(dcc.getPoNumber()))
+                        : (purchaseOrder.getLineNumber().equals(dccLn.getLineNumber()) &&
+                        purchaseOrder.getPoNumber().equals(dcc.getPoNumber()));
+                if (!condition) {
+                    logger.debug("No matching UPL record for DCC recordNo: {}, poNumber: {}, poLineNumber: {}, uplLine: {}",
+                            dcc.getRecordNo(), dcc.getPoNumber(), dccLn.getLineNumber(), dccLn.getUplLineNumber());
+                    continue;
+                }
+
+                DccPOCombinedViewDTO dto = new DccPOCombinedViewDTO();
+                populateDccFields(dto, dcc, dateFormat, latestApprovalRequest);
+                populateLineItemFields(dto, dccLn, dateFormat, loggedInvalidLinkIds);
+                populatePurchaseOrderAndUplFields(dto, dccLn, purchaseOrder, upl);
+                calculateQuantitiesAndApprovals(dto, dcc, purchaseOrder, upl, dccLnByUplLineNumber, latestApprovalRequest);
+
+                dtos.add(dto);
+            }
+        }
+
+        processedRecordNos.add(dcc.getRecordNo());
+        return dtos;
+    }
+
+    private void populateDccFields(DccPOCombinedViewDTO dto, DCC dcc, SimpleDateFormat dateFormat,
+                                   TbCategoryApprovalRequests latestApprovalRequest) {
+        dto.setDccRecordNo(dcc.getRecordNo());
+        dto.setDccPoNumber(dcc.getPoNumber());
+        dto.setDccVendorName(dcc.getVendorName());
+        dto.setDccVendorEmail(dcc.getVendorEmail());
+        dto.setDccProjectName(dcc.getProjectName());
+        dto.setNewProjectName(dcc.getNewProjectName());
+        dto.setDccAcceptanceType(dcc.getAcceptanceType());
+        dto.setDccStatus(dcc.getStatus());
+        dto.setDccCreatedDate(dcc.getCreatedDate() != null ? dateFormat.format(dcc.getCreatedDate()) : null);
+        dto.setVendorComment(dcc.getVendorComment());
+        dto.setDccId(dcc.getDccId());
+        dto.setDccCurrency(dcc.getCurrency());
+        dto.setCreatedBy(dcc.getCreatedBy());
+        dto.setCreatedByName(dcc.getCreatedBy());
+
+        if (latestApprovalRequest != null && latestApprovalRequest.getApprovedDate() != null) {
+            Date approvedDate = Date.from(latestApprovalRequest.getApprovedDate().atZone(ZoneId.of("UTC")).toInstant());
+            dto.setDateApproved(dateFormat.format(approvedDate));
+        }
+    }
+
+    private void populateLineItemFields(DccPOCombinedViewDTO dto, DCCLineItem dccLn, SimpleDateFormat dateFormat,
+                                        Set<Long> loggedInvalidLinkIds) {
+        dto.setLnRecordNo(dccLn.getRecordNo());
+        dto.setLnProductName(dccLn.getProductName());
+        dto.setLnProductSerialNo(dccLn.getSerialNumber());
+        dto.setLnDeliveredQty(dccLn.getDeliveredQty());
+        dto.setLnLocationName(dccLn.getLocationName());
+        dto.setLnInserviceDate(dccLn.getDateInService() != null ? dateFormat.format(dccLn.getDateInService()) : null);
+        dto.setLnUnitPrice(dccLn.getUnitPrice() != null ? dccLn.getUnitPrice() : 0.0);
+        dto.setLnScopeOfWork(dccLn.getScopeOfWork());
+        dto.setLnRemarks(dccLn.getRemarks());
+        dto.setLinkId(parseLinkId(dccLn.getLinkId(), dccLn.getRecordNo(), loggedInvalidLinkIds));
+        dto.setTagNumber(dccLn.getTagNumber());
+        dto.setLineNumber(dccLn.getLineNumber());
+        dto.setActualItemCode(dccLn.getActualItemCode());
+        dto.setUplLineNumber(dccLn.getUplLineNumber());
+    }
+
+    private void populatePurchaseOrderAndUplFields(DccPOCombinedViewDTO dto, DCCLineItem dccLn,
+                                                   tbPurchaseOrder purchaseOrder, tb_PurchaseOrderUPL upl) {
+        dto.setPoId(purchaseOrder.getPoNumber());
+        dto.setProjectName(purchaseOrder.getProjectName());
+        dto.setSupplierId(purchaseOrder.getVendorNumber());
+        dto.setVendorNumber(purchaseOrder.getVendorNumber());
+        dto.setVendorName(purchaseOrder.getVendorName());
+        double poOrderQty = (dccLn.getUplLineNumber() != null && !dccLn.getUplLineNumber().isEmpty())
+                ? upl.getPoLineQuantity()
+                : parsePoOrderQuantity(purchaseOrder);
+        dto.setPoLineQuantity(poOrderQty);
+        dto.setPoOrderQuantity(poOrderQty);
+        dto.setPoLineDescription(purchaseOrder.getPoLineDescription());
+//        dto.setPoLineDescription(dccLn.getUplLineNumber() != null && !dccLn.getUplLineNumber().isEmpty()
+//                ? upl.getUplLineDescription() : purchaseOrder.getPoLineDescription());
+        dto.setUplLineQuantity(upl.getUplLineQuantity());
+        dto.setUplLineItemCode(upl.getUplLineItemCode());
+        dto.setUplLineDescription(upl.getUplLineDescription());
+        dto.setUnitOfMeasure(upl.getUom());
+        dto.setActiveOrPassive(upl.getActiveOrPassive());
+        dto.setItemCode(upl.getUplLineItemCode());
+        dto.setItemPartNumber(upl.getPoLineItemCode());
+
+    }
+
+    private void calculateQuantitiesAndApprovals(DccPOCombinedViewDTO dto, DCC dcc, tbPurchaseOrder purchaseOrder,
+                                                 tb_PurchaseOrderUPL upl, Map<String, List<DCCLineItem>> dccLnByUplLineNumber,
+                                                 TbCategoryApprovalRequests latestApprovalRequest) {
+        // Calculate totalDelivered
+        double totalDelivered = upl.getUplLine() != null && !upl.getUplLine().isEmpty()
+                ? tbDccLnRepository.findByPoIdAndLineNumberAndUplLineNumber(
+                        upl.getPoNumber(), upl.getPoLineNumber(), upl.getUplLine()).stream()
+                .filter(d -> d.getDeliveredQty() != null)
+                .filter(d -> {
+                    DCC dccForLine = tbDccRepository.findByRecordNo(Long.parseLong(d.getDccId())).orElse(null);
+                    return dccForLine != null && !Arrays.asList("incomplete", "rejected").contains(dccForLine.getStatus());
+                })
+                .mapToDouble(DCCLineItem::getDeliveredQty)
+                .sum()
+                : 0.0;
+        dto.setUPLACPTRequestValue(totalDelivered);
+
+        // Calculate POAcceptanceQty
+        double totalExpected = tbPurchaseOrderUplRepository.findByPoNumberAndPoLineNumberAndUplLine(
+                        upl.getPoNumber(), upl.getPoLineNumber(), upl.getUplLine())
+                .stream()
+                .filter(u -> u.getPoLineQuantity() != null && u.getPoLineUnitPrice() != null)
+                .mapToDouble(u -> u.getPoLineQuantity() * u.getPoLineUnitPrice())
+                .sum();
+        totalExpected = totalExpected != 0 ? totalExpected : 1.0;
+        dto.setPOAcceptanceQty(totalExpected != 0 ? totalDelivered / totalExpected : 0.0);
+
+        // FIXED: Calculate POLineAcceptanceQty - This should sum across ALL UPL records for the same PO and PO Line
+        // Based on SQL: sum((uplLineQuantity * poLineQuantity) / nullif((poLineQuantity * poLineUnitPrice), 0))
+        List<tb_PurchaseOrderUPL> allUplForPoLine = tbPurchaseOrderUplRepository.findByPoNumberAndPoLineNumber(
+                upl.getPoNumber(), upl.getPoLineNumber());
+
+        double poLineAcceptanceQty = allUplForPoLine.stream()
+                .filter(u -> u.getUplLineQuantity() != null && u.getUplLineQuantity() > 0) // Only include records with uplLineQuantity > 0
+                .filter(u -> u.getPoLineQuantity() != null && u.getPoLineUnitPrice() != null)
+                .mapToDouble(u -> {
+                    double denominator = u.getPoLineQuantity() * u.getPoLineUnitPrice();
+                    if (denominator == 0) {
+                        logger.debug("Skipping record due to zero denominator - uplLine: {}, poLineQuantity: {}, poLineUnitPrice: {}",
+                                u.getUplLine(), u.getPoLineQuantity(), u.getPoLineUnitPrice());
+                        return 0.0;
+                    }
+                    double numerator = u.getUplLineQuantity() * u.getPoLineQuantity(); // This was missing the multiplication
+                    double result = numerator / denominator;
+                    logger.debug("POLineAcceptanceQty calculation - uplLine: {}, uplLineQuantity: {}, poLineQuantity: {}, poLineUnitPrice: {}, result: {}",
+                            u.getUplLine(), u.getUplLineQuantity(), u.getPoLineQuantity(), u.getPoLineUnitPrice(), result);
+                    return result;
+                })
+                .sum();
+
+        dto.setPOLineAcceptanceQty(poLineAcceptanceQty);
+
+        // FIXED: Set poPendingQuantity - This should be different from POLineAcceptanceQty
+        // Based on SQL: if no DCC_LN exists for this combination, use poLineQuantity, else use POLineAcceptanceQty
+        boolean exists = tbDccLnRepository.existsByPoIdAndLineNumberAndUplLineNumber(
+                upl.getPoNumber(), upl.getPoLineNumber(), upl.getUplLine());
+
+        // The logic should be: if no DCC records exist, pending = poLineQuantity, else pending = calculated acceptance qty
+        double poPendingQuantity = exists ? poLineAcceptanceQty : (upl.getPoLineQuantity() != null ? upl.getPoLineQuantity() : 0.0);
+        dto.setPoPendingQuantity(poPendingQuantity);
+
+        // Set uplPendingQuantity
+        double uplPending = upl.getUplLineQuantity() != null ? upl.getUplLineQuantity() - totalDelivered : 0.0;
+        dto.setUplPendingQuantity(uplPending > 0 ? uplPending : 0.0);
+
+        if (latestApprovalRequest != null) {
+            calculateApprovalFields(dto, latestApprovalRequest);
+        }
+    }
+
+    private void calculateApprovalFields(DccPOCombinedViewDTO dto, TbCategoryApprovalRequests latestApprovalRequest) {
+        List<TbCategoryApprovals> filteredApprovals = tbCategoryApprovalsRepository
+                .findByApprovalRecordIdAndStatusAndApprovalStatusIn(
+                        latestApprovalRequest.getRecordNo(), "pending",
+                        Arrays.asList("pending", "readyForApproval", "request-info"))
+                .stream()
+                .filter(a -> "pending".equals(latestApprovalRequest.getStatus()) || "request-info".equals(latestApprovalRequest.getStatus()))
+                .collect(Collectors.toList());
+        dto.setApprovalCount((long) filteredApprovals.size());
+
+        Optional<TbCategoryApprovals> readyForApproval = filteredApprovals.stream()
+                .filter(a -> "readyForApproval".equals(a.getApprovalStatus()))
+                .sorted(Comparator.comparing(TbCategoryApprovals::getApprovalId))
+                .findFirst();
+        List<TbCategoryApprovals> pendingApproversList = filteredApprovals.stream()
+                .filter(a -> Arrays.asList("pending", "readyForApproval", "request-info").contains(a.getApprovalStatus()))
+                .sorted(Comparator.comparing(TbCategoryApprovals::getApprovalId))
+                .collect(Collectors.toList());
+        String pendingApproverName = readyForApproval
+                .map(TbCategoryApprovals::getApproverName)
+                .orElseGet(() -> pendingApproversList.stream()
+                        .findFirst()
+                        .map(TbCategoryApprovals::getApproverName)
+                        .orElse(null));
+        dto.setPendingApprovers(pendingApproverName);
+
+        List<TbCategoryApprovals> comments = tbCategoryApprovalsRepository
+                .findByApprovalRecordIdAndApprovalStatusNotIn(
+                        latestApprovalRequest.getRecordNo(),
+                        Arrays.asList("pending", "readyForApproval"))
+                .stream()
+                .filter(a -> a.getComments() != null)
+                .sorted(Comparator.comparing(TbCategoryApprovals::getApprovalId).reversed())
+                .collect(Collectors.toList());
+        dto.setApproverComment(comments.isEmpty() ? null : comments.get(0).getComments());
+
+        LocalDateTime now = LocalDateTime.now();
+        List<TbCategoryApprovals> allApprovals = tbCategoryApprovalsRepository
+                .findByApprovalRecordId(latestApprovalRequest.getRecordNo());
+        LocalDateTime maxDate = allApprovals.stream()
+                .map(a -> a.getApprovedDate() != null ? a.getApprovedDate() : a.getRecordDateTime())
+                .max(LocalDateTime::compareTo)
+                .orElse(now);
+        long minutes = Duration.between(maxDate, now).toMinutes();
+        dto.setUserAging(String.format("%d days %d hrs %d mins", minutes / 1440, (minutes / 60) % 24, minutes % 60));
+
+        long totalMinutes;
+        List<TbCategoryApprovals> pendingApprovals = tbCategoryApprovalsRepository
+                .findByApprovalRecordIdAndStatusAndApprovalStatus(
+                        latestApprovalRequest.getRecordNo(), "pending", "pending")
+                .stream()
+                .filter(a -> "pending".equals(latestApprovalRequest.getStatus()))
+                .collect(Collectors.toList());
+        if (pendingApprovals.isEmpty()) {
+            LocalDateTime minRecordDateTime = allApprovals.stream()
+                    .map(TbCategoryApprovals::getRecordDateTime)
+                    .min(LocalDateTime::compareTo)
+                    .orElse(now);
+            LocalDateTime maxApprovedDate = allApprovals.stream()
+                    .map(TbCategoryApprovals::getApprovedDate)
+                    .filter(Objects::nonNull)
+                    .max(LocalDateTime::compareTo)
+                    .orElse(now);
+            totalMinutes = Duration.between(minRecordDateTime, maxApprovedDate).toMinutes();
+        } else {
+            LocalDateTime minRecordDateTime = pendingApprovals.stream()
+                    .map(TbCategoryApprovals::getRecordDateTime)
+                    .min(LocalDateTime::compareTo)
+                    .orElse(now);
+            totalMinutes = Duration.between(minRecordDateTime, now).toMinutes();
+        }
+        dto.setTotalAging(String.format("%d days %d hrs %d mins", totalMinutes / 1440, (totalMinutes / 60) % 24, totalMinutes % 60));
+    }
+
     public static class DccPOFetchResult {
         private final List<DccPOCombinedViewDTO> data;
-        private final Long totalRecordsInDb; // Adjusted to reflect filtered count when filter is applied
+        private final Long totalRecordsInDb;
         private final Long totalFilteredRecords;
 
-        public DccPOFetchResult(List<DccPOCombinedViewDTO> data, Long totalRecordsInDb, Long totalFilteredRecords) {
+        public DccPOFetchResult(List<DccPOCombinedViewDTO> data, Long totalFilteredRecords, Long totalRecordsInDb) {
             this.data = data;
             this.totalRecordsInDb = totalRecordsInDb;
             this.totalFilteredRecords = totalFilteredRecords;
@@ -455,65 +427,46 @@ public class DccPOService {
         public Long getTotalFilteredRecords() { return totalFilteredRecords; }
     }
 
-    /**
-     * Maps DTO column names to database fields for filtering.
-     * @param columnName DTO column name.
-     * @return Corresponding database field name or null if invalid.
-     */
     private String mapColumnToDbField(String columnName) {
         if (columnName == null) return null;
         switch (columnName.toLowerCase()) {
-            case "recordno": return "d.recordNo";
-            case "dccponumber": return "d.poNumber";
-            case "newprojectname": return "p.newProjectName";
-            case "dccacceptancetype": return "d.acceptanceType";
-            case "dccstatus": return "d.status";
-            case "dcccreateddate": return "d.createdDate";
-            case "vendorcomment": return "d.vendorComment";
-            case "dccid": return "d.dccId";
-            case "poid": return "p.poNumber";
-            case "projectname": return "p.projectName";
+            case "recordno": return "recordNo";
+            case "dccponumber": return "poNumber";
+            case "newprojectname": return "newProjectName";
+            case "dccacceptancetype": return "acceptanceType";
+            case "dccstatus": return "status";
+            case "dcccreateddate": return "createdDate";
+            case "vendorcomment": return "vendorComment";
+            case "dccid": return "dccId";
+            case "poid": return "poNumber";
+            case "projectname": return "projectName";
             case "supplierid":
-            case "vendornumber": return "p.vendorNumber";
-            case "vendorname": return "p.vendorName";
-            case "createdby": return "d.createdBy";
-            case "createdbyname": return "d.createdBy";
-            case "vendoremail": return "d.vendorEmail";
+            case "vendornumber": return "vendorNumber";
+            case "vendorname": return "vendorName";
+            case "createdby": return "createdBy";
+            case "createdbyname": return "createdBy";
+            case "vendoremail": return "vendorEmail";
             default: return null;
         }
     }
 
-    /**
-     * Parses linkId from string to Long, handling invalid cases.
-     * @param linkIdStr Link ID string from DCCLineItem.
-     * @param recordNo Record number for logging.
-     * @param loggedInvalidLinkIds Set to track logged invalid linkIds.
-     * @return Parsed Long value or null if invalid.
-     */
     private Long parseLinkId(String linkIdStr, Long recordNo, Set<Long> loggedInvalidLinkIds) {
         try {
             if (linkIdStr != null && !linkIdStr.trim().isEmpty()) {
                 return Long.valueOf(linkIdStr);
             } else if (!loggedInvalidLinkIds.contains(recordNo)) {
-                logger.warn("Empty or invalid linkId for DCCLineItem with recordNo: {}", recordNo);
                 loggedInvalidLinkIds.add(recordNo);
             }
         } catch (NumberFormatException ex) {
             if (!loggedInvalidLinkIds.contains(recordNo)) {
-                logger.warn("Invalid linkId format for DCCLineItem with recordNo: {}. Value: {}", recordNo, linkIdStr);
                 loggedInvalidLinkIds.add(recordNo);
             }
         }
         return null;
     }
 
-    /**
-     * Parses PO order quantity from tbPurchaseOrder, handling poQtyNew and fallback.
-     * @param purchaseOrder Purchase Order entity.
-     * @return Parsed quantity as double.
-     */
     private double parsePoOrderQuantity(tbPurchaseOrder purchaseOrder) {
         String poQtyNew = String.valueOf(purchaseOrder.getPoQtyNew());
-        return (poQtyNew != null && !poQtyNew.isEmpty()) ? Double.parseDouble(poQtyNew) : purchaseOrder.getPoOrderQuantity();
+        return (poQtyNew != null && !poQtyNew.isEmpty()) ? Double.parseDouble(poQtyNew) : purchaseOrder.getAmountDueLine();
     }
 }

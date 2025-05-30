@@ -9,15 +9,47 @@ public class TbCategoryApprovals {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Column(name = "approvalId")
     private Long approvalId;
 
-    private String approvalStatus;
-    private String status;
+    @Column(name = "approvalRecordId")
     private Long approvalRecordId;
+
+    @Column(name = "approvalLevelId")
+    private Long approvalLevelId;
+
+    @Column(name = "approverId")
+    private Long approverId;
+
+    @Column(name = "approverName")
     private String approverName;
+
+    @Column(name = "regionId")
+    private Long regionId;
+
+    @Column(name = "status")
+    private String status;
+
+    @Column(name = "approvalStatus")
+    private String approvalStatus;
+
+    @Column(name = "comments")
     private String comments;
-    private LocalDateTime recordDateTime;
+
+    @Column(name = "approvedBy")
+    private String approvedBy;
+
+    @Column(name = "actionTypeId")
+    private Long actionTypeId;
+
+    @Column(name = "approvedDate")
     private LocalDateTime approvedDate;
+
+    @Column(name = "recordDateTime")
+    private LocalDateTime recordDateTime;
+
+    @Column(name = "display")
+    private Boolean display;
 
     // Getters and Setters
     public Long getApprovalId() {
@@ -28,28 +60,28 @@ public class TbCategoryApprovals {
         this.approvalId = approvalId;
     }
 
-    public String getApprovalStatus() {
-        return approvalStatus;
-    }
-
-    public void setApprovalStatus(String approvalStatus) {
-        this.approvalStatus = approvalStatus;
-    }
-
-    public String getStatus() {
-        return status;
-    }
-
-    public void setStatus(String status) {
-        this.status = status;
-    }
-
     public Long getApprovalRecordId() {
         return approvalRecordId;
     }
 
     public void setApprovalRecordId(Long approvalRecordId) {
         this.approvalRecordId = approvalRecordId;
+    }
+
+    public Long getApprovalLevelId() {
+        return approvalLevelId;
+    }
+
+    public void setApprovalLevelId(Long approvalLevelId) {
+        this.approvalLevelId = approvalLevelId;
+    }
+
+    public Long getApproverId() {
+        return approverId;
+    }
+
+    public void setApproverId(Long approverId) {
+        this.approverId = approverId;
     }
 
     public String getApproverName() {
@@ -60,12 +92,60 @@ public class TbCategoryApprovals {
         this.approverName = approverName;
     }
 
+    public Long getRegionId() {
+        return regionId;
+    }
+
+    public void setRegionId(Long regionId) {
+        this.regionId = regionId;
+    }
+
+    public String getStatus() {
+        return status;
+    }
+
+    public void setStatus(String status) {
+        this.status = status;
+    }
+
+    public String getApprovalStatus() {
+        return approvalStatus;
+    }
+
+    public void setApprovalStatus(String approvalStatus) {
+        this.approvalStatus = approvalStatus;
+    }
+
     public String getComments() {
         return comments;
     }
 
     public void setComments(String comments) {
         this.comments = comments;
+    }
+
+    public String getApprovedBy() {
+        return approvedBy;
+    }
+
+    public void setApprovedBy(String approvedBy) {
+        this.approvedBy = approvedBy;
+    }
+
+    public Long getActionTypeId() {
+        return actionTypeId;
+    }
+
+    public void setActionTypeId(Long actionTypeId) {
+        this.actionTypeId = actionTypeId;
+    }
+
+    public LocalDateTime getApprovedDate() {
+        return approvedDate;
+    }
+
+    public void setApprovedDate(LocalDateTime approvedDate) {
+        this.approvedDate = approvedDate;
     }
 
     public LocalDateTime getRecordDateTime() {
@@ -76,11 +156,11 @@ public class TbCategoryApprovals {
         this.recordDateTime = recordDateTime;
     }
 
-    public LocalDateTime getApprovedDate() {
-        return approvedDate;
+    public Boolean getDisplay() {
+        return display;
     }
 
-    public void setApprovedDate(LocalDateTime approvedDate) {
-        this.approvedDate = approvedDate;
+    public void setDisplay(Boolean display) {
+        this.display = display;
     }
 }

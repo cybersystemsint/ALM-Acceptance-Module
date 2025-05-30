@@ -9,19 +9,46 @@ public class TbCategoryApprovalRequests {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Column(name = "recordNo")
     private Long recordNo;
 
+    @Column(name = "recordDateTime")
     private LocalDateTime recordDateTime;
+
+    @Column(name = "acceptanceRequestRecordNo")
     private Long acceptanceRequestRecordNo;
+
+    @Column(name = "poNumber")
     private String poNumber;
+
+    @Column(name = "tableName")
     private String tableName;
+
+    @Column(name = "poLineItemDescription")
     private String poLineItemDescription;
+
+    @Column(name = "vendorName")
     private String vendorName;
+
+    @Column(name = "requestedBy")
     private String requestedBy;
+
+    @Column(name = "createdBy")
     private String createdBy;
+
+    @Column(name = "itemCategoryCode")
     private String itemCategoryCode;
+
+    @Column(name = "scope")
     private String scope;
+
+    @Column(name = "status")
     private String status;
+
+    @Column(name = "received")
+    private Boolean received;
+
+    @Column(name = "approvedDate")
     private LocalDateTime approvedDate;
 
     // Getters and Setters
@@ -119,6 +146,14 @@ public class TbCategoryApprovalRequests {
 
     public void setStatus(String status) {
         this.status = status;
+    }
+
+    public Boolean getReceived() {
+        return received;
+    }
+
+    public void setReceived(Boolean received) {
+        this.received = received;
     }
 
     public LocalDateTime getApprovedDate() {
