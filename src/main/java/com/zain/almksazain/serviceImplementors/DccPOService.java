@@ -14,6 +14,7 @@ import com.zain.almksazain.repo.TbDccLnRepository;
 import com.zain.almksazain.repo.TbDccRepository;
 import com.zain.almksazain.repo.TbPurchaseOrderRepository;
 import com.zain.almksazain.repo.TbPurchaseOrderUplRepository;
+import com.zain.almksazain.serviceImplementors.DccSpecification;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -116,9 +117,19 @@ public class DccPOService {
                     .stream().collect(Collectors.groupingBy(tb_PurchaseOrderUPL::getPoNumber));
             Map<Long, List<DCCLineItem>> dccLnMap = tbDccLnRepository.findByDccIdIn(dccIds.stream().map(String::valueOf).collect(Collectors.toList()))
                     .stream().collect(Collectors.groupingBy(dccLn -> Long.parseLong(dccLn.getDccId())));
-            Map<Long, List<TbCategoryApprovalRequests>> approvalRequestMap = tbCategoryApprovalRequestsRepository
-                    .findByAcceptanceRequestRecordNoIn(dccIds)
-                    .stream().collect(Collectors.groupingBy(TbCategoryApprovalRequests::getAcceptanceRequestRecordNo));
+            // Fetch latest approval request per DCC
+            Map<Long, TbCategoryApprovalRequests> approvalRequestMap = new HashMap<>();
+            for (Long dccId : dccIds) {
+                List<TbCategoryApprovalRequests> requests = tbCategoryApprovalRequestsRepository
+                        .findByAcceptanceRequestRecordNoOrderByRecordDateTimeDesc(dccId);
+                if (!requests.isEmpty()) {
+                    approvalRequestMap.put(dccId, requests.get(0));
+                    logger.debug("Selected latest approval request for DCC ID {}: recordNo={}, status={}, recordDateTime={}",
+                            dccId, requests.get(0).getRecordNo(), requests.get(0).getStatus(), requests.get(0).getRecordDateTime());
+                } else {
+                    logger.debug("No approval requests found for DCC ID {}", dccId);
+                }
+            }
 
             // Precompute DCC Line Items by UPL key
             Map<String, List<DCCLineItem>> dccLnByUplLineNumber = dccLnMap.values().stream()
@@ -143,8 +154,7 @@ public class DccPOService {
 
                         List<tb_PurchaseOrderUPL> uplList = uplMap.getOrDefault(dcc.getPoNumber(), Collections.emptyList());
                         List<DCCLineItem> dccLnList = dccLnMap.getOrDefault(dcc.getRecordNo(), Collections.emptyList());
-                        List<TbCategoryApprovalRequests> approvalRequests = approvalRequestMap.getOrDefault(dcc.getRecordNo(), Collections.emptyList());
-                        TbCategoryApprovalRequests latestApprovalRequest = approvalRequests.isEmpty() ? null : approvalRequests.get(0);
+                        TbCategoryApprovalRequests latestApprovalRequest = approvalRequestMap.getOrDefault(dcc.getRecordNo(), null);
 
                         if (dccLnList.isEmpty() || uplList.isEmpty()) {
                             logger.warn("No DCC_LN or UPL records found for DCC ID: {}. Skipping.", dcc.getRecordNo());
@@ -255,8 +265,6 @@ public class DccPOService {
         dto.setPoLineQuantity(poOrderQty);
         dto.setPoOrderQuantity(poOrderQty);
         dto.setPoLineDescription(purchaseOrder.getPoLineDescription());
-//        dto.setPoLineDescription(dccLn.getUplLineNumber() != null && !dccLn.getUplLineNumber().isEmpty()
-//                ? upl.getUplLineDescription() : purchaseOrder.getPoLineDescription());
         dto.setUplLineQuantity(upl.getUplLineQuantity());
         dto.setUplLineItemCode(upl.getUplLineItemCode());
         dto.setUplLineDescription(upl.getUplLineDescription());
@@ -264,7 +272,6 @@ public class DccPOService {
         dto.setActiveOrPassive(upl.getActiveOrPassive());
         dto.setItemCode(upl.getUplLineItemCode());
         dto.setItemPartNumber(upl.getPoLineItemCode());
-
     }
 
     private void calculateQuantitiesAndApprovals(DccPOCombinedViewDTO dto, DCC dcc, tbPurchaseOrder purchaseOrder,
@@ -294,13 +301,11 @@ public class DccPOService {
         totalExpected = totalExpected != 0 ? totalExpected : 1.0;
         dto.setPOAcceptanceQty(totalExpected != 0 ? totalDelivered / totalExpected : 0.0);
 
-        // FIXED: Calculate POLineAcceptanceQty - This should sum across ALL UPL records for the same PO and PO Line
-        // Based on SQL: sum((uplLineQuantity * poLineQuantity) / nullif((poLineQuantity * poLineUnitPrice), 0))
+        // Calculate POLineAcceptanceQty
         List<tb_PurchaseOrderUPL> allUplForPoLine = tbPurchaseOrderUplRepository.findByPoNumberAndPoLineNumber(
                 upl.getPoNumber(), upl.getPoLineNumber());
-
         double poLineAcceptanceQty = allUplForPoLine.stream()
-                .filter(u -> u.getUplLineQuantity() != null && u.getUplLineQuantity() > 0) // Only include records with uplLineQuantity > 0
+                .filter(u -> u.getUplLineQuantity() != null && u.getUplLineQuantity() > 0)
                 .filter(u -> u.getPoLineQuantity() != null && u.getPoLineUnitPrice() != null)
                 .mapToDouble(u -> {
                     double denominator = u.getPoLineQuantity() * u.getPoLineUnitPrice();
@@ -309,22 +314,18 @@ public class DccPOService {
                                 u.getUplLine(), u.getPoLineQuantity(), u.getPoLineUnitPrice());
                         return 0.0;
                     }
-                    double numerator = u.getUplLineQuantity() * u.getPoLineQuantity(); // This was missing the multiplication
+                    double numerator = u.getUplLineQuantity() * u.getPoLineQuantity();
                     double result = numerator / denominator;
                     logger.debug("POLineAcceptanceQty calculation - uplLine: {}, uplLineQuantity: {}, poLineQuantity: {}, poLineUnitPrice: {}, result: {}",
                             u.getUplLine(), u.getUplLineQuantity(), u.getPoLineQuantity(), u.getPoLineUnitPrice(), result);
                     return result;
                 })
                 .sum();
-
         dto.setPOLineAcceptanceQty(poLineAcceptanceQty);
 
-        // FIXED: Set poPendingQuantity - This should be different from POLineAcceptanceQty
-        // Based on SQL: if no DCC_LN exists for this combination, use poLineQuantity, else use POLineAcceptanceQty
+        // Calculate poPendingQuantity
         boolean exists = tbDccLnRepository.existsByPoIdAndLineNumberAndUplLineNumber(
                 upl.getPoNumber(), upl.getPoLineNumber(), upl.getUplLine());
-
-        // The logic should be: if no DCC records exist, pending = poLineQuantity, else pending = calculated acceptance qty
         double poPendingQuantity = exists ? poLineAcceptanceQty : (upl.getPoLineQuantity() != null ? upl.getPoLineQuantity() : 0.0);
         dto.setPoPendingQuantity(poPendingQuantity);
 
@@ -334,25 +335,47 @@ public class DccPOService {
 
         if (latestApprovalRequest != null) {
             calculateApprovalFields(dto, latestApprovalRequest);
+        } else {
+            logger.debug("No approval request found for DCC ID: {}. Setting default approval fields.", dcc.getRecordNo());
+            dto.setApprovalCount(0L);
+            dto.setPendingApprovers(null);
+            dto.setApproverComment(null);
+            dto.setUserAging("0 days 0 hrs 0 mins");
+            dto.setTotalAging("0 days 0 hrs 0 mins");
         }
     }
 
     private void calculateApprovalFields(DccPOCombinedViewDTO dto, TbCategoryApprovalRequests latestApprovalRequest) {
+        // Define valid statuses for return scenarios
+        List<String> validRequestStatuses = Arrays.asList("pending", "request-info", "returned");
+        List<String> validApprovalStatuses = Arrays.asList("pending", "readyForApproval", "request-info", "returned");
+
+        // Fetch approvals matching the latest approval request
         List<TbCategoryApprovals> filteredApprovals = tbCategoryApprovalsRepository
                 .findByApprovalRecordIdAndStatusAndApprovalStatusIn(
-                        latestApprovalRequest.getRecordNo(), "pending",
-                        Arrays.asList("pending", "readyForApproval", "request-info"))
+                        latestApprovalRequest.getRecordNo(), "pending", validApprovalStatuses)
                 .stream()
-                .filter(a -> "pending".equals(latestApprovalRequest.getStatus()) || "request-info".equals(latestApprovalRequest.getStatus()))
+                .filter(a -> validRequestStatuses.contains(latestApprovalRequest.getStatus()))
                 .collect(Collectors.toList());
+
+        // Log approval details for debugging
+        logger.debug("Processing approval request: recordNo={}, status={}, recordDateTime={}",
+                latestApprovalRequest.getRecordNo(), latestApprovalRequest.getStatus(), latestApprovalRequest.getRecordDateTime());
+        logger.debug("Filtered approvals count: {}", filteredApprovals.size());
+        filteredApprovals.forEach(a ->
+                logger.debug("Approval: approvalId={}, approvalStatus={}, status={}, approverName={}",
+                        a.getApprovalId(), a.getApprovalStatus(), a.getStatus(), a.getApproverName()));
+
+        // Set approval count
         dto.setApprovalCount((long) filteredApprovals.size());
 
+        // Set pending approvers
         Optional<TbCategoryApprovals> readyForApproval = filteredApprovals.stream()
                 .filter(a -> "readyForApproval".equals(a.getApprovalStatus()))
                 .sorted(Comparator.comparing(TbCategoryApprovals::getApprovalId))
                 .findFirst();
         List<TbCategoryApprovals> pendingApproversList = filteredApprovals.stream()
-                .filter(a -> Arrays.asList("pending", "readyForApproval", "request-info").contains(a.getApprovalStatus()))
+                .filter(a -> validApprovalStatuses.contains(a.getApprovalStatus()))
                 .sorted(Comparator.comparing(TbCategoryApprovals::getApprovalId))
                 .collect(Collectors.toList());
         String pendingApproverName = readyForApproval
@@ -363,6 +386,7 @@ public class DccPOService {
                         .orElse(null));
         dto.setPendingApprovers(pendingApproverName);
 
+        // Set approver comment
         List<TbCategoryApprovals> comments = tbCategoryApprovalsRepository
                 .findByApprovalRecordIdAndApprovalStatusNotIn(
                         latestApprovalRequest.getRecordNo(),
@@ -373,6 +397,7 @@ public class DccPOService {
                 .collect(Collectors.toList());
         dto.setApproverComment(comments.isEmpty() ? null : comments.get(0).getComments());
 
+        // Calculate userAging
         LocalDateTime now = LocalDateTime.now();
         List<TbCategoryApprovals> allApprovals = tbCategoryApprovalsRepository
                 .findByApprovalRecordId(latestApprovalRequest.getRecordNo());
@@ -383,6 +408,7 @@ public class DccPOService {
         long minutes = Duration.between(maxDate, now).toMinutes();
         dto.setUserAging(String.format("%d days %d hrs %d mins", minutes / 1440, (minutes / 60) % 24, minutes % 60));
 
+        // Calculate totalAging
         long totalMinutes;
         List<TbCategoryApprovals> pendingApprovals = tbCategoryApprovalsRepository
                 .findByApprovalRecordIdAndStatusAndApprovalStatus(
