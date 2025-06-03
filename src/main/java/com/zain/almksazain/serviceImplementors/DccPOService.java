@@ -30,6 +30,7 @@ import java.text.SimpleDateFormat;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -229,7 +230,7 @@ public class DccPOService {
         dto.setCreatedByName(dcc.getCreatedBy());
 
         if (latestApprovalRequest != null && latestApprovalRequest.getApprovedDate() != null) {
-            Date approvedDate = Date.from(latestApprovalRequest.getApprovedDate().atZone(ZoneId.of("UTC")).toInstant());
+            Date approvedDate = Date.from(latestApprovalRequest.getApprovedDate().atZone(ZoneId.of("Africa/Nairobi")).toInstant());
             dto.setDateApproved(dateFormat.format(approvedDate));
         }
     }
@@ -345,12 +346,169 @@ public class DccPOService {
         }
     }
 
+//    private void calculateApprovalFields(DccPOCombinedViewDTO dto, TbCategoryApprovalRequests latestApprovalRequest) {
+//        // Define valid statuses for return scenarios
+//        List<String> validRequestStatuses = Arrays.asList("pending", "request-info", "returned");
+//        //List<String> validApprovalStatuses = Arrays.asList("pending", "readyForApproval", "request-info", "returned");
+//        List<String> validApprovalStatuses = Arrays.asList("pending", "readyForApproval", "request-info");
+//
+//        // Fetch approvals matching the latest approval request
+//        List<TbCategoryApprovals> filteredApprovals = tbCategoryApprovalsRepository
+//                .findByApprovalRecordIdAndStatusAndApprovalStatusIn(
+//                        latestApprovalRequest.getRecordNo(), "pending", validApprovalStatuses)
+//                .stream()
+//                .filter(a -> validRequestStatuses.contains(latestApprovalRequest.getStatus()))
+//                .collect(Collectors.toList());
+//
+//        // Log approval details for debugging
+//        logger.debug("Processing approval request: recordNo={}, status={}, recordDateTime={}",
+//                latestApprovalRequest.getRecordNo(), latestApprovalRequest.getStatus(), latestApprovalRequest.getRecordDateTime());
+//        logger.debug("Filtered approvals count: {}", filteredApprovals.size());
+//        filteredApprovals.forEach(a ->
+//                logger.debug("Approval: approvalId={}, approvalStatus={}, status={}, approverName={}",
+//                        a.getApprovalId(), a.getApprovalStatus(), a.getStatus(), a.getApproverName()));
+//
+//        // Set approval count
+//        dto.setApprovalCount((long) filteredApprovals.size());
+//
+//        // Set pending approvers
+//        Optional<TbCategoryApprovals> readyForApproval = filteredApprovals.stream()
+//                .filter(a -> "readyForApproval".equals(a.getApprovalStatus()))
+//                .sorted(Comparator.comparing(TbCategoryApprovals::getApprovalId))
+//                .findFirst();
+//        List<TbCategoryApprovals> pendingApproversList = filteredApprovals.stream()
+//                .filter(a -> validApprovalStatuses.contains(a.getApprovalStatus()))
+//                .sorted(Comparator.comparing(TbCategoryApprovals::getApprovalId))
+//                .collect(Collectors.toList());
+//        String pendingApproverName = readyForApproval
+//                .map(TbCategoryApprovals::getApproverName)
+//                .orElseGet(() -> pendingApproversList.stream()
+//                        .findFirst()
+//                        .map(TbCategoryApprovals::getApproverName)
+//                        .orElse(null));
+//        dto.setPendingApprovers(pendingApproverName);
+//
+//        // Set approver comment
+//        List<TbCategoryApprovals> comments = tbCategoryApprovalsRepository
+//                .findByApprovalRecordIdAndApprovalStatusNotIn(
+//                        latestApprovalRequest.getRecordNo(),
+//                        Arrays.asList("pending", "readyForApproval"))
+//                .stream()
+//                .filter(a -> a.getComments() != null)
+//                .sorted(Comparator.comparing(TbCategoryApprovals::getApprovalId).reversed())
+//                .collect(Collectors.toList());
+//        dto.setApproverComment(comments.isEmpty() ? null : comments.get(0).getComments());
+//
+//        // Calculate userAging
+//        LocalDateTime now = LocalDateTime.now();
+//        List<TbCategoryApprovals> allApprovals = tbCategoryApprovalsRepository
+//                .findByApprovalRecordId(latestApprovalRequest.getRecordNo());
+//        LocalDateTime maxDate = allApprovals.stream()
+//                .map(a -> a.getApprovedDate() != null ? a.getApprovedDate() : a.getRecordDateTime())
+//                .max(LocalDateTime::compareTo)
+//                .orElse(now);
+//        long minutes = Duration.between(maxDate, now).toMinutes();
+//        dto.setUserAging(String.format("%d days %d hrs %d mins", minutes / 1440, (minutes / 60) % 24, minutes % 60));
+//
+//        // Calculate totalAging
+//        long totalMinutes;
+//        List<TbCategoryApprovals> pendingApprovals = tbCategoryApprovalsRepository
+//                .findByApprovalRecordIdAndStatusAndApprovalStatus(
+//                        latestApprovalRequest.getRecordNo(), "pending", "pending")
+//                .stream()
+//                .filter(a -> "pending".equals(latestApprovalRequest.getStatus()))
+//                .collect(Collectors.toList());
+//        if (pendingApprovals.isEmpty()) {
+//            LocalDateTime minRecordDateTime = allApprovals.stream()
+//                    .map(TbCategoryApprovals::getRecordDateTime)
+//                    .min(LocalDateTime::compareTo)
+//                    .orElse(now);
+//            LocalDateTime maxApprovedDate = allApprovals.stream()
+//                    .map(TbCategoryApprovals::getApprovedDate)
+//                    .filter(Objects::nonNull)
+//                    .max(LocalDateTime::compareTo)
+//                    .orElse(now);
+//            totalMinutes = Duration.between(minRecordDateTime, maxApprovedDate).toMinutes();
+//        } else {
+//            LocalDateTime minRecordDateTime = pendingApprovals.stream()
+//                    .map(TbCategoryApprovals::getRecordDateTime)
+//                    .min(LocalDateTime::compareTo)
+//                    .orElse(now);
+//            totalMinutes = Duration.between(minRecordDateTime, now).toMinutes();
+//        }
+//        dto.setTotalAging(String.format("%d days %d hrs %d mins", totalMinutes / 1440, (totalMinutes / 60) % 24, totalMinutes % 60));
+//    }
     private void calculateApprovalFields(DccPOCombinedViewDTO dto, TbCategoryApprovalRequests latestApprovalRequest) {
         // Define valid statuses for return scenarios
-        List<String> validRequestStatuses = Arrays.asList("pending", "request-info", "returned");
-        List<String> validApprovalStatuses = Arrays.asList("pending", "readyForApproval", "request-info", "returned");
+        List<String> validRequestStatuses = Arrays.asList("pending", "returned");
+        List<String> validApprovalStatuses = Arrays.asList("pending", "readyForApproval", "request-info");
 
-        // Fetch approvals matching the latest approval request
+
+        ZonedDateTime now = ZonedDateTime.now();
+        LocalDateTime nowLocal = now.toLocalDateTime();
+
+        // Handle request-info case
+        if ("request-info".equals(latestApprovalRequest.getStatus())) {
+            logger.debug("Approval request recordNo={} has status 'request-info'; setting approvalCount=0 and pendingApprovers=null",
+                    latestApprovalRequest.getRecordNo());
+            dto.setApprovalCount(0L);
+            dto.setPendingApprovers(null);
+
+            // Fetch approvals for aging calculations
+            List<TbCategoryApprovals> approvalsForAging = tbCategoryApprovalsRepository
+                    .findByApprovalRecordIdAndStatusAndApprovalStatusIn(
+                            latestApprovalRequest.getRecordNo(), "pending", validApprovalStatuses);
+
+            // Calculate userAging
+            LocalDateTime maxDate = approvalsForAging.stream()
+                    .map(a -> a.getApprovedDate() != null ? a.getApprovedDate() : a.getRecordDateTime())
+                    .max(LocalDateTime::compareTo)
+                    .orElse(nowLocal);
+            long userAgingMinutes = Duration.between(maxDate, nowLocal).toMinutes();
+            dto.setUserAging(String.format("%d days %d hrs %d mins",
+                    userAgingMinutes / 1440, (userAgingMinutes / 60) % 24, userAgingMinutes % 60));
+
+            // Calculate totalAging
+            List<TbCategoryApprovals> pendingApprovals = tbCategoryApprovalsRepository
+                    .findByApprovalRecordIdAndStatusAndApprovalStatus(
+                            latestApprovalRequest.getRecordNo(), "pending", "pending");
+            long totalAgingMinutes;
+            if (pendingApprovals.isEmpty()) {
+                LocalDateTime minRecordDateTime = approvalsForAging.stream()
+                        .map(TbCategoryApprovals::getRecordDateTime)
+                        .min(LocalDateTime::compareTo)
+                        .orElse(nowLocal);
+                LocalDateTime maxApprovedDate = approvalsForAging.stream()
+                        .map(TbCategoryApprovals::getApprovedDate)
+                        .filter(Objects::nonNull)
+                        .max(LocalDateTime::compareTo)
+                        .orElse(nowLocal);
+                totalAgingMinutes = Duration.between(minRecordDateTime, maxApprovedDate).toMinutes();
+            } else {
+                LocalDateTime minRecordDateTime = pendingApprovals.stream()
+                        .map(TbCategoryApprovals::getRecordDateTime)
+                        .min(LocalDateTime::compareTo)
+                        .orElse(nowLocal);
+                totalAgingMinutes = Duration.between(minRecordDateTime, nowLocal).toMinutes();
+            }
+            dto.setTotalAging(String.format("%d days %d hrs %d mins",
+                    totalAgingMinutes / 1440, (totalAgingMinutes / 60) % 24, totalAgingMinutes % 60));
+
+            // Set approver comment (unchanged from original logic)
+            List<TbCategoryApprovals> comments = tbCategoryApprovalsRepository
+                    .findByApprovalRecordIdAndApprovalStatusNotIn(
+                            latestApprovalRequest.getRecordNo(),
+                            Arrays.asList("pending", "readyForApproval"))
+                    .stream()
+                    .filter(a -> a.getComments() != null)
+                    .sorted(Comparator.comparing(TbCategoryApprovals::getApprovalId).reversed())
+                    .collect(Collectors.toList());
+            dto.setApproverComment(comments.isEmpty() ? null : comments.get(0).getComments());
+
+            return; // Skip further processing
+        }
+
+        // Existing logic for other statuses (pending, returned)
         List<TbCategoryApprovals> filteredApprovals = tbCategoryApprovalsRepository
                 .findByApprovalRecordIdAndStatusAndApprovalStatusIn(
                         latestApprovalRequest.getRecordNo(), "pending", validApprovalStatuses)
@@ -398,14 +556,13 @@ public class DccPOService {
         dto.setApproverComment(comments.isEmpty() ? null : comments.get(0).getComments());
 
         // Calculate userAging
-        LocalDateTime now = LocalDateTime.now();
         List<TbCategoryApprovals> allApprovals = tbCategoryApprovalsRepository
                 .findByApprovalRecordId(latestApprovalRequest.getRecordNo());
         LocalDateTime maxDate = allApprovals.stream()
                 .map(a -> a.getApprovedDate() != null ? a.getApprovedDate() : a.getRecordDateTime())
                 .max(LocalDateTime::compareTo)
-                .orElse(now);
-        long minutes = Duration.between(maxDate, now).toMinutes();
+                .orElse(nowLocal);
+        long minutes = Duration.between(maxDate, nowLocal).toMinutes();
         dto.setUserAging(String.format("%d days %d hrs %d mins", minutes / 1440, (minutes / 60) % 24, minutes % 60));
 
         // Calculate totalAging
@@ -420,19 +577,19 @@ public class DccPOService {
             LocalDateTime minRecordDateTime = allApprovals.stream()
                     .map(TbCategoryApprovals::getRecordDateTime)
                     .min(LocalDateTime::compareTo)
-                    .orElse(now);
+                    .orElse(nowLocal);
             LocalDateTime maxApprovedDate = allApprovals.stream()
                     .map(TbCategoryApprovals::getApprovedDate)
                     .filter(Objects::nonNull)
                     .max(LocalDateTime::compareTo)
-                    .orElse(now);
+                    .orElse(nowLocal);
             totalMinutes = Duration.between(minRecordDateTime, maxApprovedDate).toMinutes();
         } else {
             LocalDateTime minRecordDateTime = pendingApprovals.stream()
                     .map(TbCategoryApprovals::getRecordDateTime)
                     .min(LocalDateTime::compareTo)
-                    .orElse(now);
-            totalMinutes = Duration.between(minRecordDateTime, now).toMinutes();
+                    .orElse(nowLocal);
+            totalMinutes = Duration.between(minRecordDateTime, nowLocal).toMinutes();
         }
         dto.setTotalAging(String.format("%d days %d hrs %d mins", totalMinutes / 1440, (totalMinutes / 60) % 24, totalMinutes % 60));
     }
