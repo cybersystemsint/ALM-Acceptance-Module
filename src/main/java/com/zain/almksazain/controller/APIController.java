@@ -1195,48 +1195,48 @@ public class APIController {
                     Map<String, Double> uplTotalsPerLine = new HashMap<>();
                     Map<String, Double> raisedUpldetails = new HashMap<>();
 
-                    //COMMMENTING THIS OUT FOR INTERNAL UAT
-                    for (int h = 0; h < dcclineRequest.length(); h++) {
-                        JSONObject validateObject = dcclineRequest.getJSONObject(h);
-                        String validateuplline = validateObject.getString("uplLineNumber");
-                        String validatelineNumber = validateObject.getString("poLineNumber");
-                        String deliveredQtyStr = validateObject.getString("deliveredQty");
-                        double deliveredQty = Double.parseDouble(deliveredQtyStr);
-                        if (validateuplline.length() != 0) {
-                            tb_PurchaseOrderUPL topRecord = purchaseOrderUPLRepo.findTopByPoNumberAndPoLineNumberAndUplLine(
-                                    poNum, validatelineNumber, validateuplline
-                            );
-                            double uplLineUnitPrice = topRecord.getUplLineUnitPrice();
-                            double lineTotal = uplLineUnitPrice * deliveredQty;
-                            double deliveredlineTotal = 0;
-                            uplTotalsPerLine.put(
-                                    validatelineNumber,
-                                    uplTotalsPerLine.getOrDefault(validatelineNumber, 0.0) + lineTotal
-                            );
-
-                            List<String> allowedStatuses = Arrays.asList("approved-received", "inprocess", "approved", "returned", "request-info");
-                            List<Integer> validRecordNos = dccrepo.findByPoNumberAndStatus(poNumber, allowedStatuses);
-                            loggger.info("Matching RecordNos UPLBASED: " + validRecordNos);
-                            if (!validRecordNos.isEmpty()) {
-                                List<String> dccIdStrings = validRecordNos.stream()
-                                        .map(String::valueOf)
-                                        .collect(Collectors.toList());
-                                loggger.info("Matching dccIdStrings: " + dccIdStrings);
-
-                                Double totalDeliveredQty = dcclnrepo.sumDeliveredQtyByDccIdsAndPoLineInfo(
-                                        dccIdStrings, poNumber, validatelineNumber, validateuplline);
-
-                                deliveredlineTotal = totalDeliveredQty * uplLineUnitPrice;
-
-                                raisedUpldetails.put(
-                                        validatelineNumber,
-                                        raisedUpldetails.getOrDefault(validatelineNumber, 0.0) + deliveredlineTotal
-                                );
-
-                            }
-
-                        }
-                    }
+                    //INTERNAL UAT
+//                    for (int h = 0; h < dcclineRequest.length(); h++) {
+//                        JSONObject validateObject = dcclineRequest.getJSONObject(h);
+//                        String validateuplline = validateObject.getString("uplLineNumber");
+//                        String validatelineNumber = validateObject.getString("poLineNumber");
+//                        String deliveredQtyStr = validateObject.getString("deliveredQty");
+//                        double deliveredQty = Double.parseDouble(deliveredQtyStr);
+//                        if (validateuplline.length() != 0) {
+//                            tb_PurchaseOrderUPL topRecord = purchaseOrderUPLRepo.findTopByPoNumberAndPoLineNumberAndUplLine(
+//                                    poNum, validatelineNumber, validateuplline
+//                            );
+//                            double uplLineUnitPrice = topRecord.getUplLineUnitPrice();
+//                            double lineTotal = uplLineUnitPrice * deliveredQty;
+//                            double deliveredlineTotal = 0;
+//                            uplTotalsPerLine.put(
+//                                    validatelineNumber,
+//                                    uplTotalsPerLine.getOrDefault(validatelineNumber, 0.0) + lineTotal
+//                            );
+//
+//                            List<String> allowedStatuses = Arrays.asList("approved-received", "inprocess", "approved", "returned", "request-info");
+//                            List<Integer> validRecordNos = dccrepo.findByPoNumberAndStatus(poNumber, allowedStatuses);
+//                            loggger.info("Matching RecordNos UPLBASED: " + validRecordNos);
+//                            if (!validRecordNos.isEmpty()) {
+//                                List<String> dccIdStrings = validRecordNos.stream()
+//                                        .map(String::valueOf)
+//                                        .collect(Collectors.toList());
+//                                loggger.info("Matching dccIdStrings: " + dccIdStrings);
+//
+//                                Double totalDeliveredQty = dcclnrepo.sumDeliveredQtyByDccIdsAndPoLineInfo(
+//                                        dccIdStrings, poNumber, validatelineNumber, validateuplline);
+//
+//                                deliveredlineTotal = totalDeliveredQty * uplLineUnitPrice;
+//
+//                                raisedUpldetails.put(
+//                                        validatelineNumber,
+//                                        raisedUpldetails.getOrDefault(validatelineNumber, 0.0) + deliveredlineTotal
+//                                );
+//
+//                            }
+//
+//                        }
+//                    }
                     for (int j = 0; j < dcclineRequest.length(); j++) {
                         JSONObject dcclinejsonObject = dcclineRequest.getJSONObject(j);
                         itemCode = "";
@@ -1355,34 +1355,34 @@ public class APIController {
                             List<Integer> validRecordNos = dccrepo.findByPoNumberAndStatus(poNumber, allowedStatuses);
                             loggger.info("Matching RecordNos UPLBASED: " + validRecordNos);
                             //COMMMENTING THIS OUT FOR INTERNAL UAT
-                            for (Map.Entry<String, Double> entry : uplTotalsPerLine.entrySet()) {
-                                String poLineNumber = entry.getKey();
-                                double uplTotal = entry.getValue();
-                                double poTotalprice = 0;
-                                double totalraisedacceptance = 0;
-                                double totalPending = 0;
-
-                                tbPurchaseOrder podetails = PurchaseOrderRepo.findTopByPoNumberAndLineNumber(poNumber, poLineNumber);
-                                Double poqtyNew = podetails != null ? podetails.getPoQtyNew() : 0;
-                                Double quantityDueNew = podetails != null ? podetails.getQuantityDueNew() : 0;
-                                Double poOrderQty = podetails != null ? podetails.getPoOrderQuantity() : 0;
-                                Double unitPrice = podetails != null ? podetails.getUnitPriceInPoCurrency() : 0;
-                                Double quantityDueOld = podetails != null ? podetails.getQuantityDueOld() : 0;
-
-                                for (Map.Entry<String, Double> raisedentry : raisedUpldetails.entrySet()) {
-                                    String raisedpoLineNumber = raisedentry.getKey();
-                                    double Totalraised = raisedentry.getValue();
-                                    if (raisedpoLineNumber.equalsIgnoreCase(poLineNumber)) {
-                                        totalraisedacceptance = Totalraised + uplTotal;
-                                        poTotalprice = poOrderQty * unitPrice;
-                                        totalPending = totalraisedacceptance / poTotalprice;
-                                        System.out.println("PO Total (poUnitPrice * poLinePrice): " + poTotalprice);
-                                        if (totalPending > poOrderQty) {
-                                            acceptanceQuantity.add(String.valueOf(totalraisedacceptance));
-                                        }
-                                    }
-                                }
-                            }
+//                            for (Map.Entry<String, Double> entry : uplTotalsPerLine.entrySet()) {
+//                                String poLineNumber = entry.getKey();
+//                                double uplTotal = entry.getValue();
+//                                double poTotalprice = 0;
+//                                double totalraisedacceptance = 0;
+//                                double totalPending = 0;
+//
+//                                tbPurchaseOrder podetails = PurchaseOrderRepo.findTopByPoNumberAndLineNumber(poNumber, poLineNumber);
+//                                Double poqtyNew = podetails != null ? podetails.getPoQtyNew() : 0;
+//                                Double quantityDueNew = podetails != null ? podetails.getQuantityDueNew() : 0;
+//                                Double poOrderQty = podetails != null ? podetails.getPoOrderQuantity() : 0;
+//                                Double unitPrice = podetails != null ? podetails.getUnitPriceInPoCurrency() : 0;
+//                                Double quantityDueOld = podetails != null ? podetails.getQuantityDueOld() : 0;
+//
+//                                for (Map.Entry<String, Double> raisedentry : raisedUpldetails.entrySet()) {
+//                                    String raisedpoLineNumber = raisedentry.getKey();
+//                                    double Totalraised = raisedentry.getValue();
+//                                    if (raisedpoLineNumber.equalsIgnoreCase(poLineNumber)) {
+//                                        totalraisedacceptance = Totalraised + uplTotal;
+//                                        poTotalprice = poOrderQty * unitPrice;
+//                                        totalPending = totalraisedacceptance / poTotalprice;
+//                                        System.out.println("PO Total (poUnitPrice * poLinePrice): " + poTotalprice);
+//                                        if (totalPending > poOrderQty) {
+//                                            acceptanceQuantity.add(String.valueOf(totalraisedacceptance));
+//                                        }
+//                                    }
+//                                }
+//                            }
 
                         } else {
                             tbPurchaseOrder podetails = PurchaseOrderRepo.findTopByPoNumberAndLineNumber(poNumber, polineitem);
@@ -1400,31 +1400,31 @@ public class APIController {
                             //HERE WE ARE ADDING A VALIDATION TO CHECK THERE IS A RAISED REQUEST
                             //AND DO THE SUM OF THE DELIVERED QUANTITIES
                             //  COMMMENTING THIS OUT FOR INTERNAL UAT
-                            List<String> allowedStatuses = Arrays.asList("approved-received", "inprocess", "approved", "returned", "request-info");
-                            List<Integer> validRecordNos = dccrepo.findByPoNumberAndStatus(poNumber, allowedStatuses);
-                            loggger.info("Matching RecordNos: " + validRecordNos);
-
-                            if (!validRecordNos.isEmpty()) {
-
-                                List<String> dccIdStrings = validRecordNos.stream()
-                                        .map(String::valueOf)
-                                        .collect(Collectors.toList());
-                                loggger.info("Matching dccIdStrings: " + dccIdStrings);
-                                Double totalDeliveredQty = dcclnrepo.sumDeliveredQtyByDccIdsAndPoLineInfo(
-                                        dccIdStrings, poNumber, polineitem, "");
-
-                                loggger.info("Total Delivered Qty for given PoNumber/Line/ " + totalDeliveredQty);
-
-                                if (poqtyNew > 0) {
-                                    if ((passedQty + totalDeliveredQty) > quantityDueNew) {
-                                        acceptanceQuantity.add(String.valueOf(totalDeliveredQty));
-                                    }
-                                } else {
-                                    if ((passedQty + totalDeliveredQty) > quantityDueOld) {
-                                        acceptanceQuantity.add(String.valueOf(totalDeliveredQty));
-                                    }
-                                }
-                            }
+//                            List<String> allowedStatuses = Arrays.asList("approved-received", "inprocess", "approved", "returned", "request-info");
+//                            List<Integer> validRecordNos = dccrepo.findByPoNumberAndStatus(poNumber, allowedStatuses);
+//                            loggger.info("Matching RecordNos: " + validRecordNos);
+//
+//                            if (!validRecordNos.isEmpty()) {
+//
+//                                List<String> dccIdStrings = validRecordNos.stream()
+//                                        .map(String::valueOf)
+//                                        .collect(Collectors.toList());
+//                                loggger.info("Matching dccIdStrings: " + dccIdStrings);
+//                                Double totalDeliveredQty = dcclnrepo.sumDeliveredQtyByDccIdsAndPoLineInfo(
+//                                        dccIdStrings, poNumber, polineitem, "");
+//
+//                                loggger.info("Total Delivered Qty for given PoNumber/Line/ " + totalDeliveredQty);
+//
+//                                if (poqtyNew > 0) {
+//                                    if ((passedQty + totalDeliveredQty) > quantityDueNew) {
+//                                        acceptanceQuantity.add(String.valueOf(totalDeliveredQty));
+//                                    }
+//                                } else {
+//                                    if ((passedQty + totalDeliveredQty) > quantityDueOld) {
+//                                        acceptanceQuantity.add(String.valueOf(totalDeliveredQty));
+//                                    }
+//                                }
+//                            }
 
                         }
                         if (serialNumber.length() > 1 && itemCode.length() > 1) {
@@ -1631,30 +1631,30 @@ public class APIController {
                             Double quantityDueOld = podetails != null ? podetails.getQuantityDueOld() : 0;
 
                             //COMMMENTING THIS OUT FOR INTERNAL UAT
-                            List<String> allowedStatuses = Arrays.asList("approved-received", "inprocess", "approved", "returned", "request-info");
-                            List<Integer> validRecordNos = dccrepo.findByPoNumberAndStatus(poNumber, allowedStatuses);
-                            loggger.info("Matching RecordNos: " + validRecordNos);
-                            if (!validRecordNos.isEmpty()) {
-                                List<String> dccIdStrings = validRecordNos.stream()
-                                        .map(String::valueOf)
-                                        .collect(Collectors.toList());
-                                loggger.info("Matching dccIdStrings: " + dccIdStrings);
-                                Double totalDeliveredQty = dcclnrepo.sumDeliveredQtyByDccIdsAndPoLineInfo(
-                                        dccIdStrings, poNumber, polineitem, "");
-
-                                loggger.info("Total Delivered Qty for given PoNumber/Line/ " + totalDeliveredQty);
-
-                                if (poqtyNew > 0) {
-                                    if ((passedQty + totalDeliveredQty) > quantityDueNew) {
-                                        acceptanceQuantity.add(String.valueOf(totalDeliveredQty));
-                                        // acceptanceQuantity.add(totalDeliveredQty);
-                                    }
-                                } else {
-                                    if ((passedQty + totalDeliveredQty) > quantityDueOld) {
-                                        acceptanceQuantity.add(String.valueOf(totalDeliveredQty));
-                                    }
-                                }
-                            }
+//                            List<String> allowedStatuses = Arrays.asList("approved-received", "inprocess", "approved", "returned", "request-info");
+//                            List<Integer> validRecordNos = dccrepo.findByPoNumberAndStatus(poNumber, allowedStatuses);
+//                            loggger.info("Matching RecordNos: " + validRecordNos);
+//                            if (!validRecordNos.isEmpty()) {
+//                                List<String> dccIdStrings = validRecordNos.stream()
+//                                        .map(String::valueOf)
+//                                        .collect(Collectors.toList());
+//                                loggger.info("Matching dccIdStrings: " + dccIdStrings);
+//                                Double totalDeliveredQty = dcclnrepo.sumDeliveredQtyByDccIdsAndPoLineInfo(
+//                                        dccIdStrings, poNumber, polineitem, "");
+//
+//                                loggger.info("Total Delivered Qty for given PoNumber/Line/ " + totalDeliveredQty);
+//
+//                                if (poqtyNew > 0) {
+//                                    if ((passedQty + totalDeliveredQty) > quantityDueNew) {
+//                                        acceptanceQuantity.add(String.valueOf(totalDeliveredQty));
+//                                        // acceptanceQuantity.add(totalDeliveredQty);
+//                                    }
+//                                } else {
+//                                    if ((passedQty + totalDeliveredQty) > quantityDueOld) {
+//                                        acceptanceQuantity.add(String.valueOf(totalDeliveredQty));
+//                                    }
+//                                }
+//                            }
                         }
                         if (serialNumber.length() > 1 && UpdateItemCode.length() > 1 && UpdateActualItemCode.length() < 1) {
                             validateDCCLineList = dcclnrepo.findBySerialNumberAndItemCode(serialNumber, UpdateItemCode);
@@ -1769,9 +1769,9 @@ public class APIController {
             }
 
             //commenting for UAT
-            if (!acceptanceQuantity.isEmpty()) {
-                errorMessages.add("The delivery quantity entered for this acceptance request will exceed the po Pending quantity. The total po delivered quantity is  " + acceptanceQuantity + " . ");
-            }
+//            if (!acceptanceQuantity.isEmpty()) {
+//                errorMessages.add("The delivery quantity entered for this acceptance request will exceed the po Pending quantity. The total po delivered quantity is  " + acceptanceQuantity + " . ");
+//            }
             // If any errors found, return all in one response
             if (!errorMessages.isEmpty()) {
                 return response("Error", String.join(" | ", errorMessages));
