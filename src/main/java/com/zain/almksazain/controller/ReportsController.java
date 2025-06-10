@@ -1127,8 +1127,8 @@ public class ReportsController {
             // Fetch line items for all unique POs
             String lineItemsSql = "SELECT * FROM dccPOCombinedView PO WHERE PO.dccRecordNo IN ("
                     + String.join(",", uniquePONumbers.stream()
-                            .map(po -> po.toString()) // no quotes, integer literals
-                            .collect(Collectors.toList()))
+                    .map(po -> po.toString()) // no quotes, integer literals
+                    .collect(Collectors.toList()))
                     + ")";
 
             loggger.info("GET NESTED SQL 1  " + lineItemsSql);
@@ -1143,21 +1143,39 @@ public class ReportsController {
                 if (!groupedResults.containsKey(poNumber)) {
                     Map<String, Object> groupedRow = new LinkedHashMap<>(lineItem);
 
+                    // Add renamed fields
                     groupedRow.put("recordNo", lineItem.get("dccRecordNo"));
                     groupedRow.put("projectName", lineItem.get("dccProjectName"));
                     groupedRow.put("vendorName", lineItem.get("dccVendorName"));
                     groupedRow.put("vendorEmail", lineItem.get("dccVendorEmail"));
                     groupedRow.put("vendorNumber", lineItem.get("supplierId"));
-                    groupedRow.put("dccCurrency", lineItem.get("dccCurrency"));
 
+                    // Add required fields that were previously removed
+                    groupedRow.put("dccCreatedDate", lineItem.get("dccCreatedDate"));
+                    groupedRow.put("dateApproved", lineItem.get("dateApproved"));
+                    groupedRow.put("UPLACPTRequestValue", lineItem.get("UPLACPTRequestValue"));
+                    groupedRow.put("lnLocationName", lineItem.get("lnLocationName"));
+                    groupedRow.put("lnScopeOfWork", lineItem.get("lnScopeOfWork"));
+                    groupedRow.put("lnInserviceDate", lineItem.get("lnInserviceDate"));
+
+                    // Extract days from aging strings and add calculated fields
+                    String userAging = (String) lineItem.get("userAging");
+                    String totalAging = (String) lineItem.get("totalAging");
+
+                    groupedRow.put("userAging", userAging); // Keep original
+                    groupedRow.put("totalAging", totalAging); // Keep original
+                    groupedRow.put("userAgingInDays", extractDaysFromAging(userAging));
+                    groupedRow.put("totalAgingInDays", extractDaysFromAging(totalAging));
+
+                    // Remove line-item specific fields (keep the ones we need)
                     groupedRow.remove("lnRecordNo");
                     groupedRow.remove("lnProductName");
                     groupedRow.remove("lnProductSerialNo");
                     groupedRow.remove("lnDeliveredQty");
-                    groupedRow.remove("lnLocationName");
-                    groupedRow.remove("lnInserviceDate");
+                    // Don't remove lnLocationName - we need it
+                    // Don't remove lnInserviceDate - we need it
                     groupedRow.remove("lnUnitPrice");
-                    groupedRow.remove("lnScopeOfWork");
+                    // Don't remove lnScopeOfWork - we need it
                     groupedRow.remove("lnRemarks");
                     groupedRow.remove("lnItemCode");
                     groupedRow.remove("linkId");
@@ -1166,7 +1184,7 @@ public class ReportsController {
                     groupedRow.remove("lineNumber");
                     groupedRow.remove("actualItemCode");
                     groupedRow.remove("uplLineNumber");
-                    groupedRow.remove("UPLACPTRequestValue");
+                    // Don't remove UPLACPTRequestValue - we need it
                     groupedRow.remove("POAcceptanceQty");
                     groupedRow.remove("POLineAcceptanceQty");
                     groupedRow.remove("poPendingQuantity");
@@ -1185,7 +1203,7 @@ public class ReportsController {
                     // Add POlineItems key with an empty list
                     groupedResults.put(poNumber, groupedRow);
 
-                    //remove them 
+                    //remove them
                     groupedRow.remove("dccRecordNo");
                     groupedRow.remove("dccProjectName");
                     groupedRow.remove("dccVendorName");
@@ -1220,17 +1238,13 @@ public class ReportsController {
             response.put("data", new ArrayList<>());
             return response;
         }
-//        String lineItemsSql = "SELECT * FROM dccPOCombinedView PO WHERE PO.dccPoNumber IN ("
-//                + String.join(",", uniquePONumbers2.stream().map(po -> "'" + po + "'").collect(Collectors.toList()))
-//                + ") " + whereClause.replace("WHERE 1=1", "").trim()
-//                + " LIMIT " + size + " OFFSET " + (page - 1) * size;
+
         String lineItemsSql = "SELECT * FROM dccPOCombinedView PO WHERE PO.dccRecordNo IN ("
                 + String.join(",", uniquePONumbers2.stream()
-                        .map(po -> po.toString()) // no quotes, integer literals
-                        .collect(Collectors.toList()))
+                .map(po -> po.toString()) // no quotes, integer literals
+                .collect(Collectors.toList()))
                 + ")";
 
-        //String lineItemsSql = "SELECT * FROM dccPOCombinedView PO WHERE PO.dccRecordNo IN (" + String.join(",", uniquePONumbers2.stream().map(po -> "'" + po + "'").collect(Collectors.toList())) + ")";
         List<Map<String, Object>> lineItems = jdbcTemplate.queryForList(lineItemsSql);
 
         loggger.info("GET NESTED SQL 2  " + lineItemsSql);
@@ -1241,31 +1255,49 @@ public class ReportsController {
             String poNumber = String.valueOf(poNumberObj);
             if (!paginatedGroupedResults.containsKey(poNumber)) {
                 Map<String, Object> groupedRow = new LinkedHashMap<>(lineItem);
-                // Remove unnecessary fields
+
+                // Add renamed fields
                 groupedRow.put("recordNo", lineItem.get("dccRecordNo"));
                 groupedRow.put("projectName", lineItem.get("dccProjectName"));
                 groupedRow.put("vendorName", lineItem.get("dccVendorName"));
                 groupedRow.put("vendorEmail", lineItem.get("dccVendorEmail"));
                 groupedRow.put("vendorNumber", lineItem.get("supplierId"));
-                groupedRow.put("dccCurrency", lineItem.get("dccCurrency"));
+
+                // Add required fields that were previously removed
+                groupedRow.put("dccCreatedDate", lineItem.get("dccCreatedDate"));
+                groupedRow.put("dateApproved", lineItem.get("dateApproved"));
+                groupedRow.put("UPLACPTRequestValue", lineItem.get("UPLACPTRequestValue"));
+                groupedRow.put("lnLocationName", lineItem.get("lnLocationName"));
+                groupedRow.put("lnScopeOfWork", lineItem.get("lnScopeOfWork"));
+                groupedRow.put("lnInserviceDate", lineItem.get("lnInserviceDate"));
+
+                // Extract days from aging strings and add calculated fields
+                String userAging = (String) lineItem.get("userAging");
+                String totalAging = (String) lineItem.get("totalAging");
+
+                groupedRow.put("userAging", userAging); // Keep original
+                groupedRow.put("totalAging", totalAging); // Keep original
+                groupedRow.put("userAgingInDays", extractDaysFromAging(userAging));
+                groupedRow.put("totalAgingInDays", extractDaysFromAging(totalAging));
+
+                // Remove unnecessary fields (keep the ones we need)
                 groupedRow.remove("lnRecordNo");
                 groupedRow.remove("lnProductName");
                 groupedRow.remove("lnProductSerialNo");
                 groupedRow.remove("lnDeliveredQty");
-                groupedRow.remove("lnLocationName");
-                groupedRow.remove("lnInserviceDate");
+                // Don't remove lnLocationName - we need it
+                // Don't remove lnInserviceDate - we need it
                 groupedRow.remove("dccCurrency");
                 groupedRow.remove("lnUnitPrice");
-                groupedRow.remove("lnScopeOfWork");
+                // Don't remove lnScopeOfWork - we need it
                 groupedRow.remove("lnRemarks");
                 groupedRow.remove("lnItemCode");
                 groupedRow.remove("linkId");
                 groupedRow.remove("tagNumber");
-                groupedRow.remove("dccCurrency");
                 groupedRow.remove("lineNumber");
                 groupedRow.remove("actualItemCode");
                 groupedRow.remove("uplLineNumber");
-                groupedRow.remove("UPLACPTRequestValue");
+                // Don't remove UPLACPTRequestValue - we need it
                 groupedRow.remove("POAcceptanceQty");
                 groupedRow.remove("POLineAcceptanceQty");
                 groupedRow.remove("poPendingQuantity");
@@ -1284,7 +1316,7 @@ public class ReportsController {
                 // Add POlineItems key with an empty list
                 paginatedGroupedResults.put(poNumber, groupedRow);
 
-                //remove them 
+                //remove them
                 groupedRow.remove("dccRecordNo");
                 groupedRow.remove("dccProjectName");
                 groupedRow.remove("dccVendorName");
@@ -1301,6 +1333,25 @@ public class ReportsController {
         response.put("data", new ArrayList<>(paginatedGroupedResults.values()));
 
         return response;
+    }
+
+    // Helper method to extract days from aging string
+    private int extractDaysFromAging(String agingString) {
+        if (agingString == null || agingString.trim().isEmpty()) {
+            return 0;
+        }
+
+        try {
+            // Extract number before "days" - handles formats like "0 days 9 hrs 22 mins" or "1 days 4 hrs 36 mins"
+            String[] parts = agingString.trim().split("\\s+");
+            if (parts.length > 0) {
+                return Integer.parseInt(parts[0]);
+            }
+        } catch (NumberFormatException e) {
+            // If parsing fails, return 0
+            return 0;
+        }
+        return 0;
     }
 
     //==================GET ALL CREATED ACCEPTANCE PER SUPPLIER  =====
