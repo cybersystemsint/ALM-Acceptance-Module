@@ -1157,6 +1157,7 @@ public class ReportsController {
                     groupedRow.put("lnLocationName", lineItem.get("lnLocationName"));
                     groupedRow.put("lnScopeOfWork", lineItem.get("lnScopeOfWork"));
                     groupedRow.put("lnInserviceDate", lineItem.get("lnInserviceDate"));
+                    groupedRow.put("departmentName", lineItem.get("departmentName"));
 
                     // Extract days from aging strings and add calculated fields
                     String userAging = (String) lineItem.get("userAging");
@@ -1270,6 +1271,7 @@ public class ReportsController {
                 groupedRow.put("lnLocationName", lineItem.get("lnLocationName"));
                 groupedRow.put("lnScopeOfWork", lineItem.get("lnScopeOfWork"));
                 groupedRow.put("lnInserviceDate", lineItem.get("lnInserviceDate"));
+                groupedRow.put("departmentName", lineItem.get("departmentName"));
 
                 // Extract days from aging strings and add calculated fields
                 String userAging = (String) lineItem.get("userAging");
