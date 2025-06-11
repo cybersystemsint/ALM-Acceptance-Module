@@ -41,7 +41,7 @@ import com.zain.almksazain.model.tb_Site;
 import com.zain.almksazain.model.tb_Region;
 import com.zain.almksazain.model.tbItemCodeSubstitute;
 import com.zain.almksazain.model.tbNode;
-import com.zain.almksazain.model.tbPassiveInventory;
+//import com.zain.almksazain.model.tbPassiveInventory;
 //import com.zain.almksazain.repo.tbCategoryApprovalLevelRepo;
 import com.zain.almksazain.repo.tbSiteRepo;
 import com.zain.almksazain.repo.tbRegionRepo;
@@ -85,15 +85,14 @@ import java.util.zip.ZipInputStream;
 //import org.apache.commons.compress.archivers.ArchiveInputStream;
 import org.apache.logging.log4j.LogManager;
 import org.json.JSONException;
-import org.springframework.beans.factory.annotation.Value;
+//import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.multipart.MultipartFile;
 //import org.apache.commons.compress.archivers.ArchiveEntry;
-//
 //import org.apache.commons.compress.archivers..RarArchiveInputStream;
-//import org.apache.commons.compress.archivers.;
+//import org.apache.commons.compress.archivers;
 
 @RestController
 public class APIController {
@@ -899,7 +898,7 @@ public class APIController {
         }
     }
 
-    //======================================PO MANAGEMENT  ================= 
+    //====================================== PO MANAGEMENT  =================
     @PostMapping(value = "/postpohdln")
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
     public Map<String, String> postpohd(@RequestBody String req) throws ParseException, ParseException, ParseException {
@@ -1183,7 +1182,6 @@ public class APIController {
             //UPL BASED , CHECK FROM UPL TABLE IF ITS SERIALIZED OR NOT, IF IT IS CHECK IF SERIAL NUMBER IS PASSED , IF NOT DECLINE 
             //LETS VALIDATE DIPLICATE HERE  loop through the dcc line items check if its been created then check the status
             for (int i = 0; i < jsonArray.length(); i++) {
-
                 JSONObject validatejsonObject = jsonArray.getJSONObject(i);
                 recordNoValidate = Integer.parseInt(validatejsonObject.getString("recordNo"));
                 if (recordNoValidate == 0) {
@@ -1196,47 +1194,37 @@ public class APIController {
                     Map<String, Double> raisedUpldetails = new HashMap<>();
 
                     //INTERNAL UAT
-//                    for (int h = 0; h < dcclineRequest.length(); h++) {
-//                        JSONObject validateObject = dcclineRequest.getJSONObject(h);
-//                        String validateuplline = validateObject.getString("uplLineNumber");
-//                        String validatelineNumber = validateObject.getString("poLineNumber");
-//                        String deliveredQtyStr = validateObject.getString("deliveredQty");
-//                        double deliveredQty = Double.parseDouble(deliveredQtyStr);
-//                        if (validateuplline.length() != 0) {
-//                            tb_PurchaseOrderUPL topRecord = purchaseOrderUPLRepo.findTopByPoNumberAndPoLineNumberAndUplLine(
-//                                    poNum, validatelineNumber, validateuplline
-//                            );
-//                            double uplLineUnitPrice = topRecord.getUplLineUnitPrice();
-//                            double lineTotal = uplLineUnitPrice * deliveredQty;
-//                            double deliveredlineTotal = 0;
-//                            uplTotalsPerLine.put(
-//                                    validatelineNumber,
-//                                    uplTotalsPerLine.getOrDefault(validatelineNumber, 0.0) + lineTotal
-//                            );
-//
-//                            List<String> allowedStatuses = Arrays.asList("approved-received", "inprocess", "approved", "returned", "request-info");
-//                            List<Integer> validRecordNos = dccrepo.findByPoNumberAndStatus(poNumber, allowedStatuses);
-//                            loggger.info("Matching RecordNos UPLBASED: " + validRecordNos);
-//                            if (!validRecordNos.isEmpty()) {
-//                                List<String> dccIdStrings = validRecordNos.stream()
-//                                        .map(String::valueOf)
-//                                        .collect(Collectors.toList());
-//                                loggger.info("Matching dccIdStrings: " + dccIdStrings);
-//
-//                                Double totalDeliveredQty = dcclnrepo.sumDeliveredQtyByDccIdsAndPoLineInfo(
-//                                        dccIdStrings, poNumber, validatelineNumber, validateuplline);
-//
-//                                deliveredlineTotal = totalDeliveredQty * uplLineUnitPrice;
-//
-//                                raisedUpldetails.put(
-//                                        validatelineNumber,
-//                                        raisedUpldetails.getOrDefault(validatelineNumber, 0.0) + deliveredlineTotal
-//                                );
-//
-//                            }
-//
-//                        }
-//                    }
+                    for (int h = 0; h < dcclineRequest.length(); h++) {
+                        JSONObject validateObject = dcclineRequest.getJSONObject(h);
+                        String validateuplline = validateObject.getString("uplLineNumber");
+                        String validatelineNumber = validateObject.getString("poLineNumber");
+                        String deliveredQtyStr = validateObject.getString("deliveredQty");
+                        double deliveredQty = Double.parseDouble(deliveredQtyStr);
+                        if (validateuplline.length() != 0) {
+                            tb_PurchaseOrderUPL topRecord = purchaseOrderUPLRepo.findTopByPoNumberAndPoLineNumberAndUplLine(poNum, validatelineNumber, validateuplline);
+                            double uplLineUnitPrice = topRecord.getUplLineUnitPrice();
+                            double lineTotal = uplLineUnitPrice * deliveredQty;
+                            double deliveredlineTotal = 0;
+                            uplTotalsPerLine.put(validatelineNumber, uplTotalsPerLine.getOrDefault(validatelineNumber, 0.0) + lineTotal);
+
+                            List<String> allowedStatuses = Arrays.asList("approved-received", "inprocess", "approved", "returned", "request-info");
+                            List<Integer> validRecordNos = dccrepo.findByPoNumberAndStatus(poNumber, allowedStatuses);
+                            loggger.info("Matching RecordNos UPLBASED: " + validRecordNos);
+                            if (!validRecordNos.isEmpty()) {
+                                List<String> dccIdStrings = validRecordNos.stream()
+                                        .map(String::valueOf)
+                                        .collect(Collectors.toList());
+                                loggger.info("Matching dccIdStrings: " + dccIdStrings);
+
+                                Double totalDeliveredQty = dcclnrepo.sumDeliveredQtyByDccIdsAndPoLineInfo(dccIdStrings, poNumber, validatelineNumber, validateuplline);
+
+                                deliveredlineTotal = totalDeliveredQty * uplLineUnitPrice;
+
+                                raisedUpldetails.put(validatelineNumber, raisedUpldetails.getOrDefault(validatelineNumber, 0.0) + deliveredlineTotal);
+                            }
+                        }
+                    }
+
                     for (int j = 0; j < dcclineRequest.length(); j++) {
                         JSONObject dcclinejsonObject = dcclineRequest.getJSONObject(j);
                         itemCode = "";
