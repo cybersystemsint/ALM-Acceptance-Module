@@ -1,12 +1,15 @@
 package com.zain.almksazain.controller;
 
+import com.zain.almksazain.repo.CombinedPurchaseOrderRepository;
 import com.zain.almksazain.repo.DccCombinedViewrepo;
 import com.zain.almksazain.repo.poviewrepo;
 import com.zain.almksazain.repo.dccpoviewrepo;
 import com.zain.almksazain.repo.uplrepo;
+import com.zain.almksazain.model.CombinedPurchaseOrder;
 import com.zain.almksazain.model.DccPoCombinedView;
 import com.zain.almksazain.model.upldata;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.boot.json.JsonParseException;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -14,6 +17,9 @@ import com.google.gson.JsonSyntaxException;
 import com.zain.almzainksa.helper.helper;
 import com.zain.almksazain.repo.tbChargeAccountRepo;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.*;
 import java.util.ArrayList;
@@ -27,15 +33,12 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
 import java.util.Collections;
 import java.util.Map.Entry;
-import static java.util.Map.entry;
+
 
 @RestController
 public class ReportsController {
@@ -56,6 +59,9 @@ public class ReportsController {
 
     @Autowired
     tbChargeAccountRepo chargeAccountRepo;
+
+    @Autowired
+    private CombinedPurchaseOrderRepository combinedPORepository;
 
     @Autowired
     public ReportsController(JdbcTemplate jdbcTemplate) {
@@ -1079,6 +1085,7 @@ public class ReportsController {
     }
 //==================GET ALL CREATED ACCEPTANCE PER SUPPLIER NESTED =====
 
+
     @PostMapping(value = "/reports/agingReport", produces = "application/json")
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
     public Map<String, Object> getAgingReport(@RequestBody String req) {
@@ -1145,7 +1152,13 @@ public class ReportsController {
 
                     // Add renamed fields
                     groupedRow.put("recordNo", lineItem.get("dccRecordNo"));
-                    groupedRow.put("projectName", lineItem.get("dccProjectName"));
+                    // groupedRow.put("projectName", lineItem.get("dccProjectName"));
+                    String dccProjectName = (String) lineItem.get("dccProjectName");
+                    String newProjectName = (String) lineItem.get("newProjectName");
+                    String finalProjectName = (newProjectName != null && !newProjectName.trim().isEmpty()) ? newProjectName : dccProjectName;
+                    groupedRow.put("projectName", finalProjectName);
+                    groupedRow.put("newProjectName", newProjectName);
+
                     groupedRow.put("vendorName", lineItem.get("dccVendorName"));
                     groupedRow.put("vendorEmail", lineItem.get("dccVendorEmail"));
                     groupedRow.put("vendorNumber", lineItem.get("supplierId"));
@@ -1157,6 +1170,8 @@ public class ReportsController {
                     groupedRow.put("lnLocationName", lineItem.get("lnLocationName"));
                     groupedRow.put("lnScopeOfWork", lineItem.get("lnScopeOfWork"));
                     groupedRow.put("lnInserviceDate", lineItem.get("lnInserviceDate"));
+
+                    groupedRow.put("departmentName", lineItem.get("departmentName"));
 
                     // Extract days from aging strings and add calculated fields
                     String userAging = (String) lineItem.get("userAging");
@@ -1180,7 +1195,7 @@ public class ReportsController {
                     groupedRow.remove("lnDeliveredQty");
                     // Don't remove lnLocationName - we need it
                     // Don't remove lnInserviceDate - we need it
-                    // Don't remove lnUnitPrice - we need it for calculation
+                    groupedRow.remove("lnUnitPrice");
                     // Don't remove lnScopeOfWork - we need it
                     groupedRow.remove("lnRemarks");
                     groupedRow.remove("lnItemCode");
@@ -1264,7 +1279,12 @@ public class ReportsController {
 
                 // Add renamed fields
                 groupedRow.put("recordNo", lineItem.get("dccRecordNo"));
-                groupedRow.put("projectName", lineItem.get("dccProjectName"));
+                // groupedRow.put("projectName", lineItem.get("dccProjectName"));
+                String dccProjectName = (String) lineItem.get("dccProjectName");
+                String newProjectName = (String) lineItem.get("newProjectName");
+                String finalProjectName = (newProjectName != null && !newProjectName.trim().isEmpty()) ? newProjectName : dccProjectName;
+                groupedRow.put("projectName", finalProjectName);
+                groupedRow.put("newProjectName", newProjectName);
                 groupedRow.put("vendorName", lineItem.get("dccVendorName"));
                 groupedRow.put("vendorEmail", lineItem.get("dccVendorEmail"));
                 groupedRow.put("vendorNumber", lineItem.get("supplierId"));
@@ -1277,6 +1297,7 @@ public class ReportsController {
                 groupedRow.put("lnScopeOfWork", lineItem.get("lnScopeOfWork"));
                 groupedRow.put("lnInserviceDate", lineItem.get("lnInserviceDate"));
 
+                groupedRow.put("departmentName", lineItem.get("departmentName"));
                 // Extract days from aging strings and add calculated fields
                 String userAging = (String) lineItem.get("userAging");
                 String totalAging = (String) lineItem.get("totalAging");
@@ -1291,7 +1312,6 @@ public class ReportsController {
                 Double uplRequestValue = (Double) lineItem.get("UPLACPTRequestValue");
                 Double requestAmountSAR = calculateRequestAmount(unitPriceInSAR, uplRequestValue);
                 groupedRow.put("Request Amount (SAR)", requestAmountSAR);
-
                 // Remove unnecessary fields (keep the ones we need)
                 groupedRow.remove("lnRecordNo");
                 groupedRow.remove("lnProductName");
@@ -1300,7 +1320,7 @@ public class ReportsController {
                 // Don't remove lnLocationName - we need it
                 // Don't remove lnInserviceDate - we need it
                 groupedRow.remove("dccCurrency");
-                // Don't remove lnUnitPrice - we need it for calculation
+                groupedRow.remove("lnUnitPrice");
                 // Don't remove lnScopeOfWork - we need it
                 groupedRow.remove("lnRemarks");
                 groupedRow.remove("lnItemCode");
@@ -1347,7 +1367,8 @@ public class ReportsController {
         return response;
     }
 
-    // Helper method to extract days from aging string
+
+      // Helper method to extract days from aging string
     private int extractDaysFromAging(String agingString) {
         if (agingString == null || agingString.trim().isEmpty()) {
             return 0;
@@ -1372,7 +1393,6 @@ public class ReportsController {
         double requestValue = (uplRequestValue != null) ? uplRequestValue : 0.0;
         return unitPrice * requestValue;
     }
-
     //==================GET ALL CREATED ACCEPTANCE PER SUPPLIER  =====
     //BACK UP 20250512
     //==================GET ALL CREATED ACCEPTANCE PER SUPPLIER  =====
@@ -1868,4 +1888,49 @@ public class ReportsController {
                     HttpStatus.INTERNAL_SERVER_ERROR);
         }
     }
+
+
+  @PostMapping(value = "/poUplPerSupplierAndPoNumber", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<Map<String, Object>> poUplPerSupplierAndPoNumbers(@RequestBody String req) {
+        try {
+            // Parse JSON request
+            JsonObject obj = JsonParser.parseString(req).getAsJsonObject();
+            String supplierId = obj.has("supplierId") ? obj.get("supplierId").getAsString() : "0";
+            String poId = obj.has("poId") ? obj.get("poId").getAsString() : "0";
+            String columnName = obj.has("columnName") ? obj.get("columnName").getAsString() : null;
+            String searchQuery = obj.has("searchQuery") ? obj.get("searchQuery").getAsString() : null;
+            String dateFrom = obj.has("dateFrom") ? obj.get("dateFrom").getAsString() : null;
+            String dateTo = obj.has("dateTo") ? obj.get("dateTo").getAsString() : null;
+
+            // Pagination parameters
+            int page = obj.has("page") ? Math.max(obj.get("page").getAsInt(), 1) : 1;
+            int size = obj.has("size") ? Math.max(obj.get("size").getAsInt(), 1) : 100;
+
+            // Create pageable object
+            Pageable pageable = PageRequest.of(page - 1, size);
+
+            // Query using repository
+            Page<CombinedPurchaseOrder> resultPage = combinedPORepository.findPurchaseOrders(
+                    supplierId, poId, dateFrom, dateTo, columnName, searchQuery, pageable);
+
+            // Prepare response
+            Map<String, Object> response = new HashMap<>();
+            response.put("data", resultPage.getContent());
+            response.put("totalRecords", resultPage.getTotalElements());
+            response.put("currentPage", resultPage.getNumber() + 1);
+            response.put("pageSize", resultPage.getSize());
+            response.put("totalPages", resultPage.getTotalPages());
+
+            return ResponseEntity.ok(response);
+        } catch (JsonParseException e) {
+            loggger.error("Failed to parse JSON request: {}", req, e);
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(Collections.singletonMap("error", "Invalid JSON payload"));
+        } catch (Exception e) {
+            loggger.error("Error processing request: {}", req, e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Collections.singletonMap("error", "Internal server error: " + e.getMessage()));
+        }
+    }
+
 }
