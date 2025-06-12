@@ -1157,7 +1157,6 @@ public class ReportsController {
                     groupedRow.put("lnLocationName", lineItem.get("lnLocationName"));
                     groupedRow.put("lnScopeOfWork", lineItem.get("lnScopeOfWork"));
                     groupedRow.put("lnInserviceDate", lineItem.get("lnInserviceDate"));
-                    groupedRow.put("departmentName", lineItem.get("departmentName"));
 
                     // Extract days from aging strings and add calculated fields
                     String userAging = (String) lineItem.get("userAging");
@@ -1168,6 +1167,12 @@ public class ReportsController {
                     groupedRow.put("userAgingInDays", extractDaysFromAging(userAging));
                     groupedRow.put("totalAgingInDays", extractDaysFromAging(totalAging));
 
+                    // Calculate Request Amount (SAR) = lnUnitPrice * UPLACPTRequestValue
+                    Double unitPriceInSAR = (Double) lineItem.get("unitPriceInSAR");
+                    Double uplRequestValue = (Double) lineItem.get("UPLACPTRequestValue");
+                    Double requestAmountSAR = calculateRequestAmount(unitPriceInSAR, uplRequestValue);
+                    groupedRow.put("Request Amount (SAR)", requestAmountSAR);
+
                     // Remove line-item specific fields (keep the ones we need)
                     groupedRow.remove("lnRecordNo");
                     groupedRow.remove("lnProductName");
@@ -1175,7 +1180,7 @@ public class ReportsController {
                     groupedRow.remove("lnDeliveredQty");
                     // Don't remove lnLocationName - we need it
                     // Don't remove lnInserviceDate - we need it
-                    groupedRow.remove("lnUnitPrice");
+                    // Don't remove lnUnitPrice - we need it for calculation
                     // Don't remove lnScopeOfWork - we need it
                     groupedRow.remove("lnRemarks");
                     groupedRow.remove("lnItemCode");
@@ -1271,7 +1276,6 @@ public class ReportsController {
                 groupedRow.put("lnLocationName", lineItem.get("lnLocationName"));
                 groupedRow.put("lnScopeOfWork", lineItem.get("lnScopeOfWork"));
                 groupedRow.put("lnInserviceDate", lineItem.get("lnInserviceDate"));
-                groupedRow.put("departmentName", lineItem.get("departmentName"));
 
                 // Extract days from aging strings and add calculated fields
                 String userAging = (String) lineItem.get("userAging");
@@ -1282,6 +1286,12 @@ public class ReportsController {
                 groupedRow.put("userAgingInDays", extractDaysFromAging(userAging));
                 groupedRow.put("totalAgingInDays", extractDaysFromAging(totalAging));
 
+                // Calculate Request Amount (SAR) = lnUnitPrice * UPLACPTRequestValue
+                Double unitPriceInSAR = (Double) lineItem.get("unitPriceInSAR");
+                Double uplRequestValue = (Double) lineItem.get("UPLACPTRequestValue");
+                Double requestAmountSAR = calculateRequestAmount(unitPriceInSAR, uplRequestValue);
+                groupedRow.put("Request Amount (SAR)", requestAmountSAR);
+
                 // Remove unnecessary fields (keep the ones we need)
                 groupedRow.remove("lnRecordNo");
                 groupedRow.remove("lnProductName");
@@ -1290,7 +1300,7 @@ public class ReportsController {
                 // Don't remove lnLocationName - we need it
                 // Don't remove lnInserviceDate - we need it
                 groupedRow.remove("dccCurrency");
-                groupedRow.remove("lnUnitPrice");
+                // Don't remove lnUnitPrice - we need it for calculation
                 // Don't remove lnScopeOfWork - we need it
                 groupedRow.remove("lnRemarks");
                 groupedRow.remove("lnItemCode");
@@ -1354,6 +1364,13 @@ public class ReportsController {
             return 0;
         }
         return 0;
+    }
+
+    // Helper method to calculate Request Amount (SAR)
+    private Double calculateRequestAmount(Double unitPriceInSAR, Double uplRequestValue) {
+        double unitPrice = (unitPriceInSAR != null) ? unitPriceInSAR : 0.0;
+        double requestValue = (uplRequestValue != null) ? uplRequestValue : 0.0;
+        return unitPrice * requestValue;
     }
 
     //==================GET ALL CREATED ACCEPTANCE PER SUPPLIER  =====
