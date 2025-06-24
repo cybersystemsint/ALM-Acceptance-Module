@@ -1,27 +1,28 @@
 package com.zain.almksazain.controller;
-
-import com.zain.almksazain.repo.CombinedPurchaseOrderRepository;
 import com.zain.almksazain.repo.DccCombinedViewrepo;
 import com.zain.almksazain.repo.poviewrepo;
 import com.zain.almksazain.repo.dccpoviewrepo;
 import com.zain.almksazain.repo.uplrepo;
-import com.zain.almksazain.model.CombinedPurchaseOrder;
-import com.zain.almksazain.model.DccPoCombinedView;
+import com.zain.almksazain.dto.AgingReportRequest;
+import com.zain.almksazain.dto.AgingReportResponse;
+import com.zain.almksazain.dto.CombinedPurchaseOrderRequest;
+import com.zain.almksazain.dto.CombinedPurchaseOrderResponse;
+import com.zain.almksazain.dto.PurchaseOrderRequest;
+import com.zain.almksazain.dto.PurchaseOrderResponse;
 import com.zain.almksazain.model.upldata;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.boot.json.JsonParseException;
+
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonSyntaxException;
 import com.zain.almzainksa.helper.helper;
 import com.zain.almksazain.repo.tbChargeAccountRepo;
+
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Pageable;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.*;
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -31,25 +32,31 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-
 import org.springframework.http.HttpStatus;
-import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import java.text.SimpleDateFormat;
 import java.util.Collections;
-import java.util.Map.Entry;
+import com.zain.almksazain.model.DccPoCombinedView;
+import com.zain.almksazain.services.AgingReportService;
+import com.zain.almksazain.services.CombinedPurchaseOrderService;
+import com.zain.almksazain.services.PurchaseOrderService;
 
 
 @RestController
+@CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
 public class ReportsController {
 
     private final Logger loggger = LogManager.getLogger(ReportsController.class);
+    
     private final JdbcTemplate jdbcTemplate;
     @Autowired
     uplrepo uprepo;
 
     @Autowired
     poviewrepo povwrepo;
+  
+    @Autowired
+    private  AgingReportService agingReportService;
 
     @Autowired
     DccCombinedViewrepo dccpocombinedviewrp;
@@ -57,11 +64,20 @@ public class ReportsController {
     @Autowired
     dccpoviewrepo dccpoviewrp;
 
+
+    @Autowired
+    PurchaseOrderService purchaseOrderService;
+
     @Autowired
     tbChargeAccountRepo chargeAccountRepo;
 
-    @Autowired
-    private CombinedPurchaseOrderRepository combinedPORepository;
+        @Autowired
+    private CombinedPurchaseOrderService combinedPurchaseOrderService;
+
+
+
+
+
 
     @Autowired
     public ReportsController(JdbcTemplate jdbcTemplate) {
@@ -1889,48 +1905,26 @@ public class ReportsController {
         }
     }
 
-
-  @PostMapping(value = "/poUplPerSupplierAndPoNumber", produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<Map<String, Object>> poUplPerSupplierAndPoNumbers(@RequestBody String req) {
-        try {
-            // Parse JSON request
-            JsonObject obj = JsonParser.parseString(req).getAsJsonObject();
-            String supplierId = obj.has("supplierId") ? obj.get("supplierId").getAsString() : "0";
-            String poId = obj.has("poId") ? obj.get("poId").getAsString() : "0";
-            String columnName = obj.has("columnName") ? obj.get("columnName").getAsString() : null;
-            String searchQuery = obj.has("searchQuery") ? obj.get("searchQuery").getAsString() : null;
-            String dateFrom = obj.has("dateFrom") ? obj.get("dateFrom").getAsString() : null;
-            String dateTo = obj.has("dateTo") ? obj.get("dateTo").getAsString() : null;
-
-            // Pagination parameters
-            int page = obj.has("page") ? Math.max(obj.get("page").getAsInt(), 1) : 1;
-            int size = obj.has("size") ? Math.max(obj.get("size").getAsInt(), 1) : 100;
-
-            // Create pageable object
-            Pageable pageable = PageRequest.of(page - 1, size);
-
-            // Query using repository
-            Page<CombinedPurchaseOrder> resultPage = combinedPORepository.findPurchaseOrders(
-                    supplierId, poId, dateFrom, dateTo, columnName, searchQuery, pageable);
-
-            // Prepare response
-            Map<String, Object> response = new HashMap<>();
-            response.put("data", resultPage.getContent());
-            response.put("totalRecords", resultPage.getTotalElements());
-            response.put("currentPage", resultPage.getNumber() + 1);
-            response.put("pageSize", resultPage.getSize());
-            response.put("totalPages", resultPage.getTotalPages());
-
-            return ResponseEntity.ok(response);
-        } catch (JsonParseException e) {
-            loggger.error("Failed to parse JSON request: {}", req, e);
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                    .body(Collections.singletonMap("error", "Invalid JSON payload"));
-        } catch (Exception e) {
-            loggger.error("Error processing request: {}", req, e);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Collections.singletonMap("error", "Internal server error: " + e.getMessage()));
-        }
+ //Remodeled from the Original endpoint to reports/poUplPerSupplierAndPoNumber 
+    @PostMapping(value = "/reports/v2/poUplPerSupplierAndPoNumber", produces = "application/json")
+    public CombinedPurchaseOrderResponse poUplPerSupplierAndPoNumber(@RequestBody CombinedPurchaseOrderRequest request) {
+        return combinedPurchaseOrderService.search(request);
     }
+
+    //Remodeled from the Original endpoint to reports/agingReport
+@PostMapping(value = "/reports/v2/agingReport", produces = "application/json")
+public AgingReportResponse getAgingReport(@RequestBody AgingReportRequest request) {
+    request.setPage(Math.max(request.getPage(), 1));
+    request.setSize(request.getSize() > 0 ? request.getSize() : 100);
+    return agingReportService.getAgingReport(request);
+}
+
+    //Remodeled from the Original endpoint to reports/getNestedPurchaseOrders 
+    @PostMapping(value = "/reports/v2/getNestedPurchaseOrders", produces = "application/json")
+    public PurchaseOrderResponse getPurchaseOrdersSummary(@RequestBody PurchaseOrderRequest request) {
+        return purchaseOrderService.getPurchaseOrderResponse(request);
+    }
+
+    
 
 }

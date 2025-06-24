@@ -11,9 +11,8 @@ import javax.persistence.Table;
 import javax.persistence.Temporal;
 import javax.persistence.TemporalType;
 
-
 @Entity
-@Table(name = "combinedPurchaseOrderView")
+@Table(name = "combinedPurchaseOrderview")
 public class CombinedPurchaseOrder {
     @Id
     @Column(name = "poRecordNo")
