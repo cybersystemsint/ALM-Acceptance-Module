@@ -16,6 +16,9 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.context.request.async.DeferredResult;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -42,23 +45,23 @@ public class DccPOController {
      * @param request The request DTO containing supplierId, pendingApprovers, page, size, columnName, and searchQuery.
      * @return DeferredResult containing the ResponseEntity with DccPOResponseDTO or an error message.
      */
+
     @PostMapping("/combined-view")
     public DeferredResult<ResponseEntity<DccPOResponseDTO>> getDccPOCombinedView(
             @RequestBody DccPORequestDTO request) {
         DeferredResult<ResponseEntity<DccPOResponseDTO>> deferredResult = new DeferredResult<>(120000L); // 120 seconds timeout
 
-        // Validate page and size
         int page = Math.max(request.getPage(), 1);
         int size = Math.max(request.getSize(), 1);
 
-        // Call service with all parameters, including pendingApprovers
         CompletableFuture<DccPOFetchResult> future = dccPOService.getDccPOCombinedView(
                 request.getSupplierId(),
                 request.getPendingApprovers(),
                 page,
                 size,
                 request.getColumnName(),
-                request.getSearchQuery());
+                request.getSearchQuery(),
+                request.getExporting() != null ? request.getExporting() : false);
 
         future.thenAccept(result -> {
             List<DccPOCombinedViewDTO> data = result.getData();
@@ -68,7 +71,7 @@ public class DccPOController {
             Map<Long, List<DccPOCombinedViewDTO>> groupedByDccRecordNo = data.stream()
                     .collect(Collectors.groupingBy(DccPOCombinedViewDTO::getDccRecordNo));
 
-            // Transform into hierarchical structure (parent and line items)
+            // Transform into hierarchical structure
             List<DccPOParentDTO> parentDTOs = groupedByDccRecordNo.entrySet().stream()
                     .map(entry -> {
                         DccPOCombinedViewDTO firstRecord = entry.getValue().get(0);
@@ -98,44 +101,48 @@ public class DccPOController {
                         parentDTO.setVendorEmail(firstRecord.getDccVendorEmail());
                         parentDTO.setDccCurrency(firstRecord.getDccCurrency());
 
-                        // Map line items
-                        List<DccPOLineItemDTO> lineItems = entry.getValue().stream()
-                                .map(dto -> {
-                                    DccPOLineItemDTO lineItem = new DccPOLineItemDTO();
-                                    lineItem.setRecordNo(dto.getLnRecordNo());
-                                    lineItem.setLnProductName(dto.getLnProductName());
-                                    lineItem.setSerialNumber(dto.getLnProductSerialNo());
-                                    lineItem.setDeliveredQty(dto.getLnDeliveredQty());
-                                    lineItem.setLocationName(dto.getLnLocationName());
-                                    lineItem.setDateInService(dto.getLnInserviceDate());
-                                    lineItem.setLnUnitPrice(dto.getLnUnitPrice());
-                                    lineItem.setScopeOfWork(dto.getLnScopeOfWork());
-                                    lineItem.setRemarks(dto.getLnRemarks());
-                                    lineItem.setItemCode(dto.getUplLineItemCode());
-                                    lineItem.setLinkId(dto.getLinkId() != null ? String.valueOf(dto.getLinkId()) : "");
-                                    lineItem.setTagNumber(dto.getTagNumber());
-                                    lineItem.setPoLineNumber(dto.getLineNumber());
-                                    lineItem.setActualItemCode(dto.getActualItemCode());
-                                    lineItem.setUplLineNumber(dto.getUplLineNumber());
-                                    lineItem.setCurrency(dto.getDccCurrency());
-                                    lineItem.setPoId(dto.getPoId());
-                                    lineItem.setUPLACPTRequestValue(dto.getUPLACPTRequestValue());
-                                    lineItem.setPOAcceptanceQty(dto.getPOAcceptanceQty());
-                                    lineItem.setPOLineAcceptanceQty(dto.getPOLineAcceptanceQty());
-                                    lineItem.setPoPendingQuantity(dto.getPoPendingQuantity());
-                                    lineItem.setPoOrderQuantity(dto.getPoOrderQuantity());
-                                    lineItem.setItemPartNumber(dto.getItemPartNumber());
-                                    lineItem.setPoLineDescription(dto.getPoLineDescription());
-                                    lineItem.setUplLineQuantity(dto.getUplLineQuantity());
-                                    lineItem.setPoLineQuantity(dto.getPoLineQuantity());
-                                    lineItem.setUplLineItemCode(dto.getUplLineItemCode());
-                                    lineItem.setUplLineDescription(dto.getUplLineDescription());
-                                    lineItem.setUom(dto.getUnitOfMeasure());
-                                    lineItem.setActiveOrPassive(dto.getActiveOrPassive());
-                                    lineItem.setUplPendingQuantity(dto.getUplPendingQuantity());
-                                    return lineItem;
-                                })
-                                .collect(Collectors.toList());
+                        // Add line items only if child data exists
+                        List<DccPOLineItemDTO> lineItems = new ArrayList<>();
+                        if (firstRecord.getLnRecordNo() != null) { // Check if child data is present
+                            lineItems = entry.getValue().stream()
+                                    .map(dto -> {
+                                        DccPOLineItemDTO lineItem = new DccPOLineItemDTO();
+                                        lineItem.setRecordNo(dto.getLnRecordNo());
+                                        lineItem.setLnProductName(dto.getLnProductName());
+                                        lineItem.setSerialNumber(dto.getLnProductSerialNo());
+                                        lineItem.setDeliveredQty(dto.getLnDeliveredQty());
+                                        lineItem.setLocationName(dto.getLnLocationName());
+                                        lineItem.setDateInService(dto.getLnInserviceDate());
+                                        lineItem.setLnUnitPrice(dto.getLnUnitPrice());
+                                        lineItem.setScopeOfWork(dto.getLnScopeOfWork());
+                                        lineItem.setRemarks(dto.getLnRemarks());
+                                        lineItem.setItemCode(dto.getUplLineItemCode());
+                                        lineItem.setLinkId(dto.getLinkId() != null ? String.valueOf(dto.getLinkId()) : "");
+                                        lineItem.setTagNumber(dto.getTagNumber());
+                                        lineItem.setPoLineNumber(dto.getLineNumber());
+                                        lineItem.setActualItemCode(dto.getActualItemCode());
+                                        lineItem.setUplLineNumber(dto.getUplLineNumber());
+                                        lineItem.setCurrency(dto.getDccCurrency());
+                                        lineItem.setPoId(dto.getPoId());
+                                        lineItem.setUPLACPTRequestValue(dto.getUPLACPTRequestValue());
+//                                        lineItem.setPOAcceptanceQty(dto.getPOAcceptanceQty());
+                                        lineItem.setpoAcceptanceQty(dto.getpoAcceptanceQty());
+                                        lineItem.setPOLineAcceptanceQty(dto.getPOLineAcceptanceQty());
+                                        lineItem.setPoPendingQuantity(dto.getPoPendingQuantity());
+                                        lineItem.setPoOrderQuantity(dto.getPoOrderQuantity());
+                                        lineItem.setItemPartNumber(dto.getItemPartNumber());
+                                        lineItem.setPoLineDescription(dto.getPoLineDescription());
+                                        lineItem.setUplLineQuantity(dto.getUplLineQuantity());
+                                        lineItem.setPoLineQuantity(dto.getPoLineQuantity());
+                                        lineItem.setUplLineItemCode(dto.getUplLineItemCode());
+                                        lineItem.setUplLineDescription(dto.getUplLineDescription());
+                                        lineItem.setUom(dto.getUnitOfMeasure());
+                                        lineItem.setActiveOrPassive(dto.getActiveOrPassive());
+                                        lineItem.setUplPendingQuantity(dto.getUplPendingQuantity());
+                                        return lineItem;
+                                    })
+                                    .collect(Collectors.toList());
+                        }
                         parentDTO.setLineItems(lineItems);
                         return parentDTO;
                     })
@@ -144,7 +151,7 @@ public class DccPOController {
 
             // Build response
             DccPOResponseDTO responseDTO = new DccPOResponseDTO();
-            responseDTO.setTotalRecords(totalFilteredRecords); // Use filtered count for totalRecords
+            responseDTO.setTotalRecords(totalFilteredRecords);
             responseDTO.setData(parentDTOs);
             responseDTO.setTotalPages((int) Math.ceil((double) totalFilteredRecords / size));
             responseDTO.setPageSize(size);

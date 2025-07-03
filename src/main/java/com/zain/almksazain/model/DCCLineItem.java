@@ -7,6 +7,7 @@ import java.util.Date;
 @Table(name = "tb_DCC_LN")
 public class DCCLineItem {
 
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     @Column(name = "recordNo")
@@ -84,6 +85,9 @@ public class DCCLineItem {
 
     @Column(name = "tagNumber")
     private String tagNumber;
+
+    @Column(name = "poAcceptanceQty")
+    private Double poAcceptanceQty;
 
     // Getters and Setters
     public Long getRecordNo() {
@@ -285,4 +289,9 @@ public class DCCLineItem {
     public void setTagNumber(String tagNumber) {
         this.tagNumber = tagNumber;
     }
+
+    public double getpoAcceptanceQty(){
+        return poAcceptanceQty;
+    };
+
 }

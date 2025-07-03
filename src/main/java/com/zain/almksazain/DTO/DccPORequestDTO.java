@@ -8,6 +8,7 @@ public class DccPORequestDTO {
     private Long recordNo;
     private String columnName;
     private String searchQuery;
+    private Boolean exporting;
 
     // Getters and setters
     public String getSupplierId() {
@@ -58,4 +59,6 @@ public class DccPORequestDTO {
     public void setSearchQuery(String searchQuery) {
         this.searchQuery = searchQuery;
     }
+    public Boolean getExporting() { return exporting; }
+    public void setExporting(Boolean exporting) { this.exporting = exporting; }
 }

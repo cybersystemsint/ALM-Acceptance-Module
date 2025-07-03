@@ -49,4 +49,6 @@ public class DccPOResponseDTO {
     public void setCurrentPage(Integer currentPage) {
         this.currentPage = currentPage;
     }
+
+
 }

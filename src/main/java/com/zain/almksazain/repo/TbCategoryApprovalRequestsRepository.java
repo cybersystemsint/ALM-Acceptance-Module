@@ -13,4 +13,5 @@ import java.util.List;
 public interface TbCategoryApprovalRequestsRepository extends JpaRepository<TbCategoryApprovalRequests, Long> {
     List<TbCategoryApprovalRequests> findByAcceptanceRequestRecordNoOrderByRecordDateTimeDesc(Long recordNo);
     List<TbCategoryApprovalRequests> findByAcceptanceRequestRecordNoIn(List<Long> recordNos);
+
 }

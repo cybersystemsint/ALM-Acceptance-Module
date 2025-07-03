@@ -1,5 +1,7 @@
 package com.zain.almksazain.DTO;
 
+import java.math.BigDecimal;
+
 public class DccPOLineItemDTO {
     private Long recordNo;
     private String lnProductName;
@@ -19,7 +21,7 @@ public class DccPOLineItemDTO {
     private String currency;
     private String poId;
     private Double UPLACPTRequestValue;
-    private Double POAcceptanceQty;
+//    private Double POAcceptanceQty;
     private Double POLineAcceptanceQty;
     private Double poPendingQuantity;
     private Double poOrderQuantity;
@@ -32,6 +34,7 @@ public class DccPOLineItemDTO {
     private String uom;
     private String activeOrPassive;
     private Double uplPendingQuantity;
+    private Double poAcceptanceQty;
 
     // Getters and setters
     public Long getRecordNo() {
@@ -178,12 +181,12 @@ public class DccPOLineItemDTO {
         this.UPLACPTRequestValue = UPLACPTRequestValue;
     }
 
-    public Double getPOAcceptanceQty() {
-        return POAcceptanceQty;
+    public Double getpoAcceptanceQty() {
+        return poAcceptanceQty;
     }
 
-    public void setPOAcceptanceQty(Double POAcceptanceQty) {
-        this.POAcceptanceQty = POAcceptanceQty;
+    public void setpoAcceptanceQty(Double poAcceptanceQty) {
+        this.poAcceptanceQty = poAcceptanceQty;
     }
 
     public Double getPOLineAcceptanceQty() {
@@ -281,4 +284,13 @@ public class DccPOLineItemDTO {
     public void setUplPendingQuantity(Double uplPendingQuantity) {
         this.uplPendingQuantity = uplPendingQuantity;
     }
+
+
+//    public void setPoAcceptanceQty(Double poAcceptanceQty) {
+//        this.poAcceptanceQty = poAcceptanceQty;
+//    }
+//
+//    public Double getPoAcceptanceQty() {
+//        return poAcceptanceQty;
+//    }
 }

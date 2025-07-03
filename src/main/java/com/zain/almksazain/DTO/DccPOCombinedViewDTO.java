@@ -1,5 +1,7 @@
 package com.zain.almksazain.DTO;
 
+import java.math.BigDecimal;
+
 public class DccPOCombinedViewDTO {
 
     private Long dccRecordNo;
@@ -25,14 +27,14 @@ public class DccPOCombinedViewDTO {
     private String lnScopeOfWork;
     private String lnRemarks;
     private String lnItemCode;
-    private Long linkId;
+    private String linkId;
     private String tagNumber;
     private String lineNumber;
     private String actualItemCode;
     private String uplLineNumber;
     private String poId;
     private Double UPLACPTRequestValue; // Renamed from uplACPTRequestValue
-    private Double POAcceptanceQty; // Renamed from poAcceptanceQty
+//    private Double POAcceptanceQty; // Renamed from poAcceptanceQty
     private Double POLineAcceptanceQty; // Renamed from poLineAcceptanceQty
     private Double poPendingQuantity;
     private String projectName;
@@ -57,6 +59,7 @@ public class DccPOCombinedViewDTO {
     private String userAging;
     private String totalAging;
     private String itemCode;
+    private Double poAcceptanceQty;
 
     // Getters and Setters
     public Long getDccRecordNo() {
@@ -243,11 +246,11 @@ public class DccPOCombinedViewDTO {
         this.lnItemCode = lnItemCode;
     }
 
-    public Long getLinkId() {
+    public String getLinkId() {
         return linkId;
     }
 
-    public void setLinkId(Long linkId) {
+    public void setLinkId(String linkId) {
         this.linkId = linkId;
     }
 
@@ -299,12 +302,12 @@ public class DccPOCombinedViewDTO {
         this.UPLACPTRequestValue = UPLACPTRequestValue;
     }
 
-    public Double getPOAcceptanceQty() {
-        return POAcceptanceQty;
+    public Double getpoAcceptanceQty() {
+        return poAcceptanceQty;
     }
 
-    public void setPOAcceptanceQty(Double POAcceptanceQty) {
-        this.POAcceptanceQty = POAcceptanceQty;
+    public void setpoAcceptanceQty(Double poAcceptanceQty) {
+        this.poAcceptanceQty = poAcceptanceQty;
     }
 
     public Double getPOLineAcceptanceQty() {
@@ -498,4 +501,13 @@ public class DccPOCombinedViewDTO {
     public void setItemCode(String itemCode) {
         this.itemCode = itemCode;
     }
+
+
+//    public void setpoAcceptanceQty(Double poAcceptanceQty) {
+//        this.poAcceptanceQty = poAcceptanceQty;
+//    }
+//
+//    public Double getpoAcceptanceQty() {
+//        return poAcceptanceQty;
+//    }
 }
