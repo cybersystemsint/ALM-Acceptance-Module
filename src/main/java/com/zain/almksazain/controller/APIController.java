@@ -20,29 +20,24 @@ import com.zain.almksazain.model.polndata;
 import com.zain.almksazain.model.upldata;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-//import com.github.junrar.Archive;
-//import com.github.junrar.rarfile.FileHeader;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonSyntaxException;
+import com.zain.almksazain.services.DCCService;
 import com.zain.almzainksa.helper.helper;
 import com.zain.almksazain.model.FileRecord;
 import com.zain.almksazain.model.tb_Approval_Log;
 import com.zain.almksazain.model.tb_PurchaseOrderUPL;
 import com.zain.almksazain.repo.fileRecordRepo;
 import com.zain.almksazain.repo.tbApprovalLogRepo;
-//import com.zain.almksazain.repo.tbArcApprovalRecordsRepo;
 import com.zain.almksazain.repo.tbPurchaseOrderRepo;
 import com.zain.almksazain.repo.tbPurchaseOrderUPLRepo;
-//import com.zain.almksazain.model.tb_Arc_ApprovalRecords;
 import com.zain.almksazain.model.tb_ChargeAccount;
 import com.zain.almksazain.model.tb_ErrorMessage;
 import com.zain.almksazain.model.tb_Site;
 import com.zain.almksazain.model.tb_Region;
 import com.zain.almksazain.model.tbItemCodeSubstitute;
 import com.zain.almksazain.model.tbNode;
-//import com.zain.almksazain.model.tbPassiveInventory;
-//import com.zain.almksazain.repo.tbCategoryApprovalLevelRepo;
 import com.zain.almksazain.repo.tbSiteRepo;
 import com.zain.almksazain.repo.tbRegionRepo;
 import com.zain.almksazain.repo.tbItemCodeSubstituteRepo;
@@ -63,6 +58,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 import java.io.*;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.nio.file.Files;
@@ -82,22 +78,17 @@ import java.util.logging.Logger;
 import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
-//import org.apache.commons.compress.archivers.ArchiveInputStream;
 import org.apache.logging.log4j.LogManager;
 import org.json.JSONException;
-//import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.multipart.MultipartFile;
-//import org.apache.commons.compress.archivers.ArchiveEntry;
-//import org.apache.commons.compress.archivers..RarArchiveInputStream;
-//import org.apache.commons.compress.archivers;
 
 @RestController
 public class APIController {
 
-    private final org.apache.logging.log4j.Logger loggger = LogManager.getLogger(APIController.class);
+    private final org.apache.logging.log4j.Logger logger = LogManager.getLogger(APIController.class);
 
     @Autowired
     pohdrepo pohd_repo;
@@ -129,8 +120,6 @@ public class APIController {
     @Autowired
     tbPurchaseOrderUPLRepo purchaseOrderUPLRepo;
 
-//    @Autowired
-//    tbArcApprovalRecordsRepo arcApprovalRecordsRepo;
     @Autowired
     tbChargeAccountRepo chargeAccountRepo;
 
@@ -166,9 +155,12 @@ public class APIController {
     @Autowired
     tbPassiveInventoryRepo passiveRepo;
 
-    //UNCOMMENT THIS PATH TO CHANGE THE FILE DIRECTORY PATH 
-//    @Value("${alm.uploadpath}")
-//    private String docsuploadpath;
+    @Autowired
+    private DCCService dccService;
+
+    // UNCOMMENT THIS PATH TO CHANGE THE FILE DIRECTORY PATH
+    //    @Value("${alm.uploadpath}")
+    //    private String docsuploadpath;
     Httpcall utils = new Httpcall();
 
     HashMap requestMap = new HashMap();
@@ -202,9 +194,9 @@ public class APIController {
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
     public Map<String, String> createItemCodeSubstitutes(@RequestBody String req) throws ParseException, ParseException, ParseException {
         String batchfilename = "";
-        long recordNo = 0;
+        long recordNo;
 
-        loggger.info("createItemCodeSubstitutes Req |  " + req);
+        logger.info("createItemCodeSubstitutes Req |  " + req);
 
         try {
             SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd"); // Adjust the pattern as per your date format
@@ -230,7 +222,7 @@ public class APIController {
                         responseinfo = "Record Updated Success";
                     } catch (Exception excc) {
 
-                        loggger.info("Exception  |  " + excc.getMessage());
+                        logger.info("Exception  |  " + excc.getMessage());
                         responseinfo = "Item Code Substitute update cannot be processed at this time. Please check again later ";
                     }
 
@@ -251,7 +243,7 @@ public class APIController {
                         responseinfo = "Record Created Success";
 
                     } catch (JSONException excc) {
-                        loggger.info("Exception  |  " + excc.getMessage());
+                        logger.info("Exception  |  " + excc.getMessage());
                         responseinfo = "Item Code Substitute creation cannot be processed at this time. Please check again later ";
                     }
 
@@ -271,7 +263,7 @@ public class APIController {
             }
         } catch (NumberFormatException | JSONException exc) {
             net.minidev.json.JSONObject response = new net.minidev.json.JSONObject();
-            loggger.info("Exception |  " + exc);
+            logger.info("Exception |  " + exc);
 
             return response("Error", exc.getMessage());
         }
@@ -284,7 +276,7 @@ public class APIController {
         String batchfilename = "";
         long recordNo = 0;
 
-        loggger.info("createErrorMessage Req |  " + req);
+        logger.info("createErrorMessage Req |  " + req);
 
         try {
             SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd"); // Adjust the pattern as per your date format
@@ -313,7 +305,7 @@ public class APIController {
                         responseinfo = "Record Updated Success";
                     } catch (Exception excc) {
 
-                        loggger.info("Exception  |  " + excc.getMessage());
+                        logger.info("Exception  |  " + excc.getMessage());
                         responseinfo = "Charge Account update cannot be processed at this time. Please check again later ";
                     }
 
@@ -331,7 +323,7 @@ public class APIController {
                         errorMessageRepo.save(nwspldt);
                         responseinfo = "Record Created Success";
                     } catch (JSONException excc) {
-                        loggger.info("Exception  |  " + excc.getMessage());
+                        logger.info("Exception  |  " + excc.getMessage());
                         responseinfo = " creation cannot be processed at this time. Please check again later " + excc.getMessage();
                     }
                 }
@@ -356,7 +348,7 @@ public class APIController {
         String batchfilename = "";
         long recordNo = 0;
 
-        loggger.info("ChargeAccountRequest |  " + req);
+        logger.info("ChargeAccountRequest |  " + req);
 
         try {
             SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd"); // Adjust the pattern as per your date format
@@ -385,7 +377,7 @@ public class APIController {
                         responseinfo = "Record Updated Success";
                     } catch (Exception excc) {
 
-                        loggger.info("Exception  |  " + excc.getMessage());
+                        logger.info("Exception  |  " + excc.getMessage());
                         responseinfo = "Charge Account update cannot be processed at this time. Please check again later ";
                     }
 
@@ -406,7 +398,7 @@ public class APIController {
                         responseinfo = "Record Created Success";
 
                     } catch (JSONException excc) {
-                        loggger.info("Exception  |  " + excc.getMessage());
+                        logger.info("Exception  |  " + excc.getMessage());
                         responseinfo = "Charge Account creation cannot be processed at this time. Please check again later ";
                     }
 
@@ -439,7 +431,7 @@ public class APIController {
         Integer recordNo = obj.get("recordNo").getAsInt();
         tb_ChargeAccount spldt = chargeAccountRepo.findByRecordNo(recordNo);
 
-        loggger.info("Delete Charge Account Request |  " + req);
+        logger.info("Delete Charge Account Request |  " + req);
 
         HashMap<String, String> response = new HashMap<>();
         if (spldt != null) {
@@ -456,7 +448,7 @@ public class APIController {
             response.put("responseCode", "1");
             response.put("responseDesc", "Record not found for the provided chargeAccount");
         }
-        loggger.info("Delete Charge Account Response |  " + response);
+        logger.info("Delete Charge Account Response |  " + response);
 
         return response;
     }
@@ -467,7 +459,7 @@ public class APIController {
     public Map<String, String> createpo(@RequestBody String req) throws ParseException, ParseException, ParseException {
         String batchfilename = "";
         long recordNo = 0;
-        loggger.info("PO CREATE REQUEST |  " + req);
+        logger.info("PO CREATE REQUEST |  " + req);
         try {
             SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd"); // Adjust the pattern as per your date format
             JSONArray jsonArray = new JSONArray(req);
@@ -559,7 +551,7 @@ public class APIController {
                         PurchaseOrderRepo.save(spldt);
                         responseinfo = "Record Updated Success";
                     } catch (Exception excc) {
-                        loggger.info("Exception |  " + excc.toString());
+                        logger.info("Exception |  " + excc.toString());
                         responseinfo = excc.toString();
                     }
                 } else {
@@ -649,7 +641,7 @@ public class APIController {
                                 nwspldt.setApprovedDate(sqlDate);
                                 nwspldt.setCreatedDate(sqlcreatedDate);
                             } catch (ParseException ex) {
-                                loggger.info("Exception |  " + ex.toString());
+                                logger.info("Exception |  " + ex.toString());
                                 java.util.logging.Logger.getLogger(APIController.class.getName()).log(Level.SEVERE, null, ex);
                             }
 
@@ -659,7 +651,7 @@ public class APIController {
 
                             } catch (JSONException excc) {
 
-                                loggger.info("Exception |  " + excc.toString());
+                                logger.info("Exception |  " + excc.toString());
 
                                 responseinfo = excc.toString();
                             }
@@ -672,8 +664,8 @@ public class APIController {
                 }
 
             }
-            loggger.info("PO CREATE RESPONSE |  " + responseinfo);
-            loggger.info("VALIDATION RESPONSE |  " + validationErrors);
+            logger.info("PO CREATE RESPONSE |  " + responseinfo);
+            logger.info("VALIDATION RESPONSE |  " + validationErrors);
             if (!validationErrors.isEmpty()) {
                 batchfilename = getbatchfilename("FailedUpload");
                 helper.logBatchFile(responseinfo, true, batchfilename);
@@ -687,7 +679,7 @@ public class APIController {
             }
 
         } catch (NumberFormatException | JSONException exc) {
-            loggger.info("Exception |  " + exc.toString());
+            logger.info("Exception |  " + exc.toString());
             return response("Error", exc.getMessage());
         }
     }
@@ -701,7 +693,7 @@ public class APIController {
         long recordNo = 0;
         long recordNovalidation = 0;
         List<String> missingPoNumbers = new ArrayList<>();
-        loggger.info("UPL CREATE REQUEST |  " + req);
+        logger.info("UPL CREATE REQUEST |  " + req);
         try {
             SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd"); // Adjust the pattern as per your date format
             LocalDateTime now = LocalDateTime.now();
@@ -718,7 +710,7 @@ public class APIController {
                 String poNum = jsonObject.getString("poNumber").trim();
                 String lineNum = jsonObject.getString("poLineNumber").trim();
                 String uplLineNum = jsonObject.getString("uplLine").trim();
-                loggger.info("poNumber | " + poNum);
+                logger.info("poNumber | " + poNum);
 
                 if (recordNovalidation == 0) {
                     List<tb_PurchaseOrderUPL> validateUPLCreation = purchaseOrderUPLRepo.findByPoNumberAndPoLineNumberAndUplLine(jsonObject.getString("poNumber"), jsonObject.getString("poLineNumber"), jsonObject.getString("uplLine"));
@@ -745,13 +737,13 @@ public class APIController {
 
             }
 
-            loggger.info("emptyNumbers | " + emptyNumbers);
+            logger.info("emptyNumbers | " + emptyNumbers);
 
-            loggger.info("duplicateLines | " + duplicateLines);
+            logger.info("duplicateLines | " + duplicateLines);
 
-            loggger.info("missingPoNumbers | " + missingPoNumbers);
+            logger.info("missingPoNumbers | " + missingPoNumbers);
 
-            loggger.info("validationExistingAcceptance | " + validationExistingAcceptance);
+            logger.info("validationExistingAcceptance | " + validationExistingAcceptance);
 
             // If any validation errors, return without saving anything
             if (!emptyNumbers.isEmpty() || !duplicateLines.isEmpty() || !missingPoNumbers.isEmpty() || !validationExistingAcceptance.isEmpty()) {
@@ -781,7 +773,7 @@ public class APIController {
                     errorMessage += "This record cannot be editted since there is an existing acceptance request already raised for this UPL line Item " + String.join(", ", validationExistingAcceptance) + ". ";
                 }
 
-                loggger.info("UPL VALIDATION FAILED | " + errorMessage);
+                logger.info("UPL VALIDATION FAILED | " + errorMessage);
                 return response("Error", errorMessage);
             }
 
@@ -837,7 +829,7 @@ public class APIController {
                         purchaseOrderUPLRepo.save(spldt);
                         responseinfo = "Record Updated Success";
                     } catch (Exception excc) {
-                        loggger.info("Exception |  " + excc.toString());
+                        logger.info("Exception |  " + excc.toString());
                         responseinfo = excc.toString();
                     }
                 } else {
@@ -879,12 +871,12 @@ public class APIController {
                         purchaseOrderUPLRepo.save(nwspldt);
                         responseinfo = "Record Created Success";
                     } catch (JSONException excc) {
-                        loggger.info("Exception |  " + excc.toString());
+                        logger.info("Exception |  " + excc.toString());
                         responseinfo = excc.toString();
                     }
                 }
             }
-            loggger.info("UPL CREATE RESPONSE |  " + responseinfo);
+            logger.info("UPL CREATE RESPONSE |  " + responseinfo);
             if (!responseinfo.contains("Success")) {
                 batchfilename = getbatchfilename("FailedUpload");
                 helper.logBatchFile(responseinfo, true, batchfilename);
@@ -1003,7 +995,7 @@ public class APIController {
         String poNumber = (String) requestBody.get("poNumber");
         Integer dccId = (Integer) requestBody.get("dccId");
 
-        loggger.info("Fetching files for poNumber: " + poNumber + " and dccId: " + dccId);
+        logger.info("Fetching files for poNumber: " + poNumber + " and dccId: " + dccId);
 
         // Validate the inputs
         if (poNumber == null || dccId == null) {
@@ -1038,7 +1030,7 @@ public class APIController {
     @PostMapping(value = "/postdcc")
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
     public Map<String, String> postdcc(@RequestPart(value = "file", required = false) List<MultipartFile> files, @RequestPart("data") String req) {
-        loggger.info("| CREATE ACCEPTANCE REQUEST " + req);
+        logger.info("| CREATE ACCEPTANCE REQUEST " + req);
         SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd"); // Adjust the pattern as per your date format
 
         JSONArray jsonArray = new JSONArray(req);
@@ -1056,10 +1048,10 @@ public class APIController {
         if (files != null) {
             for (MultipartFile file : files) {
                 String originalFileName = file.getOriginalFilename();
-                loggger.info("Received file: " + originalFileName);
+                logger.info("Received file: " + originalFileName);
 
                 long fileSize = file.getSize();
-                loggger.info("Received file: " + originalFileName + ", size: " + fileSize + " bytes");
+                logger.info("Received file: " + originalFileName + ", size: " + fileSize + " bytes");
 
                 // Validate file size
                 if (fileSize > maxFileSize) {
@@ -1086,14 +1078,14 @@ public class APIController {
                                     if (dotIndexEntry > 0) {
                                         entryExtension = entryName.substring(dotIndexEntry).toLowerCase();
                                     }
-                                    loggger.info("Checking file inside zip: " + entryName);
+                                    logger.info("Checking file inside zip: " + entryName);
                                     if (!allowedExtensions.contains(entryExtension)) {
                                         return response("Error", "Invalid file inside zip: " + entryName);
                                     }
                                 }
                             }
                         } catch (IOException e) {
-                            loggger.error("Failed to read zip file: " + originalFileName, e);
+                            logger.error("Failed to read zip file: " + originalFileName, e);
                             return response("Error", "Failed to process zip file.");
                         }
                     }
@@ -1105,7 +1097,7 @@ public class APIController {
                                 return response("Error", "Invalid file inside rar archive");
                             }
                         } catch (IOException | InterruptedException e) {
-                            loggger.error("Failed to validate rar file: " + originalFileName, e);
+                            logger.error("Failed to validate rar file: " + originalFileName, e);
                             return response("Error", "Failed to process rar file.");
                         }
                     }
@@ -1209,12 +1201,12 @@ public class APIController {
 
                             List<String> allowedStatuses = Arrays.asList("approved-received", "inprocess", "approved", "returned", "request-info");
                             List<Integer> validRecordNos = dccrepo.findByPoNumberAndStatus(poNumber, allowedStatuses);
-                            loggger.info("Matching RecordNos UPLBASED: " + validRecordNos);
+                            logger.info("Matching RecordNos UPLBASED: " + validRecordNos);
                             if (!validRecordNos.isEmpty()) {
                                 List<String> dccIdStrings = validRecordNos.stream()
                                         .map(String::valueOf)
                                         .collect(Collectors.toList());
-                                loggger.info("Matching dccIdStrings: " + dccIdStrings);
+                                logger.info("Matching dccIdStrings: " + dccIdStrings);
 
                                 Double totalDeliveredQty = dcclnrepo.sumDeliveredQtyByDccIdsAndPoLineInfo(dccIdStrings, poNumber, validatelineNumber, validateuplline);
 
@@ -1265,9 +1257,9 @@ public class APIController {
                             locationList.add(localName);
                         }
 
-                        loggger.info("ReceivedItemCode:  " + itemCode);
-                        loggger.info("ReceivedSerialNumber: " + serialNumber);
-                        loggger.info("ReceivedActualItemCode: " + actualItemCode);
+                        logger.info("ReceivedItemCode:  " + itemCode);
+                        logger.info("ReceivedSerialNumber: " + serialNumber);
+                        logger.info("ReceivedActualItemCode: " + actualItemCode);
 
                         DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
                         LocalDateTime dateInService = LocalDateTime.parse(dateInServiceString, formatter);
@@ -1309,17 +1301,17 @@ public class APIController {
                             String activeOrPassive = topRecord != null ? String.valueOf(topRecord.getActiveOrPassive()) : "";
                             String uplItemCode = topRecord != null ? String.valueOf(topRecord.getUplLineItemCode()) : "";
                             Double uplQty = topRecord != null ? topRecord.getUplLineQuantity() : 0.0;
-                            loggger.info("itemSerialized: " + itemSerialized);
-                            loggger.info("activeOrPassive: " + activeOrPassive);
-                            loggger.info("uplItemCode: " + uplItemCode);
-                            loggger.info("itemCode: " + itemCode);
-                            loggger.info("newItemCode: " + itemCode);
-                            loggger.info("UPL LINE QTY : " + uplQty);
+                            logger.info("itemSerialized: " + itemSerialized);
+                            logger.info("activeOrPassive: " + activeOrPassive);
+                            logger.info("uplItemCode: " + uplItemCode);
+                            logger.info("itemCode: " + itemCode);
+                            logger.info("newItemCode: " + itemCode);
+                            logger.info("UPL LINE QTY : " + uplQty);
 
                             if (itemSerialized.equalsIgnoreCase("Yes") && activeOrPassive.equalsIgnoreCase("Active")) {
                                 //CHECK FROM INVENTORY SIDE 
                                 if (serialNumber.length() > 1 && itemCode.length() > 1) {
-                                    loggger.info("validating Active Inventory: ");
+                                    logger.info("validating Active Inventory: ");
                                     List<tbNode> validateInventorylist = nodeRepo.findByPartNumberAndSerialNumber(newItemCode, serialNumber);
                                     if (validateInventorylist.isEmpty()) {
                                         validateInventory.add(serialNumber);
@@ -1331,7 +1323,7 @@ public class APIController {
 //
 //                                //CHECK FROM PASSIVE SIDE 
 //                                if (serialNumber.length() > 1 && itemCode.length() > 1) {
-//                                    loggger.info("validating Passive Inventory: ");
+//                                    logger.info("validating Passive Inventory: ");
 //                                    List<tbPassiveInventory> validateInventorylist = passiveRepo.findByItemCodeAndSerialNumber(newItemCode, serialNumber);
 //                                    if (validateInventorylist.isEmpty()) {
 //                                        validatePassiveInventory.add(serialNumber);
@@ -1341,7 +1333,7 @@ public class APIController {
                             //ADD A NEW VALIDATION HERE TO VALIDATE THE QUANTITY 
                             List<String> allowedStatuses = Arrays.asList("approved-received", "inprocess", "approved", "returned", "request-info");
                             List<Integer> validRecordNos = dccrepo.findByPoNumberAndStatus(poNumber, allowedStatuses);
-                            loggger.info("Matching RecordNos UPLBASED: " + validRecordNos);
+                            logger.info("Matching RecordNos UPLBASED: " + validRecordNos);
                             //COMMMENTING THIS OUT FOR INTERNAL UAT
                             for (Map.Entry<String, Double> entry : uplTotalsPerLine.entrySet()) {
                                 String poLineNumber = entry.getKey();
@@ -1390,18 +1382,18 @@ public class APIController {
                             //  COMMMENTING THIS OUT FOR INTERNAL UAT
                             List<String> allowedStatuses = Arrays.asList("approved-received", "inprocess", "approved", "returned", "request-info");
                             List<Integer> validRecordNos = dccrepo.findByPoNumberAndStatus(poNumber, allowedStatuses);
-                            loggger.info("Matching RecordNos: " + validRecordNos);
+                            logger.info("Matching RecordNos: " + validRecordNos);
 
                             if (!validRecordNos.isEmpty()) {
 
                                 List<String> dccIdStrings = validRecordNos.stream()
                                         .map(String::valueOf)
                                         .collect(Collectors.toList());
-                                loggger.info("Matching dccIdStrings: " + dccIdStrings);
+                                logger.info("Matching dccIdStrings: " + dccIdStrings);
                                 Double totalDeliveredQty = dcclnrepo.sumDeliveredQtyByDccIdsAndPoLineInfo(
                                         dccIdStrings, poNumber, polineitem, "");
 
-                                loggger.info("Total Delivered Qty for given PoNumber/Line/ " + totalDeliveredQty);
+                                logger.info("Total Delivered Qty for given PoNumber/Line/ " + totalDeliveredQty);
 
                                 if (poqtyNew > 0) {
                                     if ((passedQty + totalDeliveredQty) > quantityDueNew) {
@@ -1416,22 +1408,22 @@ public class APIController {
 
                         }
                         if (serialNumber.length() > 1 && itemCode.length() > 1) {
-                            loggger.info("actualItemCode_LENGTH: " + actualItemCode.length());
+                            logger.info("actualItemCode_LENGTH: " + actualItemCode.length());
                             if (actualItemCode.length() == 0) {
                                 //if ((serialNumber.length() > 1 && itemCode.length() > 1 && (actualItemCode.equalsIgnoreCase("") || actualItemCode.isEmpty()))) {
                                 validateDCCLineList = dcclnrepo.findBySerialNumberAndItemCode(serialNumber, itemCode);
-                                loggger.info("validateDCCLineList: " + validateDCCLineList);
-                                loggger.info("validateDCCLineList is Empty: " + validateDCCLineList.isEmpty());
+                                logger.info("validateDCCLineList: " + validateDCCLineList);
+                                logger.info("validateDCCLineList is Empty: " + validateDCCLineList.isEmpty());
                                 if (!validateDCCLineList.isEmpty()) {
                                     DCCLineItem topRecordNo = dcclnrepo.findTopBySerialNumberAndItemCode(serialNumber, itemCode);
                                     String dccid = topRecordNo != null ? String.valueOf(topRecordNo.getDccId()) : "";
-                                    loggger.info("dccid: " + dccid);
+                                    logger.info("dccid: " + dccid);
                                     if (dccid.length() != 0) {
-                                        loggger.info("dccid_Length: " + dccid.length());
+                                        logger.info("dccid_Length: " + dccid.length());
                                         DCC dccRecord = dccrepo.findTopByRecordNo(Integer.parseInt(dccid));
-                                        loggger.info("dccRecord: " + dccRecord);
+                                        logger.info("dccRecord: " + dccRecord);
                                         String dccStatus = dccRecord != null ? String.valueOf(dccRecord.getStatus()) : "";
-                                        loggger.info("Request Status: " + dccStatus);
+                                        logger.info("Request Status: " + dccStatus);
                                         if (dccStatus.equalsIgnoreCase("approved-received") || dccStatus.equalsIgnoreCase("inprocess") || dccStatus.equalsIgnoreCase("approved") || dccStatus.equalsIgnoreCase("returned") || dccStatus.equalsIgnoreCase("request-info")) {
                                             alreadyRaisedDCC.add(serialNumber);
                                             itemCodesList.add(itemCode);
@@ -1440,7 +1432,7 @@ public class APIController {
                                 }
                             }
                         }
-                        loggger.info("Is_alreadyCreatedDCC_Empty " + alreadyRaisedDCC.isEmpty());
+                        logger.info("Is_alreadyCreatedDCC_Empty " + alreadyRaisedDCC.isEmpty());
                         if (serialNumber.length() > 1 && itemCode.length() > 1) {
 
                             if (!actualItemCode.isBlank()) {
@@ -1450,13 +1442,13 @@ public class APIController {
                                 if (!validateSerialNumberActualItemCode.isEmpty()) {
                                     DCCLineItem topRecordNo = dcclnrepo.findTopBySerialNumberAndActualItemCode(serialNumber, actualItemCode);
                                     String dccid = topRecordNo != null ? String.valueOf(topRecordNo.getDccId()) : "";
-                                    loggger.info("Actualdccid: " + dccid);
+                                    logger.info("Actualdccid: " + dccid);
                                     if (dccid.length() != 0) {
-                                        loggger.info("Actualdccid_Length: " + dccid.length());
+                                        logger.info("Actualdccid_Length: " + dccid.length());
                                         DCC dccRecord = dccrepo.findByRecordNo(Integer.parseInt(dccid));
                                         String dccStatus = dccRecord != null ? String.valueOf(dccRecord.getStatus()) : "";
-                                        loggger.info("ActualdccRecord: " + dccRecord);
-                                        loggger.info("Actual Request Status: " + dccStatus);
+                                        logger.info("ActualdccRecord: " + dccRecord);
+                                        logger.info("Actual Request Status: " + dccStatus);
                                         if (dccStatus.equalsIgnoreCase("approved-received") || dccStatus.equalsIgnoreCase("inprocess") || dccStatus.equalsIgnoreCase("approved") || dccStatus.equalsIgnoreCase("returned") || dccStatus.equalsIgnoreCase("request-info")) {
                                             alreadyCreatedDCCwithactualItemCode.add(serialNumber);
                                             updateditemCodesList.add(actualItemCode);
@@ -1586,7 +1578,7 @@ public class APIController {
                             if (itemSerialized.equalsIgnoreCase("Yes") && activeOrPassive.equalsIgnoreCase("Active")) {
                                 //CHECK FROM INVENTORY SIDE 
                                 if (serialNumber.length() > 1 && UpdateItemCode.length() > 1) {
-                                    loggger.info("validating Active Inventory: ");
+                                    logger.info("validating Active Inventory: ");
                                     List<tbNode> validateInventorylist = nodeRepo.findByPartNumberAndSerialNumber(newItem, serialNumber);
                                     if (validateInventorylist.isEmpty()) {
                                         validateInventory.add(serialNumber);
@@ -1597,7 +1589,7 @@ public class APIController {
 //                             else if (itemSerialized.equalsIgnoreCase("Yes") && activeOrPassive.equalsIgnoreCase("Passive")) {
 //                                //CHECK FROM PASSIVE SIDE 
 //                                if (serialNumber.length() > 1 && UpdateItemCode.length() > 1) {
-//                                    loggger.info("validating Passive Inventory: ");
+//                                    logger.info("validating Passive Inventory: ");
 //                                    List<tbPassiveInventory> validateInventorylist = passiveRepo.findByItemCodeAndSerialNumber(newItem, serialNumber);
 //                                    if (validateInventorylist.isEmpty()) {
 //                                        validatePassiveInventory.add(serialNumber);
@@ -1621,16 +1613,16 @@ public class APIController {
                             //COMMMENTING THIS OUT FOR INTERNAL UAT
                             List<String> allowedStatuses = Arrays.asList("approved-received", "inprocess", "approved", "returned", "request-info");
                             List<Integer> validRecordNos = dccrepo.findByPoNumberAndStatus(poNumber, allowedStatuses);
-                            loggger.info("Matching RecordNos: " + validRecordNos);
+                            logger.info("Matching RecordNos: " + validRecordNos);
                             if (!validRecordNos.isEmpty()) {
                                 List<String> dccIdStrings = validRecordNos.stream()
                                         .map(String::valueOf)
                                         .collect(Collectors.toList());
-                                loggger.info("Matching dccIdStrings: " + dccIdStrings);
+                                logger.info("Matching dccIdStrings: " + dccIdStrings);
                                 Double totalDeliveredQty = dcclnrepo.sumDeliveredQtyByDccIdsAndPoLineInfo(
                                         dccIdStrings, poNumber, polineitem, "");
 
-                                loggger.info("Total Delivered Qty for given PoNumber/Line/ " + totalDeliveredQty);
+                                logger.info("Total Delivered Qty for given PoNumber/Line/ " + totalDeliveredQty);
 
                                 if (poqtyNew > 0) {
                                     if ((passedQty + totalDeliveredQty) > quantityDueNew) {
@@ -1793,7 +1785,7 @@ public class APIController {
                 if (files != null) {
                     for (MultipartFile file : files) {
                         String originalFileName = file.getOriginalFilename();
-                        loggger.info("Received file: " + originalFileName);
+                        logger.info("Received file: " + originalFileName);
                         String fileExtension = "";
                         if (originalFileName != null) {
                             int dotIndex = originalFileName.lastIndexOf('.');
@@ -1840,7 +1832,7 @@ public class APIController {
             }
         } catch (NumberFormatException | ParseException | JSONException excc) {
 
-            loggger.info("POST DCC EXCEPTION" + excc);
+            logger.info("POST DCC EXCEPTION" + excc);
 
             System.out.println(excc.toString());
         }
@@ -1889,24 +1881,24 @@ public class APIController {
 
             int exitCode = process.waitFor();
             if (exitCode != 0) {
-                loggger.info("Unrar command failed with exit code: " + exitCode);
+                logger.info("Unrar command failed with exit code: " + exitCode);
                 // System.err.println("Unrar command failed with exit code: " + exitCode);
                 return false;
             }
             for (String entryName : entries) {
                 // Skip entries that are clearly directories (end with / or no extension)
                 if (entryName.endsWith("/") || !entryName.contains(".")) {
-                    loggger.info("Skipping likely directory: " + entryName);
+                    logger.info("Skipping likely directory: " + entryName);
                     continue;
                 }
 
                 int dotIndex = entryName.lastIndexOf('.');
                 String ext = (dotIndex > 0) ? entryName.substring(dotIndex).toLowerCase() : "";
-                loggger.info("Validating entry inside rar: " + entryName);
-                loggger.info("EXT : " + ext);
+                logger.info("Validating entry inside rar: " + entryName);
+                logger.info("EXT : " + ext);
 
                 if (!allowedExtensions.contains(ext)) {
-                    loggger.info("Invalid file inside rar: " + entryName);
+                    logger.info("Invalid file inside rar: " + entryName);
                     return false;  // invalid file found inside archive
                 }
             }
@@ -1961,7 +1953,7 @@ public class APIController {
                     dccrepo.save(checkdcc);
                     dataadded = "Data updated Success";
                 } catch (Exception exc) {
-                    loggger.info("POST DCC EXCEPTION" + exc);
+                    logger.info("POST DCC EXCEPTION" + exc);
 
                     dataadded = exc.getCause().toString();
                 }
@@ -1999,7 +1991,7 @@ public class APIController {
                 }
             }
         } catch (JSONException excc) {
-            loggger.info("POST DCC EXCEPTION" + excc);
+            logger.info("POST DCC EXCEPTION" + excc);
             dataadded = "Error " + excc.getCause().toString();
         }
         return dataadded;
@@ -2149,7 +2141,7 @@ public class APIController {
                 jsonArraynew.add(params);
             }
 
-            loggger.info("| POST WORKFLOW REQUEST " + jsonArraynew.toString());
+            logger.info("| POST WORKFLOW REQUEST " + jsonArraynew.toString());
             String ipaddress = getIPAddress();
             CompletableFuture.runAsync(() -> {
                 try {
@@ -2159,9 +2151,9 @@ public class APIController {
                     if (status.equalsIgnoreCase("request-info")) {
                         //Update the DCC table 
                     }
-                    loggger.info("| POST WORKFLOW RESPONSE  " + requestMap);
+                    logger.info("| POST WORKFLOW RESPONSE  " + requestMap);
                 } catch (Exception ex) {
-                    loggger.info("| POST WORKFLOW EXCEPTION " + ex.toString());
+                    logger.info("| POST WORKFLOW EXCEPTION " + ex.toString());
                 }
             });
 
@@ -2174,7 +2166,7 @@ public class APIController {
             net.minidev.json.JSONObject response = new net.minidev.json.JSONObject();
             response.put("productSerialNo", productSerialNo);
             response.put("dccId", dccId);
-            loggger.info("POST DCC EXCEPTION" + exc);
+            logger.info("POST DCC EXCEPTION" + exc);
             return (jsonArrayresponse.toString());
         }
     }
@@ -2183,7 +2175,7 @@ public class APIController {
 
         System.out.println("DCC LIne " + jsonObject.toString());
 
-        loggger.info("| DCC LIne " + jsonObject.toString());
+        logger.info("| DCC LIne " + jsonObject.toString());
 
         String result = "Failed to save";
         SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd"); // Adjust the pattern as per your date format
@@ -2205,7 +2197,25 @@ public class APIController {
 
                 tb_PurchaseOrderUPL topRecord = purchaseOrderUPLRepo.findTopByPoNumberAndPoLineNumberAndUplLine(poNumber, jsonObject.getString("poLineNumber"), jsonObject.getString("uplLineNumber"));
                 String unitOfMeasure = topRecord != null ? String.valueOf(topRecord.getUom()) : "";
+                tbPurchaseOrder podetails = PurchaseOrderRepo.findTopByPoNumberAndLineNumber(poNumber, jsonObject.getString("poLineNumber"));
                 eddccLineItem.setUoM(unitOfMeasure);
+
+                //ADD THE CALCULATION HERE 20250625
+                double uplLineUnitPrice = topRecord != null ? topRecord.getUplLineUnitPrice() : 0;
+                double poLineUnitPriceCalc = topRecord != null ? topRecord.getPoLineUnitPrice() : 0;
+                double lineTotal = uplLineUnitPrice * delivered;
+
+                double poacceptanceQty = 0;
+
+                if (poLineUnitPriceCalc != 0) {
+                    BigDecimal bdLineTotal = BigDecimal.valueOf(lineTotal);
+                    BigDecimal bdPoLineUnitPrice = BigDecimal.valueOf(poLineUnitPriceCalc);
+
+                    poacceptanceQty = bdLineTotal.divide(bdPoLineUnitPrice, 20, RoundingMode.HALF_UP)                            .doubleValue();
+                }
+
+                //SAVE THE NEW COLUMN  KWA DB 20250625
+                eddccLineItem.setPoAcceptanceQty(poacceptanceQty);
 
             } else {
                 eddccLineItem.setUoM("Each");//20250919 james
@@ -2226,7 +2236,7 @@ public class APIController {
                 java.sql.Date sqlDate = new java.sql.Date(parsedDate.getTime());
                 eddccLineItem.setDateInService(sqlDate);
             } catch (ParseException ex) {
-                loggger.info("Exception " + ex.getMessage());
+                logger.info("Exception " + ex.getMessage());
 
                 java.util.logging.Logger.getLogger(APIController.class.getName()).log(Level.SEVERE, null, ex);
             }
@@ -2239,7 +2249,7 @@ public class APIController {
                 dcclnrepo.save(eddccLineItem);
                 result = "Record update Success";
             } catch (Exception ex) {
-                loggger.info("Exception " + ex.getMessage());
+                logger.info("Exception " + ex.getMessage());
 
                 System.out.println(ex.getMessage());
                 result = ex.getCause().toString();
@@ -2263,8 +2273,25 @@ public class APIController {
 
                 tb_PurchaseOrderUPL topRecord = purchaseOrderUPLRepo.findTopByPoNumberAndPoLineNumberAndUplLine(poNumber, jsonObject.getString("poLineNumber"), jsonObject.getString("uplLineNumber"));
                 String unitOfMeasure = topRecord != null ? String.valueOf(topRecord.getUom()) : "";
+                tbPurchaseOrder podetails = PurchaseOrderRepo.findTopByPoNumberAndLineNumber(poNumber, jsonObject.getString("poLineNumber"));
                 dccLineItem.setUoM(unitOfMeasure);
 
+                //ADD THE CALCULATION HERE 20250625
+                double uplLineUnitPrice = topRecord != null ? topRecord.getUplLineUnitPrice() : 0;
+                double poLineUnitPriceCalc = topRecord != null ? topRecord.getPoLineUnitPrice() : 0;
+                double lineTotal = uplLineUnitPrice * delivered;
+
+                double poacceptanceQty = 0;
+
+                if (poLineUnitPriceCalc != 0) {
+                    BigDecimal bdLineTotal = BigDecimal.valueOf(lineTotal);
+                    BigDecimal bdPoLineUnitPrice = BigDecimal.valueOf(poLineUnitPriceCalc);
+
+                    poacceptanceQty = bdLineTotal.divide(bdPoLineUnitPrice, 20, RoundingMode.HALF_UP)                            .doubleValue();
+                }
+
+                //SAVE THE NEW COLUMN  KWA DB 20250625
+                dccLineItem.setPoAcceptanceQty(poacceptanceQty);
             }
 
             if (jsonObject.has("uplLineItemCode")) {
@@ -2297,10 +2324,10 @@ public class APIController {
 //                String approvalRecordNo = topRecordNo != null ? String.valueOf(topRecordNo.getRecordNo()) : "";
                 java.util.Date parsedDate = dateFormat.parse(now.toString());
                 java.sql.Date newDate = new java.sql.Date(parsedDate.getTime());
-                //CHECK UP BASED 
+                //CHECK UP BASED
 
             } catch (NumberFormatException | ParseException | JSONException exc) {
-                loggger.info("POST DCC EXCEPTION" + exc);
+                logger.info("POST DCC EXCEPTION" + exc);
                 System.out.println(exc.getMessage());
                 result = exc.getCause().toString();
             }
@@ -2403,7 +2430,7 @@ public class APIController {
             }
         } catch (NumberFormatException | JSONException excc) {
 
-            loggger.info("Exception   |  " + excc.getMessage());
+            logger.info("Exception   |  " + excc.getMessage());
         }
         return response("Error", jsonArrayresponse.toString());
     }
@@ -3252,4 +3279,9 @@ public class APIController {
         }
     }
 
+    @PostMapping("/update-po-acceptance-quantities")
+    public ResponseEntity<String> triggerPoAcceptanceQtyUpdate() {
+        dccService.updatePoAcceptanceQty();
+        return ResponseEntity.ok("PO Acceptance Quantities updated successfully");
+    }
 }
