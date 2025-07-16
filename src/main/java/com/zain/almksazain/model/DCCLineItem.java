@@ -23,7 +23,7 @@ public class DCCLineItem implements Serializable {
     private String dccId;
     private String itemCode;
     private String actualItemCode;
-    //NEW 
+    //NEW
     private String poId;
     private String lineNumber;
     private String UoM;
@@ -38,19 +38,10 @@ public class DCCLineItem implements Serializable {
 
     private String linkId;
     private String tagNumber;
-<<<<<<< HEAD
-
-    // Constructors, getters, and setters
-    // Constructor
-//    public DCCLineItem() {
-//    }
-    // Getters and Setters
-=======
     private double poAcceptanceQty;
 
     // Constructors, getters, and setters
 
->>>>>>> master
     public String getItemCode() {
         return itemCode;
     }
@@ -251,9 +242,6 @@ public class DCCLineItem implements Serializable {
         this.dateInService = dateInService;
     }
 
-<<<<<<< HEAD
-}
-=======
     public double getPoAcceptanceQty() {
         return poAcceptanceQty;
     }
@@ -262,4 +250,3 @@ public class DCCLineItem implements Serializable {
         this.poAcceptanceQty = poAcceptanceQty;
     }
 }
->>>>>>> master
