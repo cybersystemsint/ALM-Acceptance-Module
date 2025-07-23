@@ -1702,9 +1702,9 @@ public class APIController {
 
             Set<String> uniquelocation = new HashSet<>(locationList);
 
-            if (uniquelocation.size() > 1) {
-                errorMessages.add("You can only raise an acceptance request for one unique location. The passed locations are " + String.join(", ", uniquelocation));
-            }
+//            if (uniquelocation.size() > 1) {
+//                errorMessages.add("You can only raise an acceptance request for one unique location. The passed locations are " + String.join(", ", uniquelocation));
+//            }
 
             if (!existingSerialNumbers.isEmpty()) {
                 errorMessages.add("The following serial Numbers  " + String.join(", ", existingSerialNumbers) + " with item codes " + String.join(", ", serialnumberItemCode) + " have already been received. Kindly raise an acceptance request for a different serial Number ");
