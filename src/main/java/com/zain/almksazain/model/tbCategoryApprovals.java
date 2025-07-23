@@ -22,6 +22,7 @@ import javax.persistence.Table;
 @Table(name = "tb_Category_Approvals")
 public class tbCategoryApprovals implements Serializable {
 
+    
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private int approvalId;

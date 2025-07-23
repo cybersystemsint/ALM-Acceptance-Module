@@ -20,6 +20,7 @@ import javax.persistence.Table;
 @Table(name = "tb_Category_Approval_Requests")
 public class tbCategoryApprovalRequests implements Serializable {
 
+    
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private int recordNo;

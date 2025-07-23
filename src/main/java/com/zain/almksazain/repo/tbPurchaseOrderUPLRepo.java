@@ -10,14 +10,16 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
-/**
- *
- * @author jgithu
- */
+@org.springframework.stereotype.Repository
 public interface tbPurchaseOrderUPLRepo extends JpaRepository<tb_PurchaseOrderUPL, Long> {
+      // Batch fetch for UPLs by PO numbers
+    List<tb_PurchaseOrderUPL> findByPoNumberIn(List<String> poNumbers);
 
-    //  List<tb_PurchaseOrderUPL> findByPoNumberAndVendorNumber(String poId, String supplierId);
-   // tb_PurchaseOrderUPL findByPoNumber(String PoNumber);
+        // For POLineAcceptanceQty subquery (negative uplLineQuantity only)
+    @Query("SELECT COALESCE(SUM( (upl.uplLineQuantity * upl.uplLineUnitPrice) / NULLIF((upl.poLineQuantity * upl.poLineUnitPrice),0) ),0) " +
+           "FROM tb_PurchaseOrderUPL upl " +
+           "WHERE upl.uplLineQuantity < 0 AND upl.poNumber = :poNumber AND upl.poLineNumber = :poLineNumber")
+    Double sumPOLineAcceptanceQty(@Param("poNumber") String poNumber, @Param("poLineNumber") String poLineNumber);
 
     tb_PurchaseOrderUPL findByRecordNo(long recordNo);
 
@@ -32,7 +34,6 @@ public interface tbPurchaseOrderUPLRepo extends JpaRepository<tb_PurchaseOrderUP
     @Query(value = "SELECT * FROM tb_PurchaseOrderUPL d WHERE d.poNumber = :poNumber AND  d.poLineNumber = :poLineNumber AND d.uplLine = :uplLine ORDER BY d.recordNo DESC LIMIT 1", nativeQuery = true)
     tb_PurchaseOrderUPL findTopByPoNumberAndPoLineNumberAndUplLine(@Param("poNumber") String poNumber, @Param("poLineNumber") String poLineNumber, @Param("uplLine") String uplLine);
 
-//    //NEW CODE 
-//    List<tb_PurchaseOrderUPL> findByPoNumber(String poNumber);
+    List<tb_PurchaseOrderUPL> findByPoNumber(String poNumber);
 
 }

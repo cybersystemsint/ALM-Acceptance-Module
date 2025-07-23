@@ -2,9 +2,10 @@ package com.zain.almksazain.repo;
 
 import com.zain.almksazain.model.DCC;
 import com.zain.almksazain.model.DCCLineItem;
+
+import java.util.Collection;
 import java.util.List;
 import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -30,15 +31,24 @@ public interface DccLineRepo extends JpaRepository<DCCLineItem, Long> {
     DCCLineItem findTopBySerialNumberAndActualItemCode(@Param("serialNumber") String serialNumber, @Param("actualItemCode") String actualItemCode);
 
     // New Methods
-    List<DCCLineItem> findAllByDccId(String dccId);
 
     @Query(value = "SELECT * FROM tb_DCC_LN d WHERE d.serialNumber = :serialNumber ORDER BY d.recordNo DESC LIMIT 1", nativeQuery = true)
     DCCLineItem findTopBySerialNumber(@Param("serialNumber") String serialNumber);
 
-//    @Modifying
-//    @Transactional
-//    @Query("DELETE FROM DCCLineItem d WHERE d.recordNo IN :recordNos")
-//    void deleteAllByIdInBatch(@Param("recordNos") List<Long> recordNos);
+ // For deliveredQty 
+@Query("SELECT COALESCE(SUM(dl.deliveredQty), 0) " +
+       "FROM DCCLineItem dl " +
+       "JOIN dl.dcc dcc " +
+       "WHERE dl.uplLineNumber = :uplLine " +
+       "AND dl.lineNumber = :poLineNumber " +
+       "AND dcc.poNumber = :poNumber " +
+       "AND dcc.status NOT IN ('incomplete', 'rejected')")
+Double sumDeliveredQtyByUplLineAndPoLineAndPoNumber(
+        @Param("uplLine") String uplLine,
+        @Param("poLineNumber") String poLineNumber,
+        @Param("poNumber") String poNumber
+);
+
 
     @Query("SELECT COALESCE(SUM(d.deliveredQty), 0) FROM DCCLineItem d WHERE d.dccId  IN :dccIds AND d.poId = :poId AND d.lineNumber = :lineNumber AND d.uplLineNumber  = :uplLineNumber")
     Double sumDeliveredQtyByDccIdsAndPoLineInfo(@Param("dccIds") List<String> dccIds,
@@ -52,7 +62,11 @@ public interface DccLineRepo extends JpaRepository<DCCLineItem, Long> {
             @Param("lineNumber") String lineNumber,
             @Param("uplLineNumber") String upLineNumber);
 
-//    //NEW CODE 
-//    List<DCCLineItem> findByDcc(DCC dcc);
+
+  List<DCCLineItem> findAllByDccId(String dccId);
+    List<DCCLineItem> findByDccIdIn(Collection<String> dccIds);
+    List<DCCLineItem> findByPoIdAndLineNumberAndUplLineNumberAndDccStatusNotIn(String poId, String lineNumber, String uplLineNumber, List<String> dccStatus);
+
+
 
 }

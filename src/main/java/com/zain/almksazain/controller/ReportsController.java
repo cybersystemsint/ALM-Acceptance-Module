@@ -3,10 +3,6 @@ import com.zain.almksazain.repo.DccCombinedViewrepo;
 import com.zain.almksazain.repo.poviewrepo;
 import com.zain.almksazain.repo.dccpoviewrepo;
 import com.zain.almksazain.repo.uplrepo;
-import com.zain.almksazain.dto.AgingReportRequest;
-import com.zain.almksazain.dto.AgingReportResponse;
-import com.zain.almksazain.dto.CombinedPurchaseOrderRequest;
-import com.zain.almksazain.dto.CombinedPurchaseOrderResponse;
 import com.zain.almksazain.dto.PurchaseOrderRequest;
 import com.zain.almksazain.dto.PurchaseOrderResponse;
 import com.zain.almksazain.model.upldata;
@@ -37,7 +33,7 @@ import org.springframework.http.ResponseEntity;
 import java.text.SimpleDateFormat;
 import java.util.Collections;
 import com.zain.almksazain.model.DccPoCombinedView;
-import com.zain.almksazain.services.AgingReportService;
+import com.zain.almksazain.services.DccPoCombinedService;
 import com.zain.almksazain.services.CombinedPurchaseOrderService;
 import com.zain.almksazain.services.PurchaseOrderService;
 
@@ -45,7 +41,7 @@ import com.zain.almksazain.services.PurchaseOrderService;
 @RestController
 @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
 public class ReportsController {
-
+   
     private final Logger loggger = LogManager.getLogger(ReportsController.class);
     
     private final JdbcTemplate jdbcTemplate;
@@ -56,27 +52,22 @@ public class ReportsController {
     poviewrepo povwrepo;
   
     @Autowired
-    private  AgingReportService agingReportService;
+    DccCombinedViewrepo dccpocombinedviewrp;
 
     @Autowired
-    DccCombinedViewrepo dccpocombinedviewrp;
+    DccPoCombinedService dccPoCombinedService;
 
     @Autowired
     dccpoviewrepo dccpoviewrp;
 
+    @Autowired
+   CombinedPurchaseOrderService combinedPurchaseOrderService;
 
     @Autowired
     PurchaseOrderService purchaseOrderService;
 
     @Autowired
     tbChargeAccountRepo chargeAccountRepo;
-
-        @Autowired
-    private CombinedPurchaseOrderService combinedPurchaseOrderService;
-
-
-
-
 
 
     @Autowired
@@ -1905,25 +1896,82 @@ public class ReportsController {
         }
     }
 
- //Remodeled from the Original endpoint to reports/poUplPerSupplierAndPoNumber 
-    @PostMapping(value = "/reports/v2/poUplPerSupplierAndPoNumber", produces = "application/json")
-    public CombinedPurchaseOrderResponse poUplPerSupplierAndPoNumber(@RequestBody CombinedPurchaseOrderRequest request) {
-        return combinedPurchaseOrderService.search(request);
-    }
 
-    //Remodeled from the Original endpoint to reports/agingReport
-@PostMapping(value = "/reports/v2/agingReport", produces = "application/json")
-public AgingReportResponse getAgingReport(@RequestBody AgingReportRequest request) {
-    request.setPage(Math.max(request.getPage(), 1));
-    request.setSize(request.getSize() > 0 ? request.getSize() : 100);
-    return agingReportService.getAgingReport(request);
+
+@PostMapping(value = "/reports/v2/poUplPerSupplierAndPoNumber", produces = "application/json")
+@CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
+public Map<String, Object> poUplPerSupplierAndPoNumbers(@RequestBody String req) {
+    loggger.info("Received request for /reports/poUplPerSupplierAndPoNumber: {}", req);
+    JsonObject obj = new JsonParser().parse(req).getAsJsonObject();
+    String supplierId = obj.get("supplierId").getAsString();
+    String poID = obj.get("poId").getAsString();
+    String columnName = obj.has("columnName") ? obj.get("columnName").getAsString() : "";
+    String searchQuery = obj.has("searchQuery") ? obj.get("searchQuery").getAsString() : "";
+    String dateFrom = obj.has("dateFrom") ? obj.get("dateFrom").getAsString() : "";
+    String dateTo = obj.has("dateTo") ? obj.get("dateTo").getAsString() : "";
+
+    int page = obj.has("page") ? obj.get("page").getAsInt() : 1;
+    int size = obj.has("size") ? obj.get("size").getAsInt() : 20000;
+
+    loggger.info("Parsed request params: supplierId={}, poID={}, columnName={}, searchQuery={}, dateFrom={}, dateTo={}, page={}, size={}",
+            supplierId, poID, columnName, searchQuery, dateFrom, dateTo, page, size);
+
+    Map<String, Object> response = combinedPurchaseOrderService.poUplPerSupplierAndPoNumberReport(
+            supplierId, poID, columnName, searchQuery, dateFrom, dateTo, page, size
+    );
+
+    loggger.info("Returning response for /reports/poUplPerSupplierAndPoNumber. Data size: {}, totalRecords: {}",
+            ((List<?>) response.getOrDefault("data", Collections.emptyList())).size(),
+            response.getOrDefault("totalRecords", "N/A"));
+
+    return response;
 }
 
-    //Remodeled from the Original endpoint to reports/getNestedPurchaseOrders 
-    @PostMapping(value = "/reports/v2/getNestedPurchaseOrders", produces = "application/json")
-    public PurchaseOrderResponse getPurchaseOrdersSummary(@RequestBody PurchaseOrderRequest request) {
-        return purchaseOrderService.getPurchaseOrderResponse(request);
+
+
+    @PostMapping(value = "/reports/v2/agingReport", produces = "application/json")
+    @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
+        public Map<String, Object> getAgingReports(@RequestBody String req) {
+        loggger.info("Received request for /api/reports/agingReport: {}", req);
+        JsonObject obj = JsonParser.parseString(req).getAsJsonObject();
+        String supplierId = obj.get("supplierId").getAsString();
+        String columnName = obj.has("columnName") ? obj.get("columnName").getAsString() : "";
+        String searchQuery = obj.has("searchQuery") ? obj.get("searchQuery").getAsString() : "";
+        int page = obj.has("page") ? obj.get("page").getAsInt() : 1;
+        int size = obj.has("size") ? obj.get("size").getAsInt() : 20000;
+
+        loggger.debug("Parsed params - supplierId: {}, columnName: {}, searchQuery: {}, page: {}, size: {}", 
+            supplierId, columnName, searchQuery, page, size);
+
+        Map<String, Object> response = dccPoCombinedService.getAgingReport(supplierId, columnName, searchQuery, page, size);
+
+        loggger.info("Returning aging report response with {} records (page {}/{})", 
+            response.get("data") != null ? ((Iterable<?>) response.get("data")).spliterator().getExactSizeIfKnown() : 0,
+            response.get("currentPage"), response.get("totalPages"));
+
+        return response;
     }
+
+    // @PostMapping(value = "/reports/v2/getNestedPurchaseOrders", produces = "application/json")
+    // public ResponseEntity<PurchaseOrderResponse> getPurchaseOrdersSummary(@RequestBody PurchaseOrderRequest request) {
+    //     loggger.info("Received POST /reports/v2/getNestedPurchaseOrders with request: {}", request);
+
+    //     try {
+    //         PurchaseOrderResponse response = purchaseOrderService.getPurchaseOrderResponse(request);
+
+    //         if (response.getTotalRecords() == null || response.getTotalRecords() == 0) {
+    //             loggger.warn("No purchase orders found for request: {}", request);
+    //             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
+    //         }
+
+    //         loggger.info("Returning purchase order response with {} records.", response.getTotalRecords());
+    //         return ResponseEntity.ok(response);
+
+    //     } catch (Exception e) {
+    //         loggger.error("Error processing purchase orders request", e);
+    //         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+    //     }
+    // }
 
     
 

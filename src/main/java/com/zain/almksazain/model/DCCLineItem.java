@@ -9,6 +9,7 @@ import java.sql.Date;
 @Table(name = "tb_DCC_LN")
 public class DCCLineItem implements Serializable {
 
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private long recordNo;
@@ -39,11 +40,17 @@ public class DCCLineItem implements Serializable {
     private String linkId;
     private String tagNumber;
 
+        @ManyToOne(fetch = FetchType.LAZY)
+@JoinColumn(name = "dccId", referencedColumnName = "recordNo", insertable = false, updatable = false)
+private DCC dcc;
     // Constructors, getters, and setters
     // Constructor
 //    public DCCLineItem() {
 //    }
     // Getters and Setters
+
+
+
     public String getItemCode() {
         return itemCode;
     }
@@ -242,6 +249,14 @@ public class DCCLineItem implements Serializable {
 
     public void setDateInService(Date dateInService) {
         this.dateInService = dateInService;
+    }
+
+    public DCC getDcc() {
+        return dcc;
+    }
+
+    public void setDcc(DCC dcc) {
+        this.dcc = dcc;
     }
 
 }

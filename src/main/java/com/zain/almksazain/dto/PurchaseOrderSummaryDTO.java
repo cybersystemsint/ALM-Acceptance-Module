@@ -1,6 +1,7 @@
 package com.zain.almksazain.dto;
 
 
+import java.util.ArrayList;
 import java.util.List;
 
 
@@ -61,6 +62,65 @@ public class PurchaseOrderSummaryDTO {
 
     private List<PurchaseOrderLineItemDTO> polineItems;
 
+    // No-argument constructor
+    public PurchaseOrderSummaryDTO() {
+        this.polineItems = new ArrayList<>();
+    }
+
+    public PurchaseOrderSummaryDTO(PurchaseOrderSummaryDTO other) {
+        this.poNumber = other.poNumber;
+        this.typeLookUpCode = other.typeLookUpCode;
+        this.blanketTotalAmount = other.blanketTotalAmount;
+        this.releaseNum = other.releaseNum;
+        this.prNum = other.prNum;
+        this.projectName = other.projectName;
+        this.newProjectName = other.newProjectName;
+        this.lineCancelFlag = other.lineCancelFlag;
+        this.cancelReason = other.cancelReason;
+        this.itemPartNumber = other.itemPartNumber;
+        this.prSubAllow = other.prSubAllow;
+        this.currencyCode = other.currencyCode;
+        this.organizationName = other.organizationName;
+        this.organizationCode = other.organizationCode;
+        this.subInventoryCode = other.subInventoryCode;
+        this.receiptRouting = other.receiptRouting;
+        this.authorisationStatus = other.authorisationStatus;
+        this.poClosureStatus = other.poClosureStatus;
+        this.departmentName = other.departmentName;
+        this.businessOwner = other.businessOwner;
+        this.poLineType = other.poLineType;
+        this.acceptanceType = other.acceptanceType;
+        this.costCenter = other.costCenter;
+        this.chargeAccount = other.chargeAccount;
+        this.serialControl = other.serialControl;
+        this.itemType = other.itemType;
+        this.itemCategoryPurchasing = other.itemCategoryPurchasing;
+        this.purchasingCategoryDescription = other.purchasingCategoryDescription;
+        this.vendorName = other.vendorName;
+        this.vendorNumber = other.vendorNumber;
+        this.approvedDate = other.approvedDate;
+        this.createdDate = other.createdDate;
+        this.createdBy = other.createdBy;
+        this.createdByName = other.createdByName;
+        this.totalPoQtyNew = other.totalPoQtyNew;
+        this.totalQuantityReceived = other.totalQuantityReceived;
+        this.totalQuantityDueOld = other.totalQuantityDueOld;
+        this.totalQuantityDueNew = other.totalQuantityDueNew;
+        this.totalQuantityBilled = other.totalQuantityBilled;
+        this.totalpoOrderQuantity = other.totalpoOrderQuantity;
+        this.totalunitPriceInPoCurrency = other.totalunitPriceInPoCurrency;
+        this.totalunitPriceInSAR = other.totalunitPriceInSAR;
+        this.totallinePriceInPoCurrency = other.totallinePriceInPoCurrency;
+        this.totallinePriceInSAR = other.totallinePriceInSAR;
+        this.totalamountReceived = other.totalamountReceived;
+        this.totalamountDue = other.totalamountDue;
+        this.totalamountDueNew = other.totalamountDueNew;
+        this.totalamountBilled = other.totalamountBilled;
+        this.totalDescopedLinePriceInPoCurrency = other.totalDescopedLinePriceInPoCurrency;
+        this.totalNewLinePriceInPoCurrency = other.totalNewLinePriceInPoCurrency;
+        this.polineItems = other.polineItems != null ? new ArrayList<>(other.polineItems) : null;
+    }
+    
     public String getPoNumber() {
         return poNumber;
     }

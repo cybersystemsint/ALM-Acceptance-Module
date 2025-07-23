@@ -4,6 +4,7 @@ import javax.persistence.*;
 @Entity
 @Table(name = "tb_PurchaseOrder")
 public class PurchaseOrderTb {
+    
     @Id
     private String recordNo;
     private String poNumber;

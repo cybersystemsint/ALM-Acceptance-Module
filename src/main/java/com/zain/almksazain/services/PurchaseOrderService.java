@@ -7,10 +7,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
+
 import com.zain.almksazain.dto.PurchaseOrderLineItemDTO;
 import com.zain.almksazain.dto.PurchaseOrderRequest;
 import com.zain.almksazain.dto.PurchaseOrderResponse;
@@ -18,34 +23,46 @@ import com.zain.almksazain.dto.PurchaseOrderSummaryDTO;
 import com.zain.almksazain.model.PurchaseOrderTb;
 import com.zain.almksazain.repo.PurchaseOrderRepository;
 
-
 @Service
 public class PurchaseOrderService {
+
+    private static final Logger logger = LoggerFactory.getLogger(PurchaseOrderService.class);
 
     @Autowired
     private PurchaseOrderRepository purchaseOrderRepository;
 
     public PurchaseOrderResponse getPurchaseOrderResponse(PurchaseOrderRequest request) {
+        logger.info("Received PurchaseOrderResponse request: supplierId={}, poNumber={}, page={}, size={}",
+                request.getSupplierId(), request.getPoNumber(), request.getPage(), request.getSize());
+
         int page = request.getPage() != null ? Math.max(request.getPage(), 1) - 1 : 0;
         int size = request.getSize() != null ? Math.max(request.getSize(), 1) : 10;
+
+        logger.debug("Paging calculated: page={}, size={}", page, size);
 
         // 1. Page on unique PO numbers
         Page<String> poNumberPage = purchaseOrderRepository.findDistinctPoNumbers(
                 request.getSupplierId(), request.getPoNumber(), PageRequest.of(page, size));
         List<String> poNumbers = poNumberPage.getContent();
 
+        logger.info("Fetched {} unique PO numbers for page {}.", poNumbers.size(), page + 1);
+
         if (poNumbers.isEmpty()) {
+            logger.warn("No purchase orders found for the given criteria: supplierId={}, poNumber={}",
+                    request.getSupplierId(), request.getPoNumber());
             PurchaseOrderResponse response = new PurchaseOrderResponse();
             response.setCurrentPage(page + 1);
             response.setPageSize(size);
             response.setTotalRecords(0L);
             response.setTotalPages(0);
             response.setData(Collections.emptyList());
+            logger.info("Returning empty PurchaseOrderResponse for page {}.", page + 1);
             return response;
         }
 
         // 2. Fetch all line items for these PO numbers in one query
         List<PurchaseOrderTb> allLineItems = purchaseOrderRepository.findByPoNumberIn(poNumbers);
+        logger.info("Fetched {} line items for PO numbers: {}", allLineItems.size(), poNumbers);
 
         // 3. Group by poNumber and build summaries
         Map<String, List<PurchaseOrderTb>> grouped = allLineItems.stream()
@@ -111,6 +128,9 @@ public class PurchaseOrderService {
             summary.setTotalDescopedLinePriceInPoCurrency(items.stream().mapToDouble(x -> Optional.ofNullable(x.getDescopedLinePriceInPoCurrency()).orElse(0.0)).sum());
             summary.setTotalNewLinePriceInPoCurrency(items.stream().mapToDouble(x -> Optional.ofNullable(x.getNewLinePriceInPoCurrency()).orElse(0.0)).sum());
 
+            logger.debug("Summary for PO {}: {} line items, totalQtyNew={}, totalAmountDue={}",
+                    summary.getPoNumber(), items.size(), summary.getTotalPoQtyNew(), summary.getTotalamountDue());
+
             // Line items
             List<PurchaseOrderLineItemDTO> lineItemDTOs = items.stream().map(line -> {
                 PurchaseOrderLineItemDTO dto = new PurchaseOrderLineItemDTO();
@@ -148,12 +168,15 @@ public class PurchaseOrderService {
             summaryList.add(summary);
         }
 
+        logger.info("Returning {} purchase order summaries for page {}.", summaryList.size(), page + 1);
+
         PurchaseOrderResponse response = new PurchaseOrderResponse();
         response.setCurrentPage(page + 1);
         response.setPageSize(size);
         response.setTotalRecords(poNumberPage.getTotalElements());
         response.setTotalPages(poNumberPage.getTotalPages());
         response.setData(summaryList);
+
         return response;
     }
 }

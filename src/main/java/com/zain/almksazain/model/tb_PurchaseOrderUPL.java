@@ -12,14 +12,12 @@ import javax.persistence.GenerationType;
 import javax.persistence.Id;
 import javax.persistence.Table;
 
-/**
- *
- * @author jgithu
- */
+
 @Entity
 @Table(name = "tb_PurchaseOrderUPL")
 public class tb_PurchaseOrderUPL implements Serializable {
 
+    
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     public long recordNo;

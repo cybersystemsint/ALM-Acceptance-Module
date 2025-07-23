@@ -27,5 +27,12 @@ public class AlmKSAZainApplication extends SpringBootServletInitializer {
     public static void main(String[] args) {
         SpringApplication.run(AlmKSAZainApplication.class, args);
     }
-
+//  public static void main(String[] args) {
+//     try {
+//         SpringApplication.run(AlmKSAZainApplication.class, args);
+//     } catch (Throwable t) {
+//         t.printStackTrace(); // Print to console
+//         throw t;
+//     }
+// }
 }
