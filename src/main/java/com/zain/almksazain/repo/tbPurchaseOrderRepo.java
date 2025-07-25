@@ -15,6 +15,7 @@ import org.springframework.data.repository.query.Param;
  * @author jgithu
  */
 public interface tbPurchaseOrderRepo extends JpaRepository<tbPurchaseOrder, Long> {
+     
 
     List<tbPurchaseOrder> findByPoNumberAndVendorNumber(String poId, String supplierId);
 

@@ -12,9 +12,11 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 import com.zain.almksazain.model.PurchaseOrderTb;
+import com.zain.almksazain.model.tbPurchaseOrder;
 
 @Repository
 public interface PurchaseOrderRepository extends JpaRepository<PurchaseOrderTb, String>, JpaSpecificationExecutor<PurchaseOrderTb> {
+    
     // Optionally: for batch fetching by PO number
     List<PurchaseOrderTb> findByPoNumberIn(List<String> poNumbers);
 
@@ -26,5 +28,8 @@ public interface PurchaseOrderRepository extends JpaRepository<PurchaseOrderTb, 
    Optional<PurchaseOrderTb> findFirstByPoNumber(String poNumber);
 
     List<PurchaseOrderTb> findByPoNumberIn(Collection<String> poNumbers);
+
+    PurchaseOrderTb findByPoNumberAndLineNumber(String poNumber, Integer lineNumber);
+
     
 }

@@ -1,6 +1,4 @@
 package com.zain.almksazain.repo;
-
-import com.zain.almksazain.model.DCC;
 import com.zain.almksazain.model.DCCLineItem;
 
 import java.util.Collection;
@@ -9,10 +7,10 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
-import org.springframework.transaction.annotation.Transactional;
 
 @Repository
 public interface DccLineRepo extends JpaRepository<DCCLineItem, Long> {
+        List<DCCLineItem> findByDccIdAndDccStatusNotIn(String dccId, List<String> excludedStatuses);
 
     DCCLineItem findByRecordNo(long recordNo);
 
@@ -35,7 +33,14 @@ public interface DccLineRepo extends JpaRepository<DCCLineItem, Long> {
     @Query(value = "SELECT * FROM tb_DCC_LN d WHERE d.serialNumber = :serialNumber ORDER BY d.recordNo DESC LIMIT 1", nativeQuery = true)
     DCCLineItem findTopBySerialNumber(@Param("serialNumber") String serialNumber);
 
- // For deliveredQty 
+        List<DCCLineItem> findByDccIdAndLineNumberAndUplLineNumberAndDccStatusNotIn(
+        String dccId,
+        String lineNumber,
+        String uplLineNumber,
+        List<String> excludedStatuses
+    );
+
+
 @Query("SELECT COALESCE(SUM(dl.deliveredQty), 0) " +
        "FROM DCCLineItem dl " +
        "JOIN dl.dcc dcc " +
