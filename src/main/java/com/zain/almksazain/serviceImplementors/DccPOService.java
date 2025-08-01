@@ -63,39 +63,22 @@ public class DccPOService {
     @Autowired
     private TbCategoryApprovalsRepository tbCategoryApprovalsRepository;
 
-//    public CompletableFuture<DccPOFetchResult> getDccPOCombinedView(String supplierId, String pendingApprovers, int page, int size, String columnName, String searchQuery) {
-//        try {
-//            logger.info("Starting retrieval of DCC PO Combined View with supplierId: {}, pendingApprovers: {}, page: {}, size: {}, columnName: {}, searchQuery: {}",
-//                    supplierId, pendingApprovers, page, size, columnName, searchQuery);
-//            return CompletableFuture.supplyAsync(() -> fetchDccPOCombinedView(supplierId, pendingApprovers, page, size, columnName, searchQuery));
-//        } catch (Exception ex) {
-//            logger.error("Error initiating retrieval of DCC PO Combined View", ex);
-//            throw new DccPOProcessingException("Failed to initiate DCC PO Combined View retrieval", ex);
-//        }
-//    }
-    public CompletableFuture<DccPOFetchResult> getDccPOCombinedView(String supplierId, String pendingApprovers, int page, int size, String columnName, String searchQuery, boolean exporting) {
+    public CompletableFuture<DccPOFetchResult> getDccPOCombinedView(String supplierId, String pendingApprovers, int page, int size, String columnName, String searchQuery, boolean exporting, String operator) {
         try {
-            logger.info("Starting retrieval of DCC PO Combined View with supplierId: {}, pendingApprovers: {}, page: {}, size: {}, columnName: {}, searchQuery: {}, exporting: {}",
-                    supplierId, pendingApprovers, page, size, columnName, searchQuery, exporting);
-            return CompletableFuture.supplyAsync(() -> fetchDccPOCombinedView(supplierId, pendingApprovers, page, size, columnName, searchQuery, exporting));
+            logger.info("Starting retrieval of DCC PO Combined View with supplierId: {}, pendingApprovers: {}, page: {}, size: {}, columnName: {}, searchQuery: {}, exporting: {}, operator: {}",
+                    supplierId, pendingApprovers, page, size, columnName, searchQuery, exporting, operator);
+            return CompletableFuture.supplyAsync(() -> fetchDccPOCombinedView(supplierId, pendingApprovers, page, size, columnName, searchQuery, exporting, operator));
         } catch (Exception ex) {
             logger.error("Error initiating retrieval of DCC PO Combined View", ex);
             throw new DccPOProcessingException("Failed to initiate DCC PO Combined View retrieval", ex);
         }
     }
 
-//    @Async("taskExecutor")
-//    @Cacheable(value = "dccPOCombinedViewCache",
-//            key = "{#supplierId, #pendingApprovers, #page, #size, #columnName, #searchQuery}",
-//            unless = "#result.data == null || #result.data.isEmpty()")
     @Async("taskExecutor")
     @Cacheable(value = "dccPOCombinedViewCache",
-            key = "{#supplierId, #pendingApprovers, #page, #size, #columnName, #searchQuery, #exporting}",
+            key = "{#supplierId, #pendingApprovers, #page, #size, #columnName, #searchQuery, #exporting, #operator}",
             unless = "#result.data == null || #result.data.isEmpty()")
-
-    private DccPOFetchResult fetchDccPOCombinedView(String supplierId, String pendingApprovers, int page, int size, String columnName, String searchQuery, boolean exporting) {
-
-//    private DccPOFetchResult fetchDccPOCombinedView(String supplierId, String pendingApprovers, int page, int size, String columnName, String searchQuery) {
+    private DccPOFetchResult fetchDccPOCombinedView(String supplierId, String pendingApprovers, int page, int size, String columnName, String searchQuery, boolean exporting, String operator) {
         try {
             if (page < 1 || size < 1) {
                 logger.error("Invalid pagination parameters: page={}, size={}", page, size);
@@ -107,7 +90,7 @@ public class DccPOService {
             long totalUnfilteredRecords = tbDccRepository.countByPoNumberIsNotNull();
             logger.info("Total unfiltered distinct dccRecordNo: {}", totalUnfilteredRecords);
 
-            DccSpecification spec = new DccSpecification(supplierId, pendingApprovers, columnName, searchQuery);
+            DccSpecification spec = new DccSpecification(supplierId, pendingApprovers, columnName, searchQuery, operator);
             Page<DCC> dccPage = tbDccRepository.findAll(spec, pageable);
             List<DCC> dccList = dccPage.getContent();
             long totalFilteredRecords = dccPage.getTotalElements();
@@ -463,10 +446,11 @@ public class DccPOService {
             dto.setApproverComment(approverComment);
             return;
         }
+
         // Determine the current approver for the latest approval request
         String currentApproverName = allRelatedApprovals.stream()
                 .filter(a -> a.getApprovalRecordId().equals(latestApprovalRequest.getRecordNo()))
-                .filter(a -> Arrays.asList("pending", "request-info").contains(a.getStatus()) && validApprovalStatuses.contains(a.getApprovalStatus()))
+                .filter(a -> "pending".equals(a.getStatus()) && "request-info".equals(a.getApprovalStatus()))
                 .sorted(Comparator.comparing(TbCategoryApprovals::getApprovalId))
                 .findFirst()
                 .map(TbCategoryApprovals::getApproverName)
@@ -485,7 +469,7 @@ public class DccPOService {
                 })
                 .sum();
 
-        // Handle request-info case
+        //Handle request-info case
         if ("request-info".equals(latestApprovalRequest.getStatus())) {
             logger.debug("Approval request recordNo={} has status 'request-info'", latestApprovalRequest.getRecordNo());
 
@@ -502,11 +486,11 @@ public class DccPOService {
                     .filter(a -> a.getApprovalRecordId().equals(latestApprovalRequest.getRecordNo()))
                     .filter(a -> "pending".equals(a.getStatus()) && "request-info".equals(a.getApprovalStatus()))
                     .filter(a -> currentApproverName != null && currentApproverName.equals(a.getApproverName()))
-                    .filter(a -> a.getRecordDateTime() != null)
+                    .filter(a -> a.getRecordDateTime() != null && a.getApprovedDate() != null)
                     .mapToLong(a -> {
-                        long currentMinutes = Duration.between(a.getRecordDateTime(), nowLocal).toMinutes();
-                        logger.debug("Current period for approvalId={} by {}: {} minutes (from {} to now)",
-                                a.getApprovalId(), a.getApproverName(), currentMinutes, a.getRecordDateTime());
+                        long currentMinutes = Duration.between(a.getRecordDateTime(), a.getApprovedDate()).toMinutes();
+                        logger.debug("Current period for approvalId={} by {}: {} minutes (from {} to {})",
+                                a.getApprovalId(), a.getApproverName(), currentMinutes, a.getRecordDateTime(), a.getApprovedDate());
                         return Math.max(currentMinutes, 0);
                     })
                     .sum();
@@ -522,12 +506,12 @@ public class DccPOService {
 
 //        // Handle request-info casee
 //        if ("request-info".equals(latestApprovalRequest.getStatus())) {
-////            logger.debug("Approval request recordNo={} has status 'request-info'; setting approvalCount=0 and pendingApprovers=null",
-////                    latestApprovalRequest.getRecordNo());
-//            logger.debug("Approval request recordNo={} has status 'request-info'", latestApprovalRequest.getRecordNo());
+//            logger.debug("Approval request recordNo={} has status 'request-info'; setting approvalCount=0 and pendingApprovers=null",
+//                    latestApprovalRequest.getRecordNo());
+////            logger.debug("Approval request recordNo={} has status 'request-info'", latestApprovalRequest.getRecordNo());
 //
-////            dto.setApprovalCount(0L);
-////            dto.setPendingApprovers(null);
+//            dto.setApprovalCount(0L);
+//            dto.setPendingApprovers(null);
 //
 //            List<TbCategoryApprovals> filteredApprovals = allRelatedApprovals.stream()
 //                    .filter(a -> "pending".equals(a.getStatus()) && Arrays.asList("pending", "request-info").contains(a.getApprovalStatus()))
@@ -536,7 +520,6 @@ public class DccPOService {
 //
 //
 //            dto.setApprovalCount((long) filteredApprovals.size());
-//
 //
 //
 //            String currentApproverNamed = allRelatedApprovals.stream()
@@ -548,15 +531,14 @@ public class DccPOService {
 //                    .orElse(null);
 //
 //            dto.setPendingApprovers(currentApproverNamed);
-//
+
 //            String currentApproverName = allRelatedApprovals.stream()
 //                    .filter(a -> a.getApprovalRecordId().equals(latestApprovalRequest.getRecordNo()))
 //                    .filter(a -> "request-info".equals(a.getStatus()) && "request-info".equals(a.getApprovalStatus()))
-////                    .filter(a -> "pending".equals(a.getStatus()) && "request-info".equals(a.getApprovalStatus()))
 //                    .findFirst()
 //                    .map(TbCategoryApprovals::getApproverName)
 //                    .orElse(null);
-//
+
 //            // Step 2: Calculate totalPausedUserAgingMinutes for request-info
 //            long totalPausedUserAgingMinutes = allRelatedApprovals.stream()
 //                    .filter(a -> "request-info".equals(a.getStatus()) && "request-info".equals(a.getApprovalStatus()))

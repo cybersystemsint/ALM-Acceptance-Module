@@ -22,13 +22,14 @@ public class DccSpecification implements Specification<DCC> {
     private final String pendingApprovers;
     private final String columnName;
     private final String searchQuery;
+    private final String operator;
 
-
-    public DccSpecification(String supplierId, String pendingApprovers, String columnName, String searchQuery) {
+    public DccSpecification(String supplierId, String pendingApprovers, String columnName, String searchQuery, String operator) {
         this.supplierId = supplierId;
         this.pendingApprovers = pendingApprovers;
         this.columnName = columnName;
         this.searchQuery = searchQuery;
+        this.operator = operator;
     }
     @Override
     public Predicate toPredicate(Root<DCC> root, CriteriaQuery<?> query, CriteriaBuilder cb) {
@@ -94,7 +95,24 @@ public class DccSpecification implements Specification<DCC> {
                         predicates.add(cb.isFalse(cb.literal(true)));
                     }
                 } else {
-                    predicates.add(cb.like(cb.lower(root.get(dbColumnName)), "%" + searchQuery.toLowerCase() + "%"));
+                    String op = operator != null ? operator.toLowerCase() : "contains";
+                    Predicate searchPredicate;
+                    switch (op) {
+                        case "equals":
+                            searchPredicate = cb.equal(cb.lower(root.get(dbColumnName)), searchQuery.toLowerCase());
+                            break;
+                        case "startswith":
+                            searchPredicate = cb.like(cb.lower(root.get(dbColumnName)), searchQuery.toLowerCase() + "%");
+                            break;
+                        case "endswith":
+                            searchPredicate = cb.like(cb.lower(root.get(dbColumnName)), "%" + searchQuery.toLowerCase());
+                            break;
+                        case "contains":
+                        default:
+                            searchPredicate = cb.like(cb.lower(root.get(dbColumnName)), "%" + searchQuery.toLowerCase() + "%");
+                            break;
+                    }
+                    predicates.add(searchPredicate);
                 }
             }
         }

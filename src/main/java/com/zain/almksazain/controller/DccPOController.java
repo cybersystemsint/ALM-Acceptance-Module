@@ -61,7 +61,8 @@ public class DccPOController {
                 size,
                 request.getColumnName(),
                 request.getSearchQuery(),
-                request.getExporting() != null ? request.getExporting() : false);
+                request.getExporting() != null ? request.getExporting() : false,
+                request.getOperator());
 
         future.thenAccept(result -> {
             List<DccPOCombinedViewDTO> data = result.getData();
