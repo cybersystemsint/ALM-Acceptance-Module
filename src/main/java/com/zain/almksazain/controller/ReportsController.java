@@ -158,78 +158,139 @@ public class ReportsController {
         return response;
     }
 
-    @PostMapping(value = "/reports/capitalizationReport", produces = "application/json")
-    @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
-    public Map<String, Object> capitalizationReport(@RequestBody String req) {
-        JsonObject obj = new JsonParser().parse(req).getAsJsonObject();
-        String poNumber = obj.has("poNumber") ? obj.get("poNumber").getAsString() : "";
-        String columnName = obj.has("columnName") ? obj.get("columnName").getAsString() : "";
-        String searchQuery = obj.has("searchQuery") ? obj.get("searchQuery").getAsString() : "";
+@PostMapping(value = "/reports/capitalizationReport", produces = "application/json")
+@CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
+public Map<String, Object> capitalizationReport(@RequestBody String req) {
+    JsonObject obj = new JsonParser().parse(req).getAsJsonObject();
+    String poNumber = obj.has("poNumber") ? obj.get("poNumber").getAsString() : "";
+    String columnName = obj.has("columnName") ? obj.get("columnName").getAsString() : "";
+    String searchQuery = obj.has("searchQuery") ? obj.get("searchQuery").getAsString() : "";
 
-        jdbcTemplate.execute("SET SESSION sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''))");
+    jdbcTemplate.execute("SET SESSION sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''))");
 
-        //String sql = "SELECT * FROM `capitalizationReport` WHERE 1=1";
-        ///
-        String whereClause = " WHERE 1=1";
-        List<Object> params = new ArrayList<>();
+    String whereClause = "";
+    List<Object> params = new ArrayList<>();
 
-        if (!poNumber.equalsIgnoreCase("0")) {
-            whereClause += " AND poNumber = ?";
-            params.add(poNumber);
-        }
-
-        if (!columnName.isEmpty() && !searchQuery.isEmpty()) {
-            whereClause += " AND " + columnName.toLowerCase() + " LIKE ?";
-            params.add("%" + searchQuery + "%");
-        }
-
-        String countSql = "SELECT COUNT(*) FROM capitalizationReport " + whereClause;
-        int totalRecords = jdbcTemplate.queryForObject(countSql, Integer.class, params.toArray());
-
-        int page = obj.has("page") ? obj.get("page").getAsInt() : 1;
-        int size = obj.has("size") ? obj.get("size").getAsInt() : 20000;
-
-        page = Math.max(page, 0);
-        size = Math.max(size, 0);
-
-        String paginationSql = "";
-
-        if (page == 0 && size == 0) {
-            paginationSql = "";
-        } else if (page == 1 && size == 20000) {
-            page = 0;
-            size = totalRecords;
-            page = Math.max(page, 1);
-            size = Math.max(size, 1);
-            int offset = (page - 1) * size;
-
-            paginationSql = " LIMIT " + size + " OFFSET " + offset;
-
-        } else {
-            page = Math.max(page, 1);
-            size = Math.max(size, 1);
-            int offset = (page - 1) * size;
-            paginationSql = " LIMIT " + size + " OFFSET " + offset;
-        }
-
-        String sql = "SELECT * FROM `capitalizationReport` "
-                + whereClause + paginationSql;
-
-        List<Map<String, Object>> result = jdbcTemplate.queryForList(sql, params.toArray());
-
-        AtomicInteger counter = new AtomicInteger(1);
-        result.forEach(row -> row.put("recordNo", counter.getAndIncrement()));
-
-        Map<String, Object> response = new HashMap<>();
-        response.put("data", result);
-        response.put("totalRecords", totalRecords);
-        response.put("currentPage", page);
-        response.put("pageSize", size);
-        response.put("totalPages", (int) Math.ceil((double) totalRecords / size));
-
-        return response;
-
+    // Whitelist and map searchable columns to SQL
+  Map<String, String> searchableColumns = new HashMap<>();
+searchableColumns.put("requestId", "DCC.recordNo");
+searchableColumns.put("poNumber", "DCC.poNumber");
+searchableColumns.put("poLineNumber", "LN2.lineNumber");
+searchableColumns.put("uplLineNumber", "LN2.uplLineNumber");
+searchableColumns.put("siteId", "LN2.locationName");
+searchableColumns.put("linkId", "LN2.linkId");
+searchableColumns.put("isd", "DATE_FORMAT(CAST(LN2.dateInService AS DATE),'%d-%m-%Y')");
+searchableColumns.put("region", "rg.regionName");
+searchableColumns.put("siteTypeName", "siteType.siteTypeName");
+searchableColumns.put("projectName", "HD.newProjectName");
+searchableColumns.put("newProjectName", "HD.newProjectName");
+searchableColumns.put("description", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineDescription ELSE HD.poLineDescription END)");
+searchableColumns.put("quantity", "LN2.deliveredQty");
+searchableColumns.put("partNumber", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (CASE WHEN LENGTH(LN2.actualItemCode) > 0 THEN LN2.actualItemCode ELSE upl.uplLineItemCode END) ELSE HD.itemPartNumber END)");
+searchableColumns.put("itemSerializedStatus", "(CASE WHEN HD.serialControl = 'NO CONTROL' THEN 'NO' ELSE 'YES' END)");
+searchableColumns.put("serialNumber", "LN2.serialNumber");
+searchableColumns.put("uplItemCategoryCodeDescription", "upl.zainItemCategoryDescription");
+searchableColumns.put("faBookingAmount", "(upl.uplLineUnitPrice * LN2.deliveredQty)");
+searchableColumns.put("currency", "'SAR'");
+searchableColumns.put("tagNumber", "LN2.tagNumber");
+searchableColumns.put("recordNo", "DCC.recordNo");
+    // Dynamic filters
+    if (!poNumber.equalsIgnoreCase("0")) {
+        whereClause += " AND DCC.poNumber = ?";
+        params.add(poNumber);
     }
+if (!columnName.isEmpty() && !searchQuery.isEmpty()) {
+    String sqlCol = searchableColumns.get(columnName);
+    if (sqlCol != null) {
+        whereClause += " AND LOWER(" + sqlCol + ") LIKE LOWER(?) ";
+        params.add("%" + searchQuery + "%");
+    }
+}
+
+    String baseSql = " FROM tb_DCC DCC " +
+        "JOIN tb_PurchaseOrder HD ON DCC.poNumber = HD.poNumber " +
+        "JOIN tb_Category_Approval_Requests AR ON DCC.recordNo = AR.acceptanceRequestRecordNo " +
+        "JOIN tb_DCC_LN LN2 ON DCC.recordNo = LN2.dccId " +
+        "LEFT JOIN tb_PurchaseOrderUPL upl ON DCC.poNumber = upl.poNumber AND LN2.uplLineNumber = upl.uplLine AND upl.poLineNumber = LN2.lineNumber " +
+        "LEFT JOIN tb_Site site ON LN2.locationName COLLATE utf8mb4_general_ci = site.siteId COLLATE utf8mb4_general_ci " +
+        "LEFT JOIN tb_Site_Type siteType ON site.siteTypeId COLLATE utf8mb4_general_ci = siteType.recordNo COLLATE utf8mb4_general_ci " +
+        "LEFT JOIN tb_Region rg ON site.regionId COLLATE utf8mb4_general_ci = rg.recordNo COLLATE utf8mb4_general_ci " +
+        "WHERE (0 <> (CASE WHEN LENGTH(LN2.uplLineNumber) > 0 " +
+        "  THEN (LN2.uplLineNumber = upl.uplLine AND upl.poLineNumber = LN2.lineNumber AND upl.poNumber = DCC.poNumber) " +
+        "  ELSE (HD.lineNumber = LN2.lineNumber AND HD.poNumber = DCC.poNumber) END)) " +
+        "AND DCC.status = 'approved' " +
+        whereClause;
+
+    // Count query
+    String countSql = "SELECT COUNT(*) " + baseSql;
+    int totalRecords = jdbcTemplate.queryForObject(countSql, Integer.class, params.toArray());
+
+    int page = obj.has("page") ? obj.get("page").getAsInt() : 1;
+    int size = obj.has("size") ? obj.get("size").getAsInt() : 20000;
+
+    page = Math.max(page, 0);
+    size = Math.max(size, 0);
+
+    String paginationSql = "";
+
+    if (page == 0 && size == 0) {
+        paginationSql = "";
+    } else if (page == 1 && size == 20000) {
+        page = 0;
+        size = totalRecords;
+        page = Math.max(page, 1);
+        size = Math.max(size, 1);
+        int offset = (page - 1) * size;
+        paginationSql = " LIMIT " + size + " OFFSET " + offset;
+    } else {
+        page = Math.max(page, 1);
+        size = Math.max(size, 1);
+        int offset = (page - 1) * size;
+        paginationSql = " LIMIT " + size + " OFFSET " + offset;
+    }
+
+    String sql = "SELECT DISTINCT " +
+        "DCC.recordNo AS requestId, " +
+        "DCC.poNumber AS poNumber, " +
+        "LN2.lineNumber AS poLineNumber, " +
+        "LN2.uplLineNumber AS uplLineNumber, " +
+        "LN2.locationName AS siteId, " +
+        "LN2.linkId AS linkId, " +
+        "DATE_FORMAT(CAST(LN2.dateInService AS DATE),'%d-%m-%Y') AS isd, " +
+        "rg.regionName AS region, " +
+        "siteType.siteTypeName AS siteTypeName, " +
+        "HD.newProjectName AS projectName, " +
+        "HD.newProjectName AS newProjectName, " +
+        "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineDescription ELSE HD.poLineDescription END) AS description, " +
+        "LN2.deliveredQty AS quantity, " +
+        "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (CASE WHEN LENGTH(LN2.actualItemCode) > 0 THEN LN2.actualItemCode ELSE upl.uplLineItemCode END) ELSE HD.itemPartNumber END) AS partNumber, " +
+        "(CASE WHEN HD.serialControl = 'NO CONTROL' THEN 'NO' ELSE 'YES' END) AS itemSerializedStatus, " +
+        "LN2.serialNumber AS serialNumber, " +
+        "upl.zainItemCategoryDescription AS uplItemCategoryCodeDescription, " +
+        "(upl.uplLineUnitPrice * LN2.deliveredQty) AS faBookingAmount, " +
+        "'SAR' AS currency, " +
+        "LN2.tagNumber AS tagNumber " +
+        baseSql +
+        " GROUP BY DCC.recordNo, LN2.dateInService, DCC.poNumber, LN2.lineNumber, LN2.uplLineNumber, HD.serialControl, LN2.locationName, HD.projectName, HD.newProjectName, LN2.serialNumber, upl.uplLineUnitPrice, LN2.deliveredQty, rg.regionName " +
+        paginationSql;
+
+    List<Map<String, Object>> result = jdbcTemplate.queryForList(sql, params.toArray());
+
+    AtomicInteger counter = new AtomicInteger(1);
+    result.forEach(row -> row.put("recordNo", counter.getAndIncrement()));
+
+    Map<String, Object> response = new HashMap<>();
+    response.put("data", result);
+    response.put("totalRecords", totalRecords);
+    response.put("currentPage", page);
+    response.put("pageSize", size);
+    response.put("totalPages", (int) Math.ceil((double) totalRecords / size));
+
+    return response;
+}
+
+
+
 
     ///GET ALL CREATED CHARGE ACCOUNTS
     @PostMapping(value = "/reports/getAllItemCodeSubstitutes", produces = "application/json")
@@ -1952,26 +2013,26 @@ public Map<String, Object> poUplPerSupplierAndPoNumbers(@RequestBody String req)
         return response;
     }
 
-    // @PostMapping(value = "/reports/v2/getNestedPurchaseOrders", produces = "application/json")
-    // public ResponseEntity<PurchaseOrderResponse> getPurchaseOrdersSummary(@RequestBody PurchaseOrderRequest request) {
-    //     loggger.info("Received POST /reports/v2/getNestedPurchaseOrders with request: {}", request);
+    @PostMapping(value = "/reports/v2/getNestedPurchaseOrders", produces = "application/json")
+    public ResponseEntity<PurchaseOrderResponse> getPurchaseOrdersSummary(@RequestBody PurchaseOrderRequest request) {
+        loggger.info("Received POST /reports/v2/getNestedPurchaseOrders with request: {}", request);
 
-    //     try {
-    //         PurchaseOrderResponse response = purchaseOrderService.getPurchaseOrderResponse(request);
+        try {
+            PurchaseOrderResponse response = purchaseOrderService.getPurchaseOrderResponse(request);
 
-    //         if (response.getTotalRecords() == null || response.getTotalRecords() == 0) {
-    //             loggger.warn("No purchase orders found for request: {}", request);
-    //             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
-    //         }
+            if (response.getTotalRecords() == null || response.getTotalRecords() == 0) {
+                loggger.warn("No purchase orders found for request: {}", request);
+                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
+            }
 
-    //         loggger.info("Returning purchase order response with {} records.", response.getTotalRecords());
-    //         return ResponseEntity.ok(response);
+            loggger.info("Returning purchase order response with {} records.", response.getTotalRecords());
+            return ResponseEntity.ok(response);
 
-    //     } catch (Exception e) {
-    //         loggger.error("Error processing purchase orders request", e);
-    //         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
-    //     }
-    // }
+        } catch (Exception e) {
+            loggger.error("Error processing purchase orders request", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
 
     
 
