@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.context.request.async.DeferredResult;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
+import java.io.ByteArrayOutputStream;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
@@ -26,6 +27,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
+
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.context.request.async.DeferredResult;
+import org.apache.poi.ss.usermodel.Workbook;
+import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.springframework.web.bind.annotation.*;
 
 /**
  * REST Controller for handling DCC PO Combined View requests.
@@ -206,140 +215,246 @@ public class DccPOController {
     }
 
 
-    // In DccPOController.java
-    @PostMapping("/export-combined-view")
-    public DeferredResult<ResponseEntity<DccPOResponseDTO>> exportDccPOCombinedView(
-            @RequestBody DccPORequestDTO request) {
-        DeferredResult<ResponseEntity<DccPOResponseDTO>> deferredResult = new DeferredResult<>(null);
+    // changes to endpoint to  optimize export
+
+//    @PostMapping("/export-combined-view")
+//    public DeferredResult<ResponseEntity<DccPOResponseDTO>> exportDccPOCombinedView(
+//            @RequestBody DccPORequestDTO request) {
+//        DeferredResult<ResponseEntity<DccPOResponseDTO>> deferredResult = new DeferredResult<>(600000L); // 10 minutes timeout for export
+//
+//        CompletableFuture<List<DccPOCombinedViewDTO>> future = dccPOService.getAllDccPOForExport(
+//                request.getSupplierId(),
+//                request.getPendingApprovers(),
+//                request.getColumnName(),
+//                request.getSearchQuery(),
+//                request.getOperator());
+//
+//        future.thenAccept(data -> {
+//            Long totalFilteredRecords = (long) data.size();
+//
+//            // Group by dccRecordNo to create hierarchical structure (same as in the paginated endpoint)
+//            Map<Long, List<DccPOCombinedViewDTO>> groupedByDccRecordNo = data.stream()
+//                    .collect(Collectors.groupingBy(DccPOCombinedViewDTO::getDccRecordNo));
+//
+//            List<DccPOParentDTO> parentDTOs = groupedByDccRecordNo.entrySet().stream()
+//                    .map(entry -> {
+//                        DccPOCombinedViewDTO firstRecord = entry.getValue().get(0);
+//                        DccPOParentDTO parentDTO = new DccPOParentDTO();
+//                        // Populate parent-level fields
+//                        parentDTO.setRecordNo(firstRecord.getDccRecordNo());
+//                        parentDTO.setDccPoNumber(firstRecord.getDccPoNumber());
+//                        parentDTO.setNewProjectName(firstRecord.getNewProjectName());
+//                        parentDTO.setDccAcceptanceType(firstRecord.getDccAcceptanceType());
+//                        parentDTO.setDccStatus(firstRecord.getDccStatus());
+//                        parentDTO.setDccCreatedDate(firstRecord.getDccCreatedDate());
+//                        parentDTO.setDateApproved(firstRecord.getDateApproved());
+//                        parentDTO.setVendorComment(firstRecord.getVendorComment());
+//                        parentDTO.setDccId(firstRecord.getDccId());
+//                        parentDTO.setPoId(firstRecord.getPoId());
+//                        parentDTO.setProjectName(firstRecord.getProjectName());
+//                        parentDTO.setSupplierId(firstRecord.getSupplierId());
+//                        parentDTO.setVendorNumber(firstRecord.getVendorNumber());
+//                        parentDTO.setVendorName(firstRecord.getVendorName());
+//                        parentDTO.setCreatedBy(firstRecord.getCreatedBy());
+//                        parentDTO.setCreatedByName(firstRecord.getCreatedByName());
+//                        parentDTO.setApprovalCount(firstRecord.getApprovalCount());
+//                        parentDTO.setPendingApprovers(firstRecord.getPendingApprovers());
+//                        parentDTO.setApproverComment(firstRecord.getApproverComment());
+//                        parentDTO.setUserAging(firstRecord.getUserAging());
+//                        parentDTO.setTotalAging(firstRecord.getTotalAging());
+//                        parentDTO.setVendorEmail(firstRecord.getDccVendorEmail());
+//                        parentDTO.setDccCurrency(firstRecord.getDccCurrency());
+//
+//                        // Add line items
+//                        List<DccPOLineItemDTO> lineItems = entry.getValue().stream()
+//                                .map(dto -> {
+//                                    DccPOLineItemDTO lineItem = new DccPOLineItemDTO();
+//                                    lineItem.setRecordNo(dto.getLnRecordNo());
+//                                    lineItem.setLnProductName(dto.getLnProductName());
+//                                    lineItem.setSerialNumber(dto.getLnProductSerialNo());
+//                                    lineItem.setDeliveredQty(dto.getLnDeliveredQty());
+//                                    lineItem.setLocationName(dto.getLnLocationName());
+//                                    lineItem.setDateInService(dto.getLnInserviceDate());
+//                                    lineItem.setLnUnitPrice(dto.getLnUnitPrice());
+//                                    lineItem.setScopeOfWork(dto.getLnScopeOfWork());
+//                                    lineItem.setRemarks(dto.getLnRemarks());
+//                                    lineItem.setItemCode(dto.getUplLineItemCode());
+//                                    lineItem.setLinkId(dto.getLinkId() != null ? String.valueOf(dto.getLinkId()) : "");
+//                                    lineItem.setTagNumber(dto.getTagNumber());
+//                                    lineItem.setPoLineNumber(dto.getLineNumber());
+//                                    lineItem.setActualItemCode(dto.getActualItemCode());
+//                                    lineItem.setUplLineNumber(dto.getUplLineNumber());
+//                                    lineItem.setCurrency(dto.getDccCurrency());
+//                                    lineItem.setPoId(dto.getPoId());
+//                                    lineItem.setUPLACPTRequestValue(dto.getUPLACPTRequestValue());
+//                                    lineItem.setpoAcceptanceQty(dto.getpoAcceptanceQty());
+//                                    lineItem.setPOLineAcceptanceQty(dto.getPOLineAcceptanceQty());
+//                                    lineItem.setPoPendingQuantity(dto.getPoPendingQuantity());
+//                                    lineItem.setPoOrderQuantity(dto.getPoOrderQuantity());
+//                                    lineItem.setItemPartNumber(dto.getItemPartNumber());
+//                                    lineItem.setPoLineDescription(dto.getPoLineDescription());
+//                                    lineItem.setUplLineQuantity(dto.getUplLineQuantity());
+//                                    lineItem.setPoLineQuantity(dto.getPoLineQuantity());
+//                                    lineItem.setUplLineItemCode(dto.getUplLineItemCode());
+//                                    lineItem.setUplLineDescription(dto.getUplLineDescription());
+//                                    lineItem.setUom(dto.getUnitOfMeasure());
+//                                    lineItem.setActiveOrPassive(dto.getActiveOrPassive());
+//                                    lineItem.setUplPendingQuantity(dto.getUplPendingQuantity());
+//                                    return lineItem;
+//                                })
+//                                .collect(Collectors.toList());
+//                        parentDTO.setLineItems(lineItems);
+//                        return parentDTO;
+//                    })
+//                    .sorted((a, b) -> b.getRecordNo().compareTo(a.getRecordNo())) // Sort by recordNo descending
+//                    .collect(Collectors.toList());
+//
+//            // Build response (similar to paginated, but with all data and no pagination info)
+//            DccPOResponseDTO responseDTO = new DccPOResponseDTO();
+//            responseDTO.setTotalRecords(totalFilteredRecords);
+//            responseDTO.setData(parentDTOs);
+//            // For export, set pageSize to total, currentPage to 1, totalPages to 1
+//            responseDTO.setTotalPages(1);
+//            responseDTO.setPageSize(totalFilteredRecords.intValue());
+//            responseDTO.setCurrentPage(1);
+//
+//            logger.info("Successfully exported DCC PO Combined View with {} parent records (supplierId: {}, pendingApprovers: {}, columnName: {}, searchQuery: {})",
+//                    parentDTOs.size(), request.getSupplierId(), request.getPendingApprovers(), request.getColumnName(), request.getSearchQuery());
+//            deferredResult.setResult(ResponseEntity.ok(responseDTO));
+//        }).exceptionally(throwable -> {
+//            logger.error("Error processing DCC PO export request", throwable);
+//            if (throwable.getCause() instanceof DccPOProcessingException) {
+//                deferredResult.setErrorResult(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+//                        .body("Error: " + throwable.getCause().getMessage()));
+//            } else {
+//                deferredResult.setErrorResult(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+//                        .body("Unexpected error occurred"));
+//            }
+//            return null;
+//        });
+//
+//        return deferredResult;
+//    }
+
+
+    //    Export as excel file
+
+    @PostMapping(value = "/export-combined-view", produces = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    public DeferredResult<ResponseEntity<byte[]>> exportDccPOCombinedViewToExcel(@RequestBody DccPORequestDTO request) {
+        DeferredResult<ResponseEntity<byte[]>> deferredResult = new DeferredResult<>(600000L); // 10 minutes timeout
 
         CompletableFuture<List<DccPOCombinedViewDTO>> future = dccPOService.getAllDccPOForExport(
-                request.getSupplierId(),
-                request.getPendingApprovers(),
-                request.getColumnName(),
-                request.getSearchQuery(),
-                request.getOperator());
+                request.getSupplierId(), request.getPendingApprovers(), request.getColumnName(), request.getSearchQuery(), request.getOperator());
 
         future.thenAccept(data -> {
-            Long totalFilteredRecords = (long) data.size();
+            try {
+                // Group by dccRecordNo to create hierarchical structure
+                Map<Long, List<DccPOCombinedViewDTO>> groupedByDccRecordNo = data.stream()
+                        .collect(Collectors.groupingBy(DccPOCombinedViewDTO::getDccRecordNo));
 
-            // Group by dccRecordNo to create hierarchical structure (same as in the paginated endpoint)
-            Map<Long, List<DccPOCombinedViewDTO>> groupedByDccRecordNo = data.stream()
-                    .collect(Collectors.groupingBy(DccPOCombinedViewDTO::getDccRecordNo));
+                // Create Excel workbook
+                Workbook workbook = new XSSFWorkbook();
+                Sheet sheet = workbook.createSheet("DCC PO Data");
 
-            List<DccPOParentDTO> parentDTOs = groupedByDccRecordNo.entrySet().stream()
-                    .map(entry -> {
-                        DccPOCombinedViewDTO firstRecord = entry.getValue().get(0);
-                        DccPOParentDTO parentDTO = new DccPOParentDTO();
-                        // Populate parent-level fields
-                        parentDTO.setRecordNo(firstRecord.getDccRecordNo());
-                        parentDTO.setDccPoNumber(firstRecord.getDccPoNumber());
-                        parentDTO.setNewProjectName(firstRecord.getNewProjectName());
-                        parentDTO.setDccAcceptanceType(firstRecord.getDccAcceptanceType());
-                        parentDTO.setDccStatus(firstRecord.getDccStatus());
-                        parentDTO.setDccCreatedDate(firstRecord.getDccCreatedDate());
-                        parentDTO.setDateApproved(firstRecord.getDateApproved());
-                        parentDTO.setVendorComment(firstRecord.getVendorComment());
-                        parentDTO.setDccId(firstRecord.getDccId());
-                        parentDTO.setPoId(firstRecord.getPoId());
-                        parentDTO.setProjectName(firstRecord.getProjectName());
-                        parentDTO.setSupplierId(firstRecord.getSupplierId());
-                        parentDTO.setVendorNumber(firstRecord.getVendorNumber());
-                        parentDTO.setVendorName(firstRecord.getVendorName());
-                        parentDTO.setCreatedBy(firstRecord.getCreatedBy());
-                        parentDTO.setCreatedByName(firstRecord.getCreatedByName());
-                        parentDTO.setApprovalCount(firstRecord.getApprovalCount());
-                        parentDTO.setPendingApprovers(firstRecord.getPendingApprovers());
-                        parentDTO.setApproverComment(firstRecord.getApproverComment());
-                        parentDTO.setUserAging(firstRecord.getUserAging());
-                        parentDTO.setTotalAging(firstRecord.getTotalAging());
-                        parentDTO.setVendorEmail(firstRecord.getDccVendorEmail());
-                        parentDTO.setDccCurrency(firstRecord.getDccCurrency());
+                // Create header row
+                Row headerRow = sheet.createRow(0);
+                String[] columnHeaders = { // Renamed to avoid any potential conflict
+                        "Record No", "DCC PO Number", "New Project Name", "Acceptance Type", "Status", "Created Date", "Date Approved",
+                        "Vendor Comment", "DCC ID", "PO ID", "Project Name", "Supplier ID", "Vendor Number", "Vendor Name",
+                        "Created By", "Approval Count", "Pending Approvers", "Approver Comment", "User Aging", "Total Aging",
+                        "Vendor Email", "Currency", "Line Item Record No", "Product Name", "Serial Number", "Delivered Qty",
+                        "Location Name", "In-Service Date", "Unit Price", "Scope of Work", "Remarks", "Item Code", "Link ID",
+                        "Tag Number", "PO Line Number", "Actual Item Code", "UPL Line Number", "PO Acceptance Qty",
+                        "PO Line Acceptance Qty", "PO Pending Quantity", "PO Order Quantity", "Item Part Number",
+                        "PO Line Description", "UPL Line Quantity", "UPL Line Item Code", "UPL Line Description", "UOM",
+                        "Active/Passive", "UPL Pending Quantity"
+                };
+                for (int i = 0; i < columnHeaders.length; i++) {
+                    headerRow.createCell(i).setCellValue(columnHeaders[i]);
+                }
 
-                        // Add line items
-                        List<DccPOLineItemDTO> lineItems = entry.getValue().stream()
-                                .map(dto -> {
-                                    DccPOLineItemDTO lineItem = new DccPOLineItemDTO();
-                                    lineItem.setRecordNo(dto.getLnRecordNo());
-                                    lineItem.setLnProductName(dto.getLnProductName());
-                                    lineItem.setSerialNumber(dto.getLnProductSerialNo());
-                                    lineItem.setDeliveredQty(dto.getLnDeliveredQty());
-                                    lineItem.setLocationName(dto.getLnLocationName());
-                                    lineItem.setDateInService(dto.getLnInserviceDate());
-                                    lineItem.setLnUnitPrice(dto.getLnUnitPrice());
-                                    lineItem.setScopeOfWork(dto.getLnScopeOfWork());
-                                    lineItem.setRemarks(dto.getLnRemarks());
-                                    lineItem.setItemCode(dto.getUplLineItemCode());
-                                    lineItem.setLinkId(dto.getLinkId() != null ? String.valueOf(dto.getLinkId()) : "");
-                                    lineItem.setTagNumber(dto.getTagNumber());
-                                    lineItem.setPoLineNumber(dto.getLineNumber());
-                                    lineItem.setActualItemCode(dto.getActualItemCode());
-                                    lineItem.setUplLineNumber(dto.getUplLineNumber());
-                                    lineItem.setCurrency(dto.getDccCurrency());
-                                    lineItem.setPoId(dto.getPoId());
-                                    lineItem.setUPLACPTRequestValue(dto.getUPLACPTRequestValue());
-//                                lineItem.setPOAcceptanceQty(dto.getPOAcceptanceQty());
-                                    lineItem.setpoAcceptanceQty(dto.getpoAcceptanceQty());
-                                    lineItem.setPOLineAcceptanceQty(dto.getPOLineAcceptanceQty());
-                                    lineItem.setPoPendingQuantity(dto.getPoPendingQuantity());
-                                    lineItem.setPoOrderQuantity(dto.getPoOrderQuantity());
-                                    lineItem.setItemPartNumber(dto.getItemPartNumber());
-                                    lineItem.setPoLineDescription(dto.getPoLineDescription());
-                                    lineItem.setUplLineQuantity(dto.getUplLineQuantity());
-                                    lineItem.setPoLineQuantity(dto.getPoLineQuantity());
-                                    lineItem.setUplLineItemCode(dto.getUplLineItemCode());
-                                    lineItem.setUplLineDescription(dto.getUplLineDescription());
-                                    lineItem.setUom(dto.getUnitOfMeasure());
-                                    lineItem.setActiveOrPassive(dto.getActiveOrPassive());
-                                    lineItem.setUplPendingQuantity(dto.getUplPendingQuantity());
-                                    return lineItem;
-                                })
-                                .collect(Collectors.toList());
-                        parentDTO.setLineItems(lineItems);
-                        return parentDTO;
-                    })
-                    .sorted((a, b) -> b.getRecordNo().compareTo(a.getRecordNo())) // Sort by recordNo descending
-                    .collect(Collectors.toList());
+                // Populate data rows
+                int rowNum = 1;
+                for (Map.Entry<Long, List<DccPOCombinedViewDTO>> entry : groupedByDccRecordNo.entrySet()) {
+                    DccPOCombinedViewDTO firstRecord = entry.getValue().get(0);
+                    for (DccPOCombinedViewDTO dto : entry.getValue()) {
+                        Row row = sheet.createRow(rowNum++);
+                        int col = 0;
+                        row.createCell(col++).setCellValue(firstRecord.getDccRecordNo() != null ? firstRecord.getDccRecordNo().toString() : "");
+                        row.createCell(col++).setCellValue(firstRecord.getDccPoNumber());
+                        row.createCell(col++).setCellValue(firstRecord.getNewProjectName());
+                        row.createCell(col++).setCellValue(firstRecord.getDccAcceptanceType());
+                        row.createCell(col++).setCellValue(firstRecord.getDccStatus());
+                        row.createCell(col++).setCellValue(firstRecord.getDccCreatedDate());
+                        row.createCell(col++).setCellValue(firstRecord.getDateApproved());
+                        row.createCell(col++).setCellValue(firstRecord.getVendorComment());
+                        row.createCell(col++).setCellValue(firstRecord.getDccId() != null ? firstRecord.getDccId().toString() : "");
+                        row.createCell(col++).setCellValue(firstRecord.getPoId());
+                        row.createCell(col++).setCellValue(firstRecord.getProjectName());
+                        row.createCell(col++).setCellValue(firstRecord.getSupplierId());
+                        row.createCell(col++).setCellValue(firstRecord.getVendorNumber());
+                        row.createCell(col++).setCellValue(firstRecord.getVendorName());
+                        row.createCell(col++).setCellValue(firstRecord.getCreatedBy());
+                        row.createCell(col++).setCellValue(firstRecord.getApprovalCount() != null ? firstRecord.getApprovalCount() : 0);
+                        row.createCell(col++).setCellValue(firstRecord.getPendingApprovers());
+                        row.createCell(col++).setCellValue(firstRecord.getApproverComment());
+                        row.createCell(col++).setCellValue(firstRecord.getUserAging());
+                        row.createCell(col++).setCellValue(firstRecord.getTotalAging());
+                        row.createCell(col++).setCellValue(firstRecord.getDccVendorEmail());
+                        row.createCell(col++).setCellValue(firstRecord.getDccCurrency());
+                        row.createCell(col++).setCellValue(dto.getLnRecordNo() != null ? dto.getLnRecordNo().toString() : "");
+                        row.createCell(col++).setCellValue(dto.getLnProductName());
+                        row.createCell(col++).setCellValue(dto.getLnProductSerialNo());
+                        row.createCell(col++).setCellValue(dto.getLnDeliveredQty() != null ? dto.getLnDeliveredQty() : 0);
+                        row.createCell(col++).setCellValue(dto.getLnLocationName());
+                        row.createCell(col++).setCellValue(dto.getLnInserviceDate());
+                        row.createCell(col++).setCellValue(dto.getLnUnitPrice());
+                        row.createCell(col++).setCellValue(dto.getLnScopeOfWork());
+                        row.createCell(col++).setCellValue(dto.getLnRemarks());
+                        row.createCell(col++).setCellValue(dto.getUplLineItemCode());
+                        row.createCell(col++).setCellValue(dto.getLinkId() != null ? String.valueOf(dto.getLinkId()) : "");
+                        row.createCell(col++).setCellValue(dto.getTagNumber());
+                        row.createCell(col++).setCellValue(dto.getLineNumber());
+                        row.createCell(col++).setCellValue(dto.getActualItemCode());
+                        row.createCell(col++).setCellValue(dto.getUplLineNumber());
+                        row.createCell(col++).setCellValue(dto.getpoAcceptanceQty() != null ? dto.getpoAcceptanceQty() : 0);
+                        row.createCell(col++).setCellValue(dto.getPOLineAcceptanceQty());
+                        row.createCell(col++).setCellValue(dto.getPoPendingQuantity());
+                        row.createCell(col++).setCellValue(dto.getPoOrderQuantity());
+                        row.createCell(col++).setCellValue(dto.getItemPartNumber());
+                        row.createCell(col++).setCellValue(dto.getPoLineDescription());
+                        row.createCell(col++).setCellValue(dto.getUplLineQuantity() != null ? dto.getUplLineQuantity() : 0);
+                        row.createCell(col++).setCellValue(dto.getUplLineItemCode());
+                        row.createCell(col++).setCellValue(dto.getUplLineDescription());
+                        row.createCell(col++).setCellValue(dto.getUnitOfMeasure());
+                        row.createCell(col++).setCellValue(dto.getActiveOrPassive());
+                        row.createCell(col++).setCellValue(dto.getUplPendingQuantity());
+                    }
+                }
 
-            // Build response (similar to paginated, but with all data and no pagination info)
-            DccPOResponseDTO responseDTO = new DccPOResponseDTO();
-            responseDTO.setTotalRecords(totalFilteredRecords);
-            responseDTO.setData(parentDTOs);
-            // For export, set pageSize to total, currentPage to 1, totalPages to 1
-            responseDTO.setTotalPages(1);
-            responseDTO.setPageSize(totalFilteredRecords.intValue());
-            responseDTO.setCurrentPage(1);
+                // Write to byte array
+                ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                workbook.write(baos);
+                workbook.close();
 
-            logger.info("Successfully exported DCC PO Combined View with {} parent records (supplierId: {}, pendingApprovers: {}, columnName: {}, searchQuery: {})",
-                    parentDTOs.size(), request.getSupplierId(), request.getPendingApprovers(), request.getColumnName(), request.getSearchQuery());
-            deferredResult.setResult(ResponseEntity.ok(responseDTO));
+                // Set response headers and return
+                HttpHeaders responseHeaders = new HttpHeaders();
+                responseHeaders.add("Content-Disposition", "attachment; filename=dcc_po_export.xlsx");
+                deferredResult.setResult(new ResponseEntity<>(baos.toByteArray(), responseHeaders, HttpStatus.OK));
+                logger.info("Successfully exported Excel file with {} parent records", groupedByDccRecordNo.size());
+            } catch (Exception ex) {
+                logger.error("Error generating Excel file", ex);
+                deferredResult.setErrorResult(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .body(("Error generating Excel: " + ex.getMessage()).getBytes()));
+            }
         }).exceptionally(throwable -> {
             logger.error("Error processing DCC PO export request", throwable);
-            if (throwable.getCause() instanceof DccPOProcessingException) {
-                deferredResult.setErrorResult(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                        .body("Error: " + throwable.getCause().getMessage()));
-            } else {
-                deferredResult.setErrorResult(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                        .body("Unexpected error occurred"));
-            }
+            deferredResult.setErrorResult(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(("Error: " + throwable.getCause().getMessage()).getBytes()));
             return null;
         });
 
         return deferredResult;
     }
 
-    //  we will replace export DccPOCombinedView method with this streaming version
-
-//    @PostMapping("/export-combined")
-//    public ResponseEntity<StreamingResponseBody> exportDccPOCombinedView(
-//            @RequestBody DccPORequestDTO request) {
-//        StreamingResponseBody stream = outputStream -> {
-//            dccPOService.exportDccPOToExcel(outputStream, request.getSupplierId(), request.getPendingApprovers(),
-//                    request.getColumnName(), request.getSearchQuery(), request.getOperator());
-//        };
-//
-//        return ResponseEntity.ok()
-//                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=dcc_po_export.xlsx")
-//                .contentType(MediaType.APPLICATION_OCTET_STREAM)
-//                .body(stream);
-//    }
 }

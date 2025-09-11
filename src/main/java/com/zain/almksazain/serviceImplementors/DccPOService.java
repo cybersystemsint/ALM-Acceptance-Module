@@ -505,62 +505,6 @@ public class DccPOService {
             return;
         }
 
-//        // Handle request-info casee
-//        if ("request-info".equals(latestApprovalRequest.getStatus())) {
-//            logger.debug("Approval request recordNo={} has status 'request-info'; setting approvalCount=0 and pendingApprovers=null",
-//                    latestApprovalRequest.getRecordNo());
-////            logger.debug("Approval request recordNo={} has status 'request-info'", latestApprovalRequest.getRecordNo());
-//
-//            dto.setApprovalCount(0L);
-//            dto.setPendingApprovers(null);
-//
-//            List<TbCategoryApprovals> filteredApprovals = allRelatedApprovals.stream()
-//                    .filter(a -> "pending".equals(a.getStatus()) && Arrays.asList("pending", "request-info").contains(a.getApprovalStatus()))
-//                    .filter(a -> allRelatedRequests.stream().anyMatch(r -> "request-info".equals(r.getStatus()) && r.getRecordNo().equals(a.getApprovalRecordId())))
-//                    .collect(Collectors.toList());
-//
-//
-//            dto.setApprovalCount((long) filteredApprovals.size());
-//
-//
-//            String currentApproverNamed = allRelatedApprovals.stream()
-//                    .filter(a -> a.getApprovalRecordId().equals(latestApprovalRequest.getRecordNo()))
-////                    .filter(a -> "request-info".equals(a.getStatus()) && "request-info".equals(a.getApprovalStatus()))
-//                    .filter(a -> "pending".equals(a.getStatus()) && "request-info".equals(a.getApprovalStatus()))
-//                    .findFirst()
-//                    .map(TbCategoryApprovals::getApproverName)
-//                    .orElse(null);
-//
-//            dto.setPendingApprovers(currentApproverNamed);
-
-//            String currentApproverName = allRelatedApprovals.stream()
-//                    .filter(a -> a.getApprovalRecordId().equals(latestApprovalRequest.getRecordNo()))
-//                    .filter(a -> "request-info".equals(a.getStatus()) && "request-info".equals(a.getApprovalStatus()))
-//                    .findFirst()
-//                    .map(TbCategoryApprovals::getApproverName)
-//                    .orElse(null);
-
-//            // Step 2: Calculate totalPausedUserAgingMinutes for request-info
-//            long totalPausedUserAgingMinutes = allRelatedApprovals.stream()
-//                    .filter(a -> "request-info".equals(a.getStatus()) && "request-info".equals(a.getApprovalStatus()))
-//                    .filter(a -> currentApproverName != null && currentApproverName.equals(a.getApproverName()))
-//                    .filter(a -> a.getApprovedDate() != null && a.getRecordDateTime() != null)
-//                    .mapToLong(a -> {
-//                        long pausedMinutes = Duration.between(a.getRecordDateTime(), a.getApprovedDate()).toMinutes();
-//                        logger.debug("Paused period for approvalId={} by {} : {} minutes (from {} to {})",
-//                                a.getApprovalId(), a.getApproverName(), pausedMinutes, a.getRecordDateTime(), a.getApprovedDate());
-//                        return Math.max(pausedMinutes, 0);
-//                    })
-//                    .sum();
-//
-//            //  Set userAging (only paused for request-info)
-//            dto.setUserAging(String.format("%d days %d hrs %d mins",
-//                    totalPausedUserAgingMinutes / 1440, (totalPausedUserAgingMinutes / 60) % 24, totalPausedUserAgingMinutes % 60));
-//
-//            dto.setTotalAging(totalAging);
-//            dto.setApproverComment(approverComment);
-//            return;
-//        }
 
         // Handle returned case
         if ("returned".equals(latestApprovalRequest.getStatus())) {
@@ -733,7 +677,52 @@ public class DccPOService {
     }
 
     //new method for export
+//    @Async("taskExecutor")
+//    public CompletableFuture<List<DccPOCombinedViewDTO>> getAllDccPOForExport(
+//            String supplierId, String pendingApprovers, String columnName, String searchQuery, String operator) {
+//        return CompletableFuture.supplyAsync(() -> {
+//            try {
+//                logger.info("Starting export of all DCC PO Combined View with supplierId: {}, pendingApprovers: {}, columnName: {}, searchQuery: {}, operator: {}",
+//                        supplierId, pendingApprovers, columnName, searchQuery, operator);
+//
+//                // First, fetch total filtered records using a small page size
+//                DccPOFetchResult initialResult = fetchDccPOCombinedView(supplierId, pendingApprovers, 1, 1, columnName, searchQuery, true, operator);
+//                long totalFilteredRecords = initialResult.getTotalFilteredRecords();
+//
+//                if (totalFilteredRecords == 0) {
+//                    logger.info("No records found for export");
+//                    return new ArrayList<>();
+//                }
+//
+//                int batchSize = 100;
+//                int totalPages = (int) Math.ceil((double) totalFilteredRecords / batchSize);
+//                List<CompletableFuture<DccPOFetchResult>> futures = new ArrayList<>();
+//
+//                for (int page = 1; page <= totalPages; page++) {
+//                    final int currentPage = page;
+//                    futures.add(CompletableFuture.supplyAsync(() ->
+//                            fetchDccPOCombinedView(supplierId, pendingApprovers, currentPage, batchSize, columnName, searchQuery, true, operator)));
+//                }
+//
+//                // Wait for all batches to complete
+//                CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+//
+//                // Collect all data from batches
+//                List<DccPOCombinedViewDTO> allData = futures.stream()
+//                        .map(CompletableFuture::join)
+//                        .flatMap(result -> result.getData().stream())
+//                        .collect(Collectors.toList());
+//
+//                logger.info("Exported {} records successfully", allData.size());
+//                return allData;
+//            } catch (Exception ex) {
+//                logger.error("Error during export of DCC PO Combined View", ex);
+//                throw new DccPOProcessingException("Failed to export DCC PO Combined View", ex);
+//            }
+//        });
+//    }
 
+   // service method export for excelendpoint
     @Async("taskExecutor")
     public CompletableFuture<List<DccPOCombinedViewDTO>> getAllDccPOForExport(
             String supplierId, String pendingApprovers, String columnName, String searchQuery, String operator) {
@@ -742,7 +731,7 @@ public class DccPOService {
                 logger.info("Starting export of all DCC PO Combined View with supplierId: {}, pendingApprovers: {}, columnName: {}, searchQuery: {}, operator: {}",
                         supplierId, pendingApprovers, columnName, searchQuery, operator);
 
-                // First, fetch total filtered records using a small page size
+                // Fetch total filtered records with a small page size
                 DccPOFetchResult initialResult = fetchDccPOCombinedView(supplierId, pendingApprovers, 1, 1, columnName, searchQuery, true, operator);
                 long totalFilteredRecords = initialResult.getTotalFilteredRecords();
 
@@ -751,14 +740,18 @@ public class DccPOService {
                     return new ArrayList<>();
                 }
 
-                int batchSize = 100;
+                int batchSize = 50; // Reduced batch size for faster per-batch processing
                 int totalPages = (int) Math.ceil((double) totalFilteredRecords / batchSize);
                 List<CompletableFuture<DccPOFetchResult>> futures = new ArrayList<>();
-                
+
                 for (int page = 1; page <= totalPages; page++) {
                     final int currentPage = page;
-                    futures.add(CompletableFuture.supplyAsync(() ->
-                            fetchDccPOCombinedView(supplierId, pendingApprovers, currentPage, batchSize, columnName, searchQuery, true, operator)));
+                    futures.add(CompletableFuture.supplyAsync(() -> {
+                        long startTime = System.currentTimeMillis();
+                        DccPOFetchResult result = fetchDccPOCombinedView(supplierId, pendingApprovers, currentPage, batchSize, columnName, searchQuery, true, operator);
+                        logger.info("Batch page {} took {} ms", currentPage, System.currentTimeMillis() - startTime);
+                        return result;
+                    }));
                 }
 
                 // Wait for all batches to complete
@@ -778,128 +771,4 @@ public class DccPOService {
             }
         });
     }
-
-// new method for streaming export
-//
-//    public void exportDccPOToExcel(OutputStream outputStream, String supplierId, String pendingApprovers,
-//                                   String columnName, String searchQuery, String operator) throws IOException {
-//        try {
-//            logger.info("Starting streaming export of DCC PO Combined View to Excel with supplierId: {}, pendingApprovers: {}, columnName: {}, searchQuery: {}, operator: {}",
-//                    supplierId, pendingApprovers, columnName, searchQuery, operator);
-//
-//            // First, fetch total filtered records using a small page size
-//            DccPOFetchResult initialResult = fetchDccPOCombinedView(supplierId, pendingApprovers, 1, 1, columnName, searchQuery, true, operator);
-//            long totalFilteredRecords = initialResult.getTotalFilteredRecords(); // This is number of parents
-//
-//            if (totalFilteredRecords == 0) {
-//                logger.info("No records found for export");
-//                return;
-//            }
-//
-//            // Use larger batch size for sequential fetching to reduce number of queries
-//            int batchSize = 500; // Adjust based on testing; larger reduces queries but increases per-batch memory/time
-//            int totalPages = (int) Math.ceil((double) totalFilteredRecords / batchSize);
-//
-//            // Create streaming workbook (low memory, uses temp files)
-//            try (SXSSFWorkbook workbook = new SXSSFWorkbook(1000)) { // Row access window size
-//                Sheet sheet = workbook.createSheet("DCC PO Export");
-//
-//                // Create header row
-//                Row headerRow = sheet.createRow(0);
-//                // Add headers based on DccPOCombinedViewDTO fields (adjust as needed)
-//                String[] headers = {
-//                        "DccRecordNo", "DccPoNumber", "DccVendorName", "DccVendorEmail", "DccProjectName",
-//                        "DccAcceptanceType", "DccStatus", "DccCreatedDate", "VendorComment", "DccId",
-//                        "DccCurrency", "CreatedBy", "CreatedByName", "DateApproved", "PoId",
-//                        "ProjectName", "NewProjectName", "SupplierId", "VendorNumber", "VendorName",
-//                        "ApprovalCount", "PendingApprovers", "ApproverComment", "UserAging", "TotalAging",
-//                        "LnRecordNo", "LnProductName", "LnProductSerialNo", "LnDeliveredQty", "LnLocationName",
-//                        "LnInserviceDate", "LnUnitPrice", "LnScopeOfWork", "LnRemarks", "LinkId",
-//                        "TagNumber", "LineNumber", "ActualItemCode", "UplLineNumber", "poAcceptanceQty",
-//                        "UPLACPTRequestValue", "POLineAcceptanceQty", "PoPendingQuantity", "PoOrderQuantity",
-//                        "PoLineDescription", "UplLineQuantity", "UplLineItemCode", "UplLineDescription",
-//                        "UnitOfMeasure", "ActiveOrPassive", "UplPendingQuantity", "ItemPartNumber", "ItemCode"
-//                };
-//                for (int i = 0; i < headers.length; i++) {
-//                    Cell cell = headerRow.createCell(i);
-//                    cell.setCellValue(headers[i]);
-//                }
-//
-//                // Sequentially fetch and write batches
-//                int rowNum = 1;
-//                for (int page = 1; page <= totalPages; page++) {
-//                    DccPOFetchResult batchResult = fetchDccPOCombinedView(supplierId, pendingApprovers, page, batchSize, columnName, searchQuery, true, operator);
-//                    List<DccPOCombinedViewDTO> batchData = batchResult.getData();
-//
-//                    for (DccPOCombinedViewDTO dto : batchData) {
-//                        Row row = sheet.createRow(rowNum++);
-//                        int col = 0;
-//                        // Populate cells (null-safe)
-//                        row.createCell(col++).setCellValue(dto.getDccRecordNo() != null ? dto.getDccRecordNo() : 0L);
-//                        row.createCell(col++).setCellValue(dto.getDccPoNumber());
-//                        row.createCell(col++).setCellValue(dto.getDccVendorName());
-//                        row.createCell(col++).setCellValue(dto.getDccVendorEmail());
-//                        row.createCell(col++).setCellValue(dto.getDccProjectName());
-//                        row.createCell(col++).setCellValue(dto.getDccAcceptanceType());
-//                        row.createCell(col++).setCellValue(dto.getDccStatus());
-//                        row.createCell(col++).setCellValue(dto.getDccCreatedDate());
-//                        row.createCell(col++).setCellValue(dto.getVendorComment());
-//                        row.createCell(col++).setCellValue(dto.getDccId());
-//                        row.createCell(col++).setCellValue(dto.getDccCurrency());
-//                        row.createCell(col++).setCellValue(dto.getCreatedBy());
-//                        row.createCell(col++).setCellValue(dto.getCreatedByName());
-//                        row.createCell(col++).setCellValue(dto.getDateApproved());
-//                        row.createCell(col++).setCellValue(dto.getPoId());
-//                        row.createCell(col++).setCellValue(dto.getProjectName());
-//                        row.createCell(col++).setCellValue(dto.getNewProjectName());
-//                        row.createCell(col++).setCellValue(dto.getSupplierId());
-//                        row.createCell(col++).setCellValue(dto.getVendorNumber());
-//                        row.createCell(col++).setCellValue(dto.getVendorName());
-//                        row.createCell(col++).setCellValue(dto.getApprovalCount() != null ? dto.getApprovalCount() : 0L);
-//                        row.createCell(col++).setCellValue(dto.getPendingApprovers());
-//                        row.createCell(col++).setCellValue(dto.getApproverComment());
-//                        row.createCell(col++).setCellValue(dto.getUserAging());
-//                        row.createCell(col++).setCellValue(dto.getTotalAging());
-//                        row.createCell(col++).setCellValue(dto.getLnRecordNo() != null ? dto.getLnRecordNo() : 0L);
-//                        row.createCell(col++).setCellValue(dto.getLnProductName());
-//                        row.createCell(col++).setCellValue(dto.getLnProductSerialNo());
-//                        row.createCell(col++).setCellValue(dto.getLnDeliveredQty() != null ? dto.getLnDeliveredQty() : 0.0);
-//                        row.createCell(col++).setCellValue(dto.getLnLocationName());
-//                        row.createCell(col++).setCellValue(dto.getLnInserviceDate());
-//                        row.createCell(col++).setCellValue(dto.getLnUnitPrice() != null ? dto.getLnUnitPrice() : 0.0);
-//                        row.createCell(col++).setCellValue(dto.getLnScopeOfWork());
-//                        row.createCell(col++).setCellValue(dto.getLnRemarks());
-//                        row.createCell(col++).setCellValue(dto.getLinkId() != null ? dto.getLinkId() : 0L);
-//                        row.createCell(col++).setCellValue(dto.getTagNumber());
-//                        row.createCell(col++).setCellValue(dto.getLineNumber());
-//                        row.createCell(col++).setCellValue(dto.getActualItemCode());
-//                        row.createCell(col++).setCellValue(dto.getUplLineNumber());
-//                        row.createCell(col++).setCellValue(dto.getpoAcceptanceQty() != null ? dto.getpoAcceptanceQty() : 0.0);
-//                        row.createCell(col++).setCellValue(dto.getUPLACPTRequestValue() != null ? dto.getUPLACPTRequestValue() : 0.0);
-//                        row.createCell(col++).setCellValue(dto.getPOLineAcceptanceQty() != null ? dto.getPOLineAcceptanceQty() : 0.0);
-//                        row.createCell(col++).setCellValue(dto.getPoPendingQuantity() != null ? dto.getPoPendingQuantity() : 0.0);
-//                        row.createCell(col++).setCellValue(dto.getPoOrderQuantity() != null ? dto.getPoOrderQuantity() : 0.0);
-//                        row.createCell(col++).setCellValue(dto.getPoLineDescription());
-//                        row.createCell(col++).setCellValue(dto.getUplLineQuantity() != null ? dto.getUplLineQuantity() : 0.0);
-//                        row.createCell(col++).setCellValue(dto.getUplLineItemCode());
-//                        row.createCell(col++).setCellValue(dto.getUplLineDescription());
-//                        row.createCell(col++).setCellValue(dto.getUnitOfMeasure());
-//                        row.createCell(col++).setCellValue(dto.getActiveOrPassive());
-//                        row.createCell(col++).setCellValue(dto.getUplPendingQuantity() != null ? dto.getUplPendingQuantity() : 0.0);
-//                        row.createCell(col++).setCellValue(dto.getItemPartNumber());
-//                        row.createCell(col++).setCellValue(dto.getItemCode());
-//                    }
-//
-//                    logger.info("Processed batch {} of {} ({} rows written)", page, totalPages, batchData.size());
-//                }
-//
-//                // Write to output stream
-//                workbook.write(outputStream);
-//                logger.info("Excel export completed successfully");
-//            }
-//        } catch (Exception ex) {
-//            logger.error("Error during streaming export to Excel", ex);
-//            throw new DccPOProcessingException("Failed to export DCC PO to Excel", ex);
-//        }
-//    }
 }
