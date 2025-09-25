@@ -1,7 +1,11 @@
 package com.zain.almksazain.serviceImplementors;
 
+import com.fasterxml.jackson.core.JsonGenerator;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mysql.cj.result.Row;
 import com.zain.almksazain.DTO.DccPOCombinedViewDTO;
+import com.zain.almksazain.DTO.DccPOLineItemDTO;
+import com.zain.almksazain.DTO.DccPOParentDTO;
 import com.zain.almksazain.exception.DccPOProcessingException;
 import com.zain.almksazain.model.DCC;
 import com.zain.almksazain.model.DCCLineItem;
@@ -24,9 +28,12 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
+import java.io.OutputStream;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.text.SimpleDateFormat;
@@ -42,9 +49,9 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 @Service
-public class DccPOService {
+public class DccPOApproverService {
 
-    private static final Logger logger = LogManager.getLogger(DccPOService.class);
+    private static final Logger logger = LogManager.getLogger(DccPOApproverService.class);
 
     @Autowired
     private TbDccRepository tbDccRepository;
@@ -76,7 +83,7 @@ public class DccPOService {
     }
 
     @Async("taskExecutor")
-    @Cacheable(value = "dccPOCombinedViewCache",
+    @Cacheable(value = "dccPOCombinedViewApproverCache",
             key = "{#supplierId, #pendingApprovers, #page, #size, #columnName, #searchQuery, #exporting, #operator}",
             unless = "#result.data == null || #result.data.isEmpty()")
     private DccPOFetchResult fetchDccPOCombinedView(String supplierId, String pendingApprovers, int page, int size, String columnName, String searchQuery, boolean exporting, String operator) {
@@ -91,7 +98,30 @@ public class DccPOService {
             long totalUnfilteredRecords = tbDccRepository.countByPoNumberIsNotNull();
             logger.info("Total unfiltered distinct dccRecordNo: {}", totalUnfilteredRecords);
 
-            DccSpecification spec = new DccSpecification(supplierId, pendingApprovers, columnName, searchQuery, operator);
+            Specification<DCC> spec = new DccSpecification(supplierId, null, columnName, searchQuery, operator);
+
+            // Custom logic for approver involvement: filter DCCs where the approver has been or will be involved
+            if (pendingApprovers != null && !pendingApprovers.isEmpty()) {
+                List<TbCategoryApprovals> approvals = tbCategoryApprovalsRepository.findByApproverName(pendingApprovers);
+                if (approvals.isEmpty()) {
+                    logger.info("No approvals found for approver: {}", pendingApprovers);
+                    return new DccPOFetchResult(new ArrayList<>(), 0L, totalUnfilteredRecords);
+                }
+                Set<Long> approvalRecordIds = approvals.stream()
+                        .map(TbCategoryApprovals::getApprovalRecordId)
+                        .collect(Collectors.toSet());
+                List<TbCategoryApprovalRequests> requests = tbCategoryApprovalRequestsRepository.findByRecordNoIn(new ArrayList<>(approvalRecordIds));
+                Set<Long> dccRecordNosSet = requests.stream()
+                        .filter(r -> r.getAcceptanceRequestRecordNo() != null)
+                        .map(TbCategoryApprovalRequests::getAcceptanceRequestRecordNo)
+                        .collect(Collectors.toSet());
+                if (dccRecordNosSet.isEmpty()) {
+                    logger.info("No DCC records found for approver: {}", pendingApprovers);
+                    return new DccPOFetchResult(new ArrayList<>(), 0L, totalUnfilteredRecords);
+                }
+                spec = spec.and((root, query, cb) -> root.get("recordNo").in(dccRecordNosSet));
+            }
+
             Page<DCC> dccPage = tbDccRepository.findAll(spec, pageable);
             List<DCC> dccList = dccPage.getContent();
             long totalFilteredRecords = dccPage.getTotalElements();
@@ -676,9 +706,7 @@ public class DccPOService {
         return (poQtyNew != null && !poQtyNew.isEmpty()) ? Double.parseDouble(poQtyNew) : purchaseOrder.getAmountDueLine();
     }
 
-
-
-   // service method export for excelendpoint
+    // service method export for excelendpoint
     @Async("taskExecutor")
     public CompletableFuture<List<DccPOCombinedViewDTO>> getAllDccPOForExport(
             String supplierId, String pendingApprovers, String columnName, String searchQuery, String operator) {
@@ -727,4 +755,162 @@ public class DccPOService {
             }
         });
     }
+    // New method: Quick count for export (reuse spec, no data fetch)
+    public CompletableFuture<Long> getExportTotalCount(String supplierId, String pendingApprovers, String columnName, String searchQuery, String operator) {
+        return CompletableFuture.supplyAsync(() -> {
+            DccSpecification spec = new DccSpecification(supplierId, pendingApprovers, columnName, searchQuery, operator);
+            Pageable pageable = PageRequest.of(0, 1); // Dummy page for count
+            Page<DCC> countPage = tbDccRepository.findAll(spec, pageable);
+            return countPage.getTotalElements();
+        });
+    }
+
+    // New streaming method
+    @Async("taskExecutor")
+    public CompletableFuture<StreamingResponseBody> streamDccPOForExport(
+            String supplierId, String pendingApprovers, String columnName, String searchQuery, String operator, Long totalRecords) {
+        return CompletableFuture.supplyAsync(() -> {
+            int batchSize = 50;
+            int totalPages = (int) Math.ceil((double) totalRecords / batchSize);
+
+            return (OutputStream outputStream) -> {
+                try (JsonGenerator generator = objectMapper.createGenerator(outputStream)) {
+                    generator.writeStartObject();
+                    generator.writeNumberField("totalRecords", totalRecords);
+                    generator.writeFieldName("data");
+                    generator.writeStartArray();
+
+                    // Process batches sequentially
+                    for (int page = 1; page <= totalPages; page++) {
+                        long batchStart = System.currentTimeMillis();
+                        DccPOFetchResult batchResult = fetchDccPOCombinedView(supplierId, pendingApprovers, page, batchSize, columnName, searchQuery, true, operator);
+                        List<DccPOCombinedViewDTO> batchData = batchResult.getData();
+
+                        if (batchData.isEmpty()) {
+                            logger.warn("Empty batch for page {} in export", page);
+                            continue;
+                        }
+
+                        // Validate: Log if any null dccRecordNo
+                        long nullRecords = batchData.stream().filter(dto -> dto.getDccRecordNo() == null).count();
+                        if (nullRecords > 0) {
+                            logger.error("Found {} records with null dccRecordNo in batch page {}", nullRecords, page);
+                            // Optionally skip or throw, but for now, filter them out to avoid crash
+                            batchData = batchData.stream().filter(dto -> dto.getDccRecordNo() != null).collect(Collectors.toList());
+                        }
+
+                        // Group batch data into hierarchical parents
+                        Map<Long, List<DccPOCombinedViewDTO>> groupedByDccRecordNo = batchData.stream()
+                                .collect(Collectors.groupingBy(DccPOCombinedViewDTO::getDccRecordNo));
+
+                        List<DccPOParentDTO> parentDTOs = groupedByDccRecordNo.entrySet().stream()
+                                .map(entry -> {
+                                    List<DccPOCombinedViewDTO> group = entry.getValue();
+                                    if (group.isEmpty()) {
+                                        logger.warn("Empty group for dccRecordNo: {}", entry.getKey());
+                                        return null; // Skip
+                                    }
+                                    DccPOCombinedViewDTO firstRecord = group.get(0);
+                                    DccPOParentDTO parentDTO = new DccPOParentDTO();
+
+                                    // Full population logic (copied/expanded from your controller for completeness)
+                                    parentDTO.setRecordNo(firstRecord.getDccRecordNo()); // This should not be null now
+                                    parentDTO.setDccPoNumber(firstRecord.getDccPoNumber());
+                                    parentDTO.setNewProjectName(firstRecord.getNewProjectName());
+                                    parentDTO.setDccAcceptanceType(firstRecord.getDccAcceptanceType());
+                                    parentDTO.setDccStatus(firstRecord.getDccStatus());
+                                    parentDTO.setDccCreatedDate(firstRecord.getDccCreatedDate());
+                                    parentDTO.setDateApproved(firstRecord.getDateApproved());
+                                    parentDTO.setVendorComment(firstRecord.getVendorComment());
+                                    parentDTO.setDccId(firstRecord.getDccId());
+                                    parentDTO.setPoId(firstRecord.getPoId());
+                                    parentDTO.setProjectName(firstRecord.getProjectName());
+                                    parentDTO.setSupplierId(firstRecord.getSupplierId());
+                                    parentDTO.setVendorNumber(firstRecord.getVendorNumber());
+                                    parentDTO.setVendorName(firstRecord.getVendorName());
+                                    parentDTO.setCreatedBy(firstRecord.getCreatedBy());
+                                    parentDTO.setCreatedByName(firstRecord.getCreatedByName());
+                                    parentDTO.setApprovalCount(firstRecord.getApprovalCount());
+                                    parentDTO.setPendingApprovers(firstRecord.getPendingApprovers());
+                                    parentDTO.setApproverComment(firstRecord.getApproverComment());
+                                    parentDTO.setUserAging(firstRecord.getUserAging());
+                                    parentDTO.setTotalAging(firstRecord.getTotalAging());
+                                    parentDTO.setVendorEmail(firstRecord.getDccVendorEmail());
+                                    parentDTO.setDccCurrency(firstRecord.getDccCurrency());
+
+                                    // Line items (full mapping)
+                                    List<DccPOLineItemDTO> lineItems = group.stream()
+                                            .map(dto -> {
+                                                DccPOLineItemDTO lineItem = new DccPOLineItemDTO();
+                                                lineItem.setRecordNo(dto.getLnRecordNo());
+                                                lineItem.setLnProductName(dto.getLnProductName());
+                                                lineItem.setSerialNumber(dto.getLnProductSerialNo());
+                                                lineItem.setDeliveredQty(dto.getLnDeliveredQty());
+                                                lineItem.setLocationName(dto.getLnLocationName());
+                                                lineItem.setDateInService(dto.getLnInserviceDate());
+                                                lineItem.setLnUnitPrice(dto.getLnUnitPrice());
+                                                lineItem.setScopeOfWork(dto.getLnScopeOfWork());
+                                                lineItem.setRemarks(dto.getLnRemarks());
+                                                lineItem.setItemCode(dto.getUplLineItemCode());
+                                                lineItem.setLinkId(dto.getLinkId() != null ? String.valueOf(dto.getLinkId()) : "");
+                                                lineItem.setTagNumber(dto.getTagNumber());
+                                                lineItem.setPoLineNumber(dto.getLineNumber());
+                                                lineItem.setActualItemCode(dto.getActualItemCode());
+                                                lineItem.setUplLineNumber(dto.getUplLineNumber());
+                                                lineItem.setCurrency(dto.getDccCurrency());
+                                                lineItem.setPoId(dto.getPoId());
+                                                lineItem.setUPLACPTRequestValue(dto.getUPLACPTRequestValue());
+                                                lineItem.setpoAcceptanceQty(dto.getpoAcceptanceQty());
+                                                lineItem.setPOLineAcceptanceQty(dto.getPOLineAcceptanceQty());
+                                                lineItem.setPoPendingQuantity(dto.getPoPendingQuantity());
+                                                lineItem.setPoOrderQuantity(dto.getPoOrderQuantity());
+                                                lineItem.setItemPartNumber(dto.getItemPartNumber());
+                                                lineItem.setPoLineDescription(dto.getPoLineDescription());
+                                                lineItem.setUplLineQuantity(dto.getUplLineQuantity());
+                                                lineItem.setPoLineQuantity(dto.getPoLineQuantity());
+                                                lineItem.setUplLineItemCode(dto.getUplLineItemCode());
+                                                lineItem.setUplLineDescription(dto.getUplLineDescription());
+                                                lineItem.setUom(dto.getUnitOfMeasure());
+                                                lineItem.setActiveOrPassive(dto.getActiveOrPassive());
+                                                lineItem.setUplPendingQuantity(dto.getUplPendingQuantity());
+                                                return lineItem;
+                                            })
+                                            .collect(Collectors.toList());
+                                    parentDTO.setLineItems(lineItems);
+                                    return parentDTO;
+                                })
+                                .filter(Objects::nonNull) // Skip any null parents from empty groups
+                                // Null-safe descending sort by recordNo (nulls last)
+                                .sorted(Comparator.comparing(DccPOParentDTO::getRecordNo, Comparator.nullsLast(Comparator.reverseOrder())))
+                                .collect(Collectors.toList()); // Collect Stream to List
+
+                        // Stream each parent JSON object
+                        for (DccPOParentDTO parent : parentDTOs) {
+                            if (parent.getRecordNo() == null) {
+                                logger.warn("Skipping parent with null recordNo in batch page {}", page);
+                                continue;
+                            }
+                            generator.writeObject(parent);
+                        }
+
+                        generator.flush(); // Prompt client download
+                        logger.info("Processed batch page {}: {} parents in {} ms", page, parentDTOs.size(), System.currentTimeMillis() - batchStart);
+                    }
+
+                    generator.writeEndArray();
+                    generator.writeEndObject();
+                    generator.flush();
+                } catch (Exception ex) {
+                    logger.error("Error streaming JSON export for page loop", ex);
+                    throw new DccPOProcessingException("Failed to stream export", ex);
+                }
+            };
+        });
+    }
+
+
+    // Add ObjectMapper to service (or pass from controller if preferred)
+    @Autowired
+    private ObjectMapper objectMapper;
+
 }
