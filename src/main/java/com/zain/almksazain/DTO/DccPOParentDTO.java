@@ -26,6 +26,7 @@ public class DccPOParentDTO {
     private String totalAging;
     private String vendorEmail;
     private String dccCurrency;
+    private Long approvalRecordId;
     private List<DccPOLineItemDTO> lineItems;
 
     // Getters and setters
@@ -36,6 +37,9 @@ public class DccPOParentDTO {
     public void setRecordNo(Long recordNo) {
         this.recordNo = recordNo;
     }
+
+    public Long getApprovalRecordId() { return approvalRecordId; }
+    public void setApprovalRecordId(Long approvalRecordId) { this.approvalRecordId = approvalRecordId; }
 
     public String getDccPoNumber() {
         return dccPoNumber;
