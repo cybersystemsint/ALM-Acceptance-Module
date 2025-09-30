@@ -2,6 +2,8 @@ package com.zain.almksazain.repo;
 
 import com.zain.almksazain.model.DCC;
 import com.zain.almksazain.model.DCCLineItem;
+
+import java.util.Collection;
 import java.util.List;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
@@ -52,7 +54,12 @@ public interface DccLineRepo extends JpaRepository<DCCLineItem, Long> {
             @Param("lineNumber") String lineNumber,
             @Param("uplLineNumber") String upLineNumber);
 
+    List<DCCLineItem> findByDccId(String dccId);
+    List<DCCLineItem> findByDccIdIn(List<String> dccIds);
 //    //NEW CODE 
 //    List<DCCLineItem> findByDcc(DCC dcc);
-
+  List<DCCLineItem> findByDccIdAndDccStatusNotIn(String dccId, List<String> excludedStatuses);
+  
+    List<DCCLineItem> findByDccIdIn(Collection<String> dccIds);
+    
 }
