@@ -115,7 +115,7 @@ public class DccPOApproverService {
                         .filter(a -> {
                             if ("pending".equals(a.getStatus())) {
                                 // Include only if approval status is "request info", exclude other pendings
-                                return "request info".equals(a.getApprovalStatus());
+                                return "request-info".equals(a.getApprovalStatus());
                             }
                             // Include all non-pending statuses
                             return true;
