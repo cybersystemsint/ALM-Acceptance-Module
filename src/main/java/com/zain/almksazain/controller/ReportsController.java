@@ -1,45 +1,44 @@
 package com.zain.almksazain.controller;
 
-import com.zain.almksazain.repo.DccCombinedViewrepo;
-import com.zain.almksazain.repo.poviewrepo;
-import com.zain.almksazain.repo.dccpoviewrepo;
-import com.zain.almksazain.repo.uplrepo;
-import com.zain.almksazain.model.DccPoCombinedView;
-import com.zain.almksazain.model.upldata;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.gson.Gson;
-import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
-import com.google.gson.JsonSyntaxException;
-import com.zain.almzainksa.helper.helper;
-import com.zain.almksazain.repo.tbChargeAccountRepo;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.web.bind.annotation.*;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
+
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import java.text.SimpleDateFormat;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Collections;
-import java.util.Map.Entry;
-import java.util.Set;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.web.bind.annotation.CrossOrigin;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
 
-import static java.util.Map.entry;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.gson.Gson;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import com.google.gson.JsonSyntaxException;
+import com.zain.almksazain.model.DccPoCombinedView;
+import com.zain.almksazain.model.upldata;
+import com.zain.almksazain.repo.DccCombinedViewrepo;
+import com.zain.almksazain.repo.dccpoviewrepo;
+import com.zain.almksazain.repo.poviewrepo;
+import com.zain.almksazain.repo.tbChargeAccountRepo;
+import com.zain.almksazain.repo.uplrepo;
+import com.zain.almzainksa.helper.helper;
 
 @RestController
 public class ReportsController {
@@ -422,7 +421,8 @@ public Map<String, Object> capitalizationReceivingReport(@RequestBody String req
     searchableColumns.put("siteTypeName", "siteType.siteTypeName");
     searchableColumns.put("projectName", "HD.newProjectName");
     searchableColumns.put("newProjectName", "HD.newProjectName");
-    searchableColumns.put("description", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineDescription ELSE HD.poLineDescription END)");
+    // searchableColumns.put("description", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineDescription ELSE HD.poLineDescription END)");
+    searchableColumns.put("description", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.uplLineDescription ELSE HD.poLineDescription END)");
     searchableColumns.put("quantity", "LN2.deliveredQty");
     searchableColumns.put("partNumber", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (CASE WHEN LENGTH(LN2.actualItemCode) > 0 THEN LN2.actualItemCode ELSE upl.uplLineItemCode END) ELSE HD.itemPartNumber END)");
     searchableColumns.put("itemSerializedStatus", "(CASE WHEN HD.serialControl = 'NO CONTROL' THEN 'NO' ELSE 'YES' END)");
