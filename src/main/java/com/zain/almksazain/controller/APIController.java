@@ -1042,7 +1042,7 @@ public class APIController {
         List<String> allowedExtensions = Arrays.asList(".pdf", ".doc", ".csv", ".docx", ".xlsx", ".jpeg", ".msg", ".jpg", ".png", ".xlsm", ".xls", ".zip", ".rar");
 
 //        String uploadDir = "/home/app/logs/ALM/POUPL/";
-        String uploadDir = "/data/app/logs/ALM/POUPL";
+        String uploadDir = "/data/app/logs/ALM/POUPL/";
         List<String> InvalidItems = new ArrayList<>();
 
         long maxFileSize = 100 * 1024 * 1024;
