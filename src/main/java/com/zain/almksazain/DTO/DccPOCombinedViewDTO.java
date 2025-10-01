@@ -60,6 +60,7 @@ public class DccPOCombinedViewDTO {
     private String totalAging;
     private String itemCode;
     private Double poAcceptanceQty;
+    private Long approvalRecordId;   // NEW
 
     // Getters and Setters
     public Long getDccRecordNo() {
@@ -68,6 +69,14 @@ public class DccPOCombinedViewDTO {
 
     public void setDccRecordNo(Long dccRecordNo) {
         this.dccRecordNo = dccRecordNo;
+    }
+
+    public void setApprovalRecordId(Long approvalRecordId) {
+        this.approvalRecordId = approvalRecordId;
+    }
+
+    public Long getApprovalRecordId() {
+        return approvalRecordId;
     }
 
     public String getDccPoNumber() {

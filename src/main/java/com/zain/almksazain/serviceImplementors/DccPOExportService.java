@@ -17,10 +17,8 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.text.SimpleDateFormat;
-import java.time.Duration;
-import java.time.LocalDateTime;
-import java.time.ZoneId;
-import java.time.ZonedDateTime;
+import java.time.*;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Function;
@@ -49,6 +47,9 @@ public class DccPOExportService {
 
     @Autowired
     private TbCategoryApprovalsRepository tbCategoryApprovalsRepository;
+
+    private static final DateTimeFormatter DATE_FORMATTER =
+            DateTimeFormatter.ofPattern("d-MMM-yyyy").withZone(ZoneId.of("Africa/Nairobi"));  // Use your desired zone
 
     @Async("taskExecutor")
     public CompletableFuture<List<DccPOCombinedViewDTO>> getAllDccPOForExportV2(
@@ -246,17 +247,33 @@ public class DccPOExportService {
         dto.setDccProjectName(dcc.getProjectName());
         dto.setDccAcceptanceType(dcc.getAcceptanceType());
         dto.setDccStatus(dcc.getStatus());
-        dto.setDccCreatedDate(dcc.getCreatedDate() != null ? dateFormat.format(dcc.getCreatedDate()) : null);
+//        dto.setDccCreatedDate(dcc.getCreatedDate() != null ? dateFormat.format(dcc.getCreatedDate()) : null);
+        if (dcc.getCreatedDate() != null) {
+            Instant instant = Instant.ofEpochMilli(dcc.getCreatedDate().getTime());
+            dto.setDccCreatedDate(instant.atZone(ZoneId.of("Africa/Nairobi")).format(DATE_FORMATTER));
+        } else {
+            dto.setDccCreatedDate(null);
+        }
         dto.setVendorComment(dcc.getVendorComment());
         dto.setDccId(dcc.getDccId());
         dto.setDccCurrency(dcc.getCurrency());
         dto.setCreatedBy(dcc.getCreatedBy());
         dto.setCreatedByName(dcc.getCreatedBy());
 
+
+//        if (latestApprovalRequest != null && latestApprovalRequest.getApprovedDate() != null) {
+//            Date approvedDate = Date.from(latestApprovalRequest.getApprovedDate().atZone(ZoneId.of("Africa/Nairobi")).toInstant());
+//            dto.setDateApproved(dateFormat.format(approvedDate));
+//        }
+
         if (latestApprovalRequest != null && latestApprovalRequest.getApprovedDate() != null) {
-            Date approvedDate = Date.from(latestApprovalRequest.getApprovedDate().atZone(ZoneId.of("Africa/Nairobi")).toInstant());
-            dto.setDateApproved(dateFormat.format(approvedDate));
+            ZonedDateTime zonedApproved = latestApprovalRequest.getApprovedDate().atZone(ZoneId.of("Africa/Nairobi"));
+            dto.setDateApproved(zonedApproved.format(DATE_FORMATTER));
+        } else {
+            dto.setDateApproved(null);
         }
+
+
     }
 
     private void populateLineItemFields(DccPOCombinedViewDTO dto, DCCLineItem dccLn, SimpleDateFormat dateFormat,
@@ -266,7 +283,14 @@ public class DccPOExportService {
         dto.setLnProductSerialNo(dccLn.getSerialNumber());
         dto.setLnDeliveredQty(dccLn.getDeliveredQty());
         dto.setLnLocationName(dccLn.getLocationName());
-        dto.setLnInserviceDate(dccLn.getDateInService() != null ? dateFormat.format(dccLn.getDateInService()) : null);
+
+//        dto.setLnInserviceDate(dccLn.getDateInService() != null ? dateFormat.format(dccLn.getDateInService()) : null);
+        if (dccLn.getDateInService() != null) {
+            Instant instant = Instant.ofEpochMilli(dccLn.getDateInService().getTime());
+            dto.setLnInserviceDate(instant.atZone(ZoneId.of("Africa/Nairobi")).format(DATE_FORMATTER));
+        } else {
+            dto.setLnInserviceDate(null);
+        }
         dto.setLnUnitPrice(dccLn.getUnitPrice() != null ? dccLn.getUnitPrice() : 0.0);
         dto.setLnScopeOfWork(dccLn.getScopeOfWork());
         dto.setLnRemarks(dccLn.getRemarks());
@@ -388,9 +412,15 @@ public class DccPOExportService {
         if ("request-info".equals(latestApprovalRequest.getStatus())) {
             logger.debug("Approval request recordNo={} has status 'request-info'", latestApprovalRequest.getRecordNo());
 
+//            List<TbCategoryApprovals> filteredApprovals = allRelatedApprovals.stream()
+//                    .filter(a -> "pending".equals(a.getStatus()) && Arrays.asList("pending", "request-info").contains(a.getApprovalStatus()))
+//                    .filter(a -> allRelatedRequests.stream().anyMatch(r -> "request-info".equals(r.getStatus()) && r.getRecordNo().equals(a.getApprovalRecordId())))
+//                    .collect(Collectors.toList());
+
             List<TbCategoryApprovals> filteredApprovals = allRelatedApprovals.stream()
                     .filter(a -> "pending".equals(a.getStatus()) && Arrays.asList("pending", "request-info").contains(a.getApprovalStatus()))
                     .filter(a -> allRelatedRequests.stream().anyMatch(r -> "request-info".equals(r.getStatus()) && r.getRecordNo().equals(a.getApprovalRecordId())))
+                    .sorted(Comparator.comparing(TbCategoryApprovals::getApprovalId).reversed())
                     .collect(Collectors.toList());
 
             dto.setApprovalCount((long) filteredApprovals.size());
@@ -434,9 +464,15 @@ public class DccPOExportService {
 
         // Logic for pending status
         // Filter approvals for pending/readyForApproval
+//        List<TbCategoryApprovals> filteredApprovals = allRelatedApprovals.stream()
+//                .filter(a -> "pending".equals(a.getStatus()) && Arrays.asList("pending", "readyForApproval").contains(a.getApprovalStatus()))
+//                .filter(a -> allRelatedRequests.stream().anyMatch(r -> "pending".equals(r.getStatus()) && r.getRecordNo().equals(a.getApprovalRecordId())))
+//                .collect(Collectors.toList());
+
         List<TbCategoryApprovals> filteredApprovals = allRelatedApprovals.stream()
                 .filter(a -> "pending".equals(a.getStatus()) && Arrays.asList("pending", "readyForApproval").contains(a.getApprovalStatus()))
                 .filter(a -> allRelatedRequests.stream().anyMatch(r -> "pending".equals(r.getStatus()) && r.getRecordNo().equals(a.getApprovalRecordId())))
+                .sorted(Comparator.comparing(TbCategoryApprovals::getApprovalId).reversed())
                 .collect(Collectors.toList());
 
         logger.debug("Processing approval request: recordNo={}, status={}, recordDateTime={}",
