@@ -819,7 +819,7 @@ public class DccPOController {
             // Additional filters for specific fields
             Map<String, String> fieldFilters = new HashMap<>();
 
-            // String filters (exact match - case insensitive)
+            // String filters (exact match - case-insensitive)
             if (filters.containsKey("dccPoNumber") && !filters.get("dccPoNumber").toString().trim().isEmpty()) {
                 fieldFilters.put("dccPoNumber", filters.get("dccPoNumber").toString().trim());
             }
@@ -847,8 +847,22 @@ public class DccPOController {
             if (filters.containsKey("createdByName") && !filters.get("createdByName").toString().trim().isEmpty()) {
                 fieldFilters.put("createdByName", filters.get("createdByName").toString().trim());
             }
+            // ADDED: Support "createdBy" as well
+            if (filters.containsKey("createdBy") && !filters.get("createdBy").toString().trim().isEmpty()) {
+                fieldFilters.put("createdByName", filters.get("createdBy").toString().trim());
+            }
 
             // Integer filters
+
+            // Support "recordNo" (from response) AND "dccRecordNo" (internal)
+            if (filters.containsKey("recordNo") && !filters.get("recordNo").toString().trim().isEmpty()) {
+                try {
+                    fieldFilters.put("dccRecordNo", filters.get("recordNo").toString().trim());
+                } catch (NumberFormatException e) {
+                    logger.warn("Invalid recordNo format: {}", filters.get("recordNo"));
+                }
+            }
+
             if (filters.containsKey("dccRecordNo") && !filters.get("dccRecordNo").toString().trim().isEmpty()) {
                 try {
                     fieldFilters.put("dccRecordNo", filters.get("dccRecordNo").toString().trim());
