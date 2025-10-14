@@ -52,6 +52,7 @@ import com.zain.almksazain.utlities.Httpcall;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -159,8 +160,9 @@ public class APIController {
     private DCCService dccService;
 
     // UNCOMMENT THIS PATH TO CHANGE THE FILE DIRECTORY PATH
-    //    @Value("${alm.uploadpath}")
-    //    private String docsuploadpath;
+//        @Value("${alm.uploadpath}")
+//        private String docsuploadpath;
+
     Httpcall utils = new Httpcall();
 
     HashMap requestMap = new HashMap();
@@ -1041,7 +1043,9 @@ public class APIController {
         String poNumber = firstRecord.getString("poNumber");
         List<String> allowedExtensions = Arrays.asList(".pdf", ".doc", ".csv", ".docx", ".xlsx", ".jpeg", ".msg", ".jpg", ".png", ".xlsm", ".xls", ".zip", ".rar");
 
-        String uploadDir = "/home/app/logs/ALM/POUPL/";
+//        String uploadDir = "/home/app/logs/ALM/POUPL/";
+        String uploadDir = "/data/app/logs/ALM/POUPL/";
+//        String uploadDir = docsuploadpath;
         List<String> InvalidItems = new ArrayList<>();
 
         long maxFileSize = 100 * 1024 * 1024;
