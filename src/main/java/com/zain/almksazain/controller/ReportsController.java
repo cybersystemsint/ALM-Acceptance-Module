@@ -13,18 +13,24 @@ import com.google.gson.JsonParser;
 import com.google.gson.JsonSyntaxException;
 import com.zain.almzainksa.helper.helper;
 import com.zain.almksazain.repo.tbChargeAccountRepo;
+import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.xssf.streaming.SXSSFWorkbook;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.*;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
+
+import java.io.IOException;
+import java.sql.Timestamp;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.springframework.transaction.annotation.Transactional;
+
+import javax.servlet.http.HttpServletResponse;
 
 @RestController
 public class ReportsController {
@@ -1548,6 +1554,158 @@ public class ReportsController {
             helper.logToFile(genHeader("N/A", "GetUPLData", "GetUPLData") + "GetUPLData error " + err, "INFO");
         }
         return null;
+    }
+
+    @GetMapping("/reports/itemcode-substitutes-export")
+    @Transactional(readOnly = true)
+    public void exportItemCodeSubstitutes(
+            @RequestParam(value = "recordNo", required = false, defaultValue = "0") Integer recordNo,
+            @RequestParam(value = "columnName", required = false, defaultValue = "") String columnName,
+            @RequestParam(value = "searchQuery", required = false, defaultValue = "") String searchQuery,
+            HttpServletResponse response) throws IOException {
+
+        loggger.info("Request to export item code substitutes (filters: recordNo={}, columnName={}, searchQuery={})",
+                recordNo, columnName, searchQuery);
+
+        // Configure response
+        response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        response.setHeader("Content-Disposition", "attachment; filename=itemcode_substitutes.xlsx");
+
+        try (SXSSFWorkbook workbook = new SXSSFWorkbook(100)) {
+            Sheet sheet = workbook.createSheet("Item Code Substitutes");
+
+            // Create date cell style
+            CellStyle dateCellStyle = workbook.createCellStyle();
+            CreationHelper createHelper = workbook.getCreationHelper();
+            dateCellStyle.setDataFormat(createHelper.createDataFormat().getFormat("m/d/yyyy h:mm"));
+
+            // Create header row
+            Row headerRow = sheet.createRow(0);
+            String[] headers = {
+                    "Record No", "Item Code", "Related Item Code", "Reciprocal Flag",
+                    "Created By", "Created Date", "Updated By", "Updated Date"
+            };
+
+            for (int i = 0; i < headers.length; i++) {
+                headerRow.createCell(i).setCellValue(headers[i]);
+            }
+
+            // Build SQL query with filters
+            List<Object> params = new ArrayList<>();
+            String whereClause = " WHERE 1=1";
+
+            if (recordNo != null && recordNo != 0) {
+                whereClause += " AND recordNo = ?";
+                params.add(recordNo);
+            }
+
+            if (columnName != null && !columnName.isEmpty() &&
+                    searchQuery != null && !searchQuery.isEmpty()) {
+                whereClause += " AND " + columnName + " LIKE ?";
+                params.add("%" + searchQuery + "%");
+            }
+
+            // Query to get all data (no pagination for export)
+            String sql = "SELECT recordNo, recordDateTime, itemCode, relatedItemCode, reciprocalFlag, " +
+                    "createdBy, createdDatetime, updatedBy, updatedDateTime " +
+                    "FROM tb_ItemCodeSubstitute" + whereClause +
+                    " ORDER BY recordNo ASC";
+
+            List<Map<String, Object>> items = jdbcTemplate.queryForList(sql, params.toArray());
+
+            // Write data rows
+            int rowNum = 1;
+            for (Map<String, Object> item : items) {
+                Row row = sheet.createRow(rowNum++);
+
+                // Record No
+                row.createCell(0).setCellValue(
+                        item.get("recordNo") != null ? ((Number) item.get("recordNo")).intValue() : 0
+                );
+
+                // Item Code
+                row.createCell(1).setCellValue(
+                        item.get("itemCode") != null ? item.get("itemCode").toString() : ""
+                );
+
+                // Related Item Code
+                row.createCell(2).setCellValue(
+                        item.get("relatedItemCode") != null ? item.get("relatedItemCode").toString() : ""
+                );
+
+                // Reciprocal Flag
+                row.createCell(3).setCellValue(
+                        item.get("reciprocalFlag") != null ? item.get("reciprocalFlag").toString() : ""
+                );
+
+                // Created By
+                row.createCell(4).setCellValue(
+                        item.get("createdBy") != null ? item.get("createdBy").toString() : ""
+                );
+
+                // Created Date
+                createDateCell(row, 5, item.get("createdDatetime"), dateCellStyle);
+
+                // Updated By
+                row.createCell(6).setCellValue(
+                        item.get("updatedBy") != null ? item.get("updatedBy").toString() : ""
+                );
+
+                // Updated Date
+                createDateCell(row, 7, item.get("updatedDateTime"), dateCellStyle);
+            }
+
+            workbook.write(response.getOutputStream());
+            loggger.info("Item code substitutes exported successfully with {} rows", rowNum - 1);
+
+        } catch (Exception e) {
+            loggger.error("Error exporting item code substitutes", e);
+            response.sendError(HttpServletResponse.SC_INTERNAL_SERVER_ERROR,
+                    "Error exporting item code substitutes: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Helper method to create date cells with proper formatting
+     */
+    private void createDateCell(Row row, int columnIndex, Object dateValue, CellStyle dateCellStyle) {
+        if (dateValue != null) {
+            Cell dateCell = row.createCell(columnIndex);
+
+            try {
+                // Handle different date formats from database
+                Date date = null;
+
+                if (dateValue instanceof Timestamp) {
+                    date = new Date(((Timestamp) dateValue).getTime());
+                } else if (dateValue instanceof java.sql.Date) {
+                    date = new Date(((java.sql.Date) dateValue).getTime());
+                } else if (dateValue instanceof LocalDateTime) {
+                    date = Date.from(((LocalDateTime) dateValue)
+                            .atZone(ZoneId.systemDefault()).toInstant());
+                } else if (dateValue instanceof String) {
+                    // Try parsing ISO 8601 format from JSON
+                    String dateStr = dateValue.toString();
+                    if (dateStr.contains("T")) {
+                        LocalDateTime ldt = LocalDateTime.parse(
+                                dateStr.substring(0, dateStr.indexOf(".")));
+                        date = Date.from(ldt.atZone(ZoneId.systemDefault()).toInstant());
+                    }
+                }
+
+                if (date != null) {
+                    dateCell.setCellValue(date);
+                    dateCell.setCellStyle(dateCellStyle);
+                } else {
+                    dateCell.setCellValue("");
+                }
+            } catch (Exception e) {
+                dateCell.setCellValue("");
+                loggger.warn("Failed to parse date: {}", dateValue);
+            }
+        } else {
+            row.createCell(columnIndex).setCellValue("");
+        }
     }
 
     @GetMapping(value = "/reports/getallupls")
