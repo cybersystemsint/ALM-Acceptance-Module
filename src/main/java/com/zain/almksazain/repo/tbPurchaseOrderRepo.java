@@ -5,6 +5,8 @@
 package com.zain.almksazain.repo;
 
 import com.zain.almksazain.model.tbPurchaseOrder;
+
+import java.util.Collection;
 import java.util.List;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
@@ -30,5 +32,9 @@ public interface tbPurchaseOrderRepo extends JpaRepository<tbPurchaseOrder, Long
 
     @Query(value = "SELECT * FROM tb_PurchaseOrder d WHERE d.poNumber = :poNumber AND d.lineNumber = :lineNumber AND d.releaseNum = :releaseNum  ORDER BY d.recordNo DESC LIMIT 1", nativeQuery = true)
     tbPurchaseOrder findTopByPoNumberAndLineNumberAndReleaseNum(@Param("poNumber") String poNumber, @Param("lineNumber") String lineNumber, @Param("releaseNum") String releaseNum);
+       @Query("SELECT p FROM tbPurchaseOrder p WHERE p.poNumber IN :poNumbers")
+    List<tbPurchaseOrder> findByPoNumberIn(@Param("poNumbers") List<String> poNumbers);
+       List<tbPurchaseOrder> findByPoNumberIn(Collection<String> poNumbers);
 
+    tbPurchaseOrder findByPoNumberAndLineNumber(String poNumber, Integer lineNumber);
 }
