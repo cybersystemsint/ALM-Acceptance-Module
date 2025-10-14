@@ -1,14 +1,11 @@
 package com.zain.almksazain.controller;
 
-import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
+import java.util.stream.Collectors;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.data.domain.Page;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -16,14 +13,9 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
-import com.fasterxml.jackson.core.JsonGenerator;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import com.zain.almksazain.dto.AgingReportDTO;
-import com.zain.almksazain.dto.AgingReportItemsDTO;
 import com.zain.almksazain.dto.AgingReportPagedResponseDTO;
 import com.zain.almksazain.dto.AgingReportRequestDTO;
 import com.zain.almksazain.services.AgingReportService;
@@ -37,20 +29,12 @@ public class AgingReportController {
     private AgingReportService agingReportService;
     @Autowired
     private DccPoCombinedService dccPoCombinedService;
-
-     @GetMapping(value = "/agingReport")
-
-    public Page<AgingReportDTO> getAgingReport(
-            @RequestParam(defaultValue = "0") int page,
-            @RequestParam(defaultValue = "20") int size
-    ) {
-        return agingReportService.getAgingReport(page, size);
-    }
+    
     @PostMapping(value = "/aging-report")
-@CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
-public AgingReportPagedResponseDTO getGroupedAgingReport(@RequestBody AgingReportRequestDTO request) {
-    return agingReportService.getGroupedAgingReport(request);
-}
+    @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
+    public AgingReportPagedResponseDTO getGroupedAgingReport(@RequestBody AgingReportRequestDTO request) {
+        return agingReportService.getGroupedAgingReport(request);
+    }
 
     @PostMapping(value = "/reports/v2/agingReport", produces = "application/json")
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
@@ -61,7 +45,7 @@ public AgingReportPagedResponseDTO getGroupedAgingReport(@RequestBody AgingRepor
         String columnName = obj.has("columnName") ? obj.get("columnName").getAsString() : "";
         String searchQuery = obj.has("searchQuery") ? obj.get("searchQuery").getAsString() : "";
         int page = obj.has("page") ? obj.get("page").getAsInt() : 1;
-        int size = obj.has("size") ? obj.get("size").getAsInt() : 20000;
+        int size = obj.has("size") ? obj.get("size").getAsInt() : 100;
 
         logger.debug("Parsed params - supplierId: {}, columnName: {}, searchQuery: {}, page: {}, size: {}", 
             supplierId, columnName, searchQuery, page, size);
@@ -74,5 +58,29 @@ public AgingReportPagedResponseDTO getGroupedAgingReport(@RequestBody AgingRepor
 
         return response;
     }
+
+
+    
+    // New multiple filter endpoint
+@PostMapping("/reports/v2/agingReport/filter")
+public ResponseEntity<Map<String, Object>> getAgingReportWithMultipleFilters(
+        @RequestParam(required = false) String supplierId,
+        @RequestBody Map<String, String> filters, 
+        @RequestParam(defaultValue = "1") int page,
+        @RequestParam(defaultValue = "100") int size) {
+    
+    
+    // Clean and validate filters
+    Map<String, String> cleanedFilters = filters.entrySet().stream()
+            .filter(entry -> entry.getValue() != null && !entry.getValue().trim().isEmpty())
+            .collect(Collectors.toMap(
+                Map.Entry::getKey,
+                entry -> entry.getValue().trim()
+            ));
+    
+    Map<String, Object> result = dccPoCombinedService.getAgingReportWithMultipleFilters(
+        supplierId, cleanedFilters, page, size);
+    return ResponseEntity.ok(result);
+}
 
 }

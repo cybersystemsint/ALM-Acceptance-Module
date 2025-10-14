@@ -1,28 +1,47 @@
 package com.zain.almksazain.services;
 
+import java.math.BigDecimal;
+import java.text.SimpleDateFormat;
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
-import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 
-import javax.persistence.criteria.*;
-
-import java.math.BigDecimal;
-import java.text.ParseException;
-import java.text.SimpleDateFormat;
-import java.time.Duration;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.ZoneId;
-import java.util.*;
-import java.util.stream.Collectors;
-
-import com.zain.almksazain.model.*;
-import com.zain.almksazain.repo.*;
+import com.zain.almksazain.model.DCC;
+import com.zain.almksazain.model.DCCLineItem;
+import com.zain.almksazain.model.User;
+import com.zain.almksazain.model.departmentsdata;
+import com.zain.almksazain.model.tbCategoryApprovalRequests;
+import com.zain.almksazain.model.tbCategoryApprovals;
+import com.zain.almksazain.model.tbPurchaseOrder;
+import com.zain.almksazain.model.tb_PurchaseOrderUPL;
+import com.zain.almksazain.repo.DCCRepository;
+import com.zain.almksazain.repo.DccLineRepo;
+import com.zain.almksazain.repo.TbCategoryApprovalRequestsRepository;
+import com.zain.almksazain.repo.TbCategoryApprovalsRepository;
+import com.zain.almksazain.repo.UserRepository;
+import com.zain.almksazain.repo.deptsrepo;
+import com.zain.almksazain.repo.tbPurchaseOrderRepo;
+import com.zain.almksazain.repo.tbPurchaseOrderUPLRepo;
 
 @Service
 public class DccPoCombinedService {
@@ -38,396 +57,410 @@ public class DccPoCombinedService {
     @Autowired private UserRepository userAccountRepo;
     @Autowired private deptsrepo tbDepartmentRepo;
 
-    private static final Map<String, ColumnInfo> COLUMN_MAPPINGS = new HashMap<>();
+   private static final Map<String, ColumnInfo> COLUMN_MAPPINGS = new HashMap<>();
     private static final List<String> CALCULATED_COLUMNS = Arrays.asList(
             "uplacptRequestValue", "userAging", "totalAging", "userAgingInDays",
-            "totalAgingInDays", "Request Amount (SAR)", "approvalCount", "approverComment", "pendingApprovers"
+            "totalAgingInDays", "requestAmountSAR", "approvalCount", "approverComment", "pendingApprovers"
     );
 
     static {
-        // DCC Columns
+        // DCC Columns - FIXED: Use actual keys from buildGroupedRow(), not database field names
         COLUMN_MAPPINGS.put("recordNo", new ColumnInfo("recordNo", "numeric", EntityType.DCC));
         COLUMN_MAPPINGS.put("vendorComment", new ColumnInfo("vendorComment", "string", EntityType.DCC));
         COLUMN_MAPPINGS.put("vendorName", new ColumnInfo("vendorName", "string", EntityType.DCC));
         COLUMN_MAPPINGS.put("vendorEmail", new ColumnInfo("vendorEmail", "string", EntityType.DCC));
         COLUMN_MAPPINGS.put("dccId", new ColumnInfo("dccId", "string", EntityType.DCC));
-        COLUMN_MAPPINGS.put("dccCreatedDate", new ColumnInfo("createdDate", "date", EntityType.DCC));
+        COLUMN_MAPPINGS.put("dccCreatedDate", new ColumnInfo("dccCreatedDate", "date", EntityType.DCC)); // FIXED
         COLUMN_MAPPINGS.put("poNumber", new ColumnInfo("poNumber", "string", EntityType.DCC));
-        COLUMN_MAPPINGS.put("dccAcceptanceType", new ColumnInfo("acceptanceType", "string", EntityType.DCC));
-        COLUMN_MAPPINGS.put("dccStatus", new ColumnInfo("status", "string", EntityType.DCC));
+        COLUMN_MAPPINGS.put("dccAcceptanceType", new ColumnInfo("dccAcceptanceType", "string", EntityType.DCC)); // FIXED
+        COLUMN_MAPPINGS.put("dccStatus", new ColumnInfo("dccStatus", "string", EntityType.DCC)); // FIXED
         COLUMN_MAPPINGS.put("createdBy", new ColumnInfo("createdBy", "string", EntityType.DCC));
-        COLUMN_MAPPINGS.put("createdByName", new ColumnInfo("createdBy", "string", EntityType.DCC));
+        COLUMN_MAPPINGS.put("createdByName", new ColumnInfo("createdByName", "string", EntityType.DCC)); // FIXED
 
         // PO Columns
-        COLUMN_MAPPINGS.put("projectName", new ColumnInfo("newProjectName", "string", EntityType.PURCHASE_ORDER));
+        COLUMN_MAPPINGS.put("projectName", new ColumnInfo("projectName", "string", EntityType.PURCHASE_ORDER));
         COLUMN_MAPPINGS.put("newProjectName", new ColumnInfo("newProjectName", "string", EntityType.PURCHASE_ORDER));
-        COLUMN_MAPPINGS.put("supplierId", new ColumnInfo("vendorNumber", "string", EntityType.PURCHASE_ORDER));
-        COLUMN_MAPPINGS.put("poId", new ColumnInfo("poNumber", "string", EntityType.PURCHASE_ORDER));
+        COLUMN_MAPPINGS.put("supplierId", new ColumnInfo("supplierId", "string", EntityType.PURCHASE_ORDER));
+        COLUMN_MAPPINGS.put("poId", new ColumnInfo("poId", "string", EntityType.PURCHASE_ORDER));
 
-        // Line Item Columns
-        COLUMN_MAPPINGS.put("lnLocationName", new ColumnInfo("locationName", "string", EntityType.LINE_ITEM));
-        COLUMN_MAPPINGS.put("lnScopeOfWork", new ColumnInfo("scopeOfWork", "string", EntityType.LINE_ITEM));
-        COLUMN_MAPPINGS.put("lnInserviceDate", new ColumnInfo("dateInService", "date", EntityType.LINE_ITEM));
+        // Line Item Columns - FIXED: Use actual keys from buildGroupedRow()
+        COLUMN_MAPPINGS.put("lnLocationName", new ColumnInfo("lnLocationName", "string", EntityType.LINE_ITEM));
+        COLUMN_MAPPINGS.put("lnScopeOfWork", new ColumnInfo("lnScopeOfWork", "string", EntityType.LINE_ITEM));
+        COLUMN_MAPPINGS.put("lnInserviceDate", new ColumnInfo("lnInserviceDate", "date", EntityType.LINE_ITEM)); // FIXED
 
-        // Approval Request Columns
-        COLUMN_MAPPINGS.put("dateApproved", new ColumnInfo("approvedDate", "date", EntityType.APPROVAL_REQUEST));
+        // Approval Request Columns - FIXED
+        COLUMN_MAPPINGS.put("dateApproved", new ColumnInfo("dateApproved", "date", EntityType.APPROVAL_REQUEST)); // FIXED
+
+        // Calculated numeric columns
+        COLUMN_MAPPINGS.put("requestAmountSAR", new ColumnInfo("requestAmountSAR", "numeric", EntityType.DCC));
     }
 
-  public Map<String, Object> getAgingReport(String supplierId, String columnName, String searchQuery, int page, int size) {
+    public Map<String, Object> getAgingReport(String supplierId, String columnName, String searchQuery, int page, int size) {
         page = Math.max(page, 1);
         size = Math.max(size, 1);
 
-        Pageable pageable = PageRequest.of(page - 1, size, Sort.by(Sort.Direction.DESC, "recordNo"));
+        boolean hasFilter = columnName != null && !columnName.trim().isEmpty() && searchQuery != null && !searchQuery.trim().isEmpty();
+
         Page<DCC> pagedDcc;
-
-        // If supplierId is specified, use repo method directly
-        if (supplierId != null && !"0".equals(supplierId)) {
-            // You must implement this method in your DCCRepository
-            pagedDcc = dccRepository.findAllBySupplierId(supplierId, pageable);
+        List<DCC> dccList;
+        if (hasFilter) {
+            Pageable unpaged = Pageable.unpaged();
+            pagedDcc = (supplierId != null && !"0".equals(supplierId))
+                    ? dccRepository.findAllBySupplierId(supplierId, unpaged)
+                    : dccRepository.findAll(unpaged);
+            dccList = pagedDcc.getContent();
         } else {
-            pagedDcc = dccRepository.findAll(pageable);
+            Pageable pageable = PageRequest.of(page - 1, size, Sort.by(Sort.Direction.DESC, "recordNo"));
+            pagedDcc = (supplierId != null && !"0".equals(supplierId))
+                    ? dccRepository.findAllBySupplierId(supplierId, pageable)
+                    : dccRepository.findAll(pageable);
+            dccList = pagedDcc.getContent();
         }
 
-        List<DCC> dccList = pagedDcc.getContent();
-        Set<String> poNumbers = dccList.stream().map(DCC::getPoNumber).collect(Collectors.toSet());
-        Set<String> dccIds = dccList.stream().map(dcc -> String.valueOf(dcc.getRecordNo())).collect(Collectors.toSet());
+        Map<String, Object> preloaded = preloadRelatedData(dccList);
 
-        // Fetch related POs in one call
-       Map<String, tbPurchaseOrder> poMap = purchaseOrderRepository.findByPoNumberIn(poNumbers)
-    .stream()
-    .collect(Collectors.toMap(
-        tbPurchaseOrder::getPoNumber,
-        po -> po,
-        (existing, replacement) -> existing 
-    ));
-        // Fetch related line items in one call
-    // Fetch related line items in one call
-Map<String, List<DCCLineItem>> lineItemsMap = dccLineRepo.findByDccIdIn(dccIds)
-    .stream().collect(Collectors.groupingBy(DCCLineItem::getDccId));
+        @SuppressWarnings("unchecked")
+        Map<String, tbPurchaseOrder> poMap = (Map<String, tbPurchaseOrder>) preloaded.get("poMapByPoNumber");
+        @SuppressWarnings("unchecked")
+        Map<String, List<DCCLineItem>> lineItemsMap = (Map<String, List<DCCLineItem>>) preloaded.get("lineItemsMap");
+        @SuppressWarnings("unchecked")
+        Map<Integer, tbCategoryApprovalRequests> approvalRequestMap = (Map<Integer, tbCategoryApprovalRequests>) preloaded.get("approvalRequestMap");
+        @SuppressWarnings("unchecked")
+        Map<Integer, List<tbCategoryApprovals>> approvalsMap = (Map<Integer, List<tbCategoryApprovals>>) preloaded.get("approvalsMap");
+        @SuppressWarnings("unchecked")
+        Map<String, User> userMap = (Map<String, User>) preloaded.get("userMap");
+        @SuppressWarnings("unchecked")
+        Map<String, List<tb_PurchaseOrderUPL>> uplMap = (Map<String, List<tb_PurchaseOrderUPL>>) preloaded.get("uplMap");
+        @SuppressWarnings("unchecked")
+        Map<String, tbPurchaseOrder> poByNumberLine = (Map<String, tbPurchaseOrder>) preloaded.get("poByNumberLine");
+        @SuppressWarnings("unchecked")
+        Map<Long, departmentsdata> depMap = (Map<Long, departmentsdata>) preloaded.get("departmentsMap");
 
-// Batch-fetch all tb_PurchaseOrderUPL records
-Set<String> poIds = lineItemsMap.values().stream()
-    .flatMap(List::stream)
-    .map(DCCLineItem::getPoId)
-    .filter(Objects::nonNull)
-    .collect(Collectors.toSet());
-Set<String> lineNumbers = lineItemsMap.values().stream()
-    .flatMap(List::stream)
-    .map(DCCLineItem::getLineNumber)
-    .filter(Objects::nonNull)
-    .collect(Collectors.toSet());
-Set<String> uplLineNumbers = lineItemsMap.values().stream()
-    .flatMap(List::stream)
-    .map(DCCLineItem::getUplLineNumber)
-    .filter(Objects::nonNull)
-    .collect(Collectors.toSet());
-Map<String, List<tb_PurchaseOrderUPL>> uplMap = tbPurchaseOrderUPLRepo
-    .findByPoNumberInAndPoLineNumberInAndUplLineIn(poIds, lineNumbers, uplLineNumbers)
-    .stream()
-    .collect(Collectors.groupingBy(upl -> upl.getPoNumber() + "-" + upl.getPoLineNumber() + "-" + upl.getUplLine()));
-        // Fetch approval requests
-        List<Integer> dccIdInts = dccIds.stream().map(Integer::parseInt).collect(Collectors.toList());
-        Map<Integer, tbCategoryApprovalRequests> approvalRequestMap = tbCategoryApprovalRequestsRepo
-            .findByAcceptanceRequestRecordNoInOrderByRecordDateTimeDesc(dccIdInts)
-            .stream().collect(Collectors.toMap(tbCategoryApprovalRequests::getAcceptanceRequestRecordNo, req -> req, (a, b) -> a));
-
-        // Fetch approvals
-        Set<Integer> approvalRecordNos = approvalRequestMap.values().stream()
-            .map(tbCategoryApprovalRequests::getRecordNo).collect(Collectors.toSet());
-        Map<Integer, List<tbCategoryApprovals>> approvalsMap = tbCategoryApprovalsRepo.findByApprovalRecordIdIn(approvalRecordNos)
-            .stream().collect(Collectors.groupingBy(tbCategoryApprovals::getApprovalRecordId));
-
-        // Fetch user info
-        Set<String> usernames = new HashSet<>();
-        dccList.forEach(dcc -> usernames.add(dcc.getCreatedBy()));
-        approvalsMap.values().forEach(approvals -> approvals.forEach(a -> {
-            if (a.getApproverName() != null) usernames.add(a.getApproverName());
-        }));
-        Map<String, User> userMap = userAccountRepo.findByUsernameIn(usernames)
-            .stream().collect(Collectors.toMap(User::getUsername, u -> u));
-
-        // Build grouped results, filtering if necessary
         List<Map<String, Object>> groupedResults = dccList.stream()
-            .map(dcc -> buildGroupedRow(dcc, poMap, lineItemsMap, approvalRequestMap, approvalsMap, userMap))
-            .collect(Collectors.toList());
-
-        // If filtering calculated columns
-        if (columnName != null && !columnName.isEmpty() && searchQuery != null && !searchQuery.isEmpty()
-            && Arrays.asList("uplacptRequestValue", "userAging", "totalAging", "userAgingInDays", "totalAgingInDays", "Request Amount (SAR)", "approvalCount", "approverComment", "pendingApprovers").contains(columnName)) {
-            String searchPattern = searchQuery.toLowerCase();
-            groupedResults = groupedResults.stream()
-                .filter(row -> {
-                    Object value = row.get(columnName);
-                    return value != null && String.valueOf(value).toLowerCase().contains(searchPattern);
-                })
+                .map(dcc -> buildGroupedRow(dcc, poMap, lineItemsMap, approvalRequestMap, approvalsMap, userMap, uplMap, poByNumberLine, depMap))
                 .collect(Collectors.toList());
+
+        if (hasFilter) {
+            final String rawSearch = searchQuery.trim();
+            final String searchPattern = rawSearch.toLowerCase();
+
+            final ColumnInfo mappingLocal = COLUMN_MAPPINGS.get(columnName);
+            final String targetKey = (mappingLocal != null && mappingLocal.getFieldName() != null && !mappingLocal.getFieldName().trim().isEmpty())
+                    ? mappingLocal.getFieldName()
+                    : columnName;
+
+            // Debug logging (remove in production)
+            System.out.println("Filtering: column='" + columnName + "', targetKey='" + targetKey + "', search='" + rawSearch + "'");
+
+            List<Map<String, Object>> filtered = groupedResults.stream()
+                    .filter(row -> {
+                        Object value = row.get(targetKey);
+                        if (value == null) {
+                            return false;
+                        }
+
+                        // Exact match columns (dccId, dccStatus, dccAcceptanceType)
+                        if (isExactMatchColumn(columnName)) {
+                            String valueStr = value.toString().trim();
+                            boolean matches = valueStr.equalsIgnoreCase(rawSearch);
+                            // Debug for exact match
+                            System.out.println("Exact match - " + columnName + ": '" + valueStr + "' vs '" + rawSearch + "' = " + matches);
+                            return matches;
+                        }
+
+                        // Numeric columns
+                        if (isNumericColumn(columnName)) {
+                            try {
+                                double searchNum = Double.parseDouble(rawSearch);
+                                if (value instanceof Number) {
+                                    return Math.abs(((Number) value).doubleValue() - searchNum) < 0.001;
+                                } else {
+                                    double valueNum = Double.parseDouble(value.toString().trim());
+                                    return Math.abs(valueNum - searchNum) < 0.001;
+                                }
+                            } catch (NumberFormatException nfe) {
+                                return false;
+                            }
+                        }
+
+                        // Date columns - exact match
+                        if (isDateColumn(columnName, mappingLocal)) {
+                            String formattedValue = formatValueForDateComparison(value);
+                            String formattedSearch = formatSearchForDateComparison(rawSearch);
+                            boolean matches = formattedValue != null && formattedValue.equals(formattedSearch);
+                            // Debug for dates
+                            System.out.println("Date match - " + columnName + ": '" + formattedValue + "' vs '" + formattedSearch + "' = " + matches);
+                            return matches;
+                        }
+
+                        // Default: case-insensitive contains for other strings (lnScopeOfWork, lnLocationName)
+                        String valueStr = value.toString().toLowerCase().trim();
+                        return valueStr.contains(searchPattern);
+                    })
+                    .collect(Collectors.toList());
+
+            int totalRecords = filtered.size();
+            int totalPages = totalRecords == 0 ? 0 : (int) Math.ceil((double) totalRecords / size);
+            int fromIndex = Math.max(0, (page - 1) * size);
+            int toIndex = Math.min(fromIndex + size, totalRecords);
+            List<Map<String, Object>> pageData = fromIndex < toIndex ? filtered.subList(fromIndex, toIndex) : Collections.emptyList();
+
+            return buildResponseFromList(pageData, page, size, totalRecords, totalPages);
         }
 
-        // Build response
+        // no filter: return DB pagination
+        return buildResponse(pagedDcc, groupedResults, page, size);
+    }
+
+    // Helper methods for filtering
+    private boolean isExactMatchColumn(String columnName) {
+        if (columnName == null) return false;
+        String lowerColumn = columnName.toLowerCase().trim();
+        return Arrays.asList("dccid", "dccstatus", "dccacceptancetype").contains(lowerColumn);
+    }
+
+    private boolean isNumericColumn(String columnName) {
+        if (columnName == null) return false;
+        String lowerColumn = columnName.toLowerCase().trim();
+        return Arrays.asList(
+                "recordno", "approvalcount", "useragingindays", 
+                "totalagingindays", "requestamountsar"
+        ).contains(lowerColumn);
+    }
+
+    private boolean isDateColumn(String columnName, ColumnInfo mapping) {
+        if (columnName == null) return false;
+        String lowerColumn = columnName.toLowerCase().trim();
+        return Arrays.asList("dcccreateddate", "dateapproved", "lninservicedate").contains(lowerColumn) ||
+                (mapping != null && "date".equalsIgnoreCase(mapping.getType()));
+    }
+
+    private String formatValueForDateComparison(Object value) {
+        if (value == null) return null;
+        String strValue = value.toString().trim();
+        
+        // Since dates are already formatted strings like "13-Oct-2025", return as-is
+        if (value instanceof String || isValidDateFormat(strValue)) {
+            return strValue;
+        }
+        
+        if (value instanceof Date) {
+            return formatDate((Date) value);
+        }
+        
+        return strValue;
+    }
+    
+
+    private String formatSearchForDateComparison(String searchQuery) {
+        if (searchQuery == null || searchQuery.trim().isEmpty()) return null;
+        
+        String trimmedQuery = searchQuery.trim();
+        
+        // If already in correct format, return as-is
+        if (isValidDateFormat(trimmedQuery)) {
+            return trimmedQuery;
+        }
+        
+        // Try to parse and reformat
+        try {
+            SimpleDateFormat sdf = new SimpleDateFormat(DATE_FORMAT);
+            sdf.setLenient(false);
+            Date parsedDate = sdf.parse(trimmedQuery);
+            return sdf.format(parsedDate);
+        } catch (Exception e) {
+            // Return exact string for direct matching
+            return trimmedQuery;
+        }
+    }
+
+    private boolean isValidDateFormat(String dateStr) {
+        if (dateStr == null || dateStr.trim().isEmpty()) return false;
+        try {
+            SimpleDateFormat sdf = new SimpleDateFormat(DATE_FORMAT);
+            sdf.setLenient(false);
+            Date parsed = sdf.parse(dateStr.trim());
+            return sdf.format(parsed).equals(dateStr.trim());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private Map<String, Object> buildResponseFromList(List<Map<String, Object>> pageData, int page, int size, int totalRecords, int totalPages) {
         Map<String, Object> response = new HashMap<>();
         response.put("currentPage", page);
         response.put("pageSize", size);
-        response.put("totalRecords", pagedDcc.getTotalElements());
-        response.put("totalPages", pagedDcc.getTotalPages());
-        response.put("data", groupedResults);
+        response.put("totalRecords", totalRecords);
+        response.put("totalPages", totalPages);
+        response.put("data", pageData);
         return response;
-    }
-    private Specification<DCC> buildSpecification(String supplierId, String columnName, String searchQuery) {
-        Specification<DCC> spec = Specification.where(null);
+    }// helper used when filtering in-memory
 
-        if (supplierId != null && !"0".equals(supplierId)) {
-            spec = spec.and((root, query, cb) -> {
-                Subquery<String> poSub = query.subquery(String.class);
-                Root<tbPurchaseOrder > poRoot = poSub.from(tbPurchaseOrder .class);
-                poSub.select(poRoot.get("poNumber")).where(cb.equal(poRoot.get("vendorNumber"), supplierId));
-                return root.get("poNumber").in(poSub);
-            });
-        }
 
-        if (columnName != null && !columnName.isEmpty() && searchQuery != null && !searchQuery.isEmpty()
-                && !CALCULATED_COLUMNS.contains(columnName) && COLUMN_MAPPINGS.containsKey(columnName)) {
-            spec = spec.and((root, query, cb) -> {
-                query.distinct(true);
-                ColumnInfo columnInfo = COLUMN_MAPPINGS.get(columnName);
-                try {
-                    switch (columnInfo.getEntityType()) {
-                        case DCC:
-                            return buildDccPredicate(root, cb, columnInfo, searchQuery);
-                        case PURCHASE_ORDER:
-                            return buildPoPredicate(root, query, cb, columnInfo, searchQuery);
-                        case LINE_ITEM:
-                            return buildLineItemPredicate(root, cb, columnInfo, searchQuery);
-                        case APPROVAL_REQUEST:
-                            return buildApprovalRequestPredicate(root, query, cb, columnInfo, searchQuery);
-                        default:
-                            return null;
-                    }
-                } catch (ParseException | NumberFormatException e) {
-                    return null;
-                }
-            });
-        }
-        return spec;
-    }
 
-    private Predicate buildDccPredicate(Root<DCC> root, CriteriaBuilder cb, ColumnInfo columnInfo, String searchQuery) throws ParseException {
-        String fieldName = columnInfo.getFieldName();
-        switch (columnInfo.getType()) {
-            case "string":
-                return cb.like(cb.lower(root.get(fieldName)), "%" + searchQuery.toLowerCase() + "%");
-            case "numeric":
-                return cb.equal(root.get(fieldName), Long.parseLong(searchQuery));
-            case "date":
-                SimpleDateFormat sdf = new SimpleDateFormat(DATE_FORMAT);
-                return cb.equal(root.get(fieldName), sdf.parse(searchQuery));
-            default:
-                return null;
-        }
-    }
 
-    private Predicate buildPoPredicate(Root<DCC> root, CriteriaQuery<?> query, CriteriaBuilder cb, ColumnInfo columnInfo, String searchQuery) throws NumberFormatException {
-        Subquery<String> poSub = query.subquery(String.class);
-        Root<tbPurchaseOrder> poRoot = poSub.from(tbPurchaseOrder .class);
-        poSub.select(poRoot.get("poNumber"));
-        String fieldName = columnInfo.getFieldName();
-        if ("string".equals(columnInfo.getType())) {
-            poSub.where(cb.like(cb.lower(poRoot.get(fieldName)), "%" + searchQuery.toLowerCase() + "%"));
-        } else if ("numeric".equals(columnInfo.getType())) {
-            poSub.where(cb.equal(poRoot.get(fieldName), Long.parseLong(searchQuery)));
-        }
-        return root.get("poNumber").in(poSub);
-    }
 
-    private Predicate buildLineItemPredicate(Root<DCC> root, CriteriaBuilder cb, ColumnInfo columnInfo, String searchQuery) throws ParseException {
-        Join<DCC, DCCLineItem> lineJoin = root.join("dccLineItems", JoinType.LEFT);
-        String fieldName = columnInfo.getFieldName();
-        if ("string".equals(columnInfo.getType())) {
-            return cb.like(cb.lower(lineJoin.get(fieldName)), "%" + searchQuery.toLowerCase() + "%");
-        } else if ("date".equals(columnInfo.getType())) {
-            SimpleDateFormat sdf = new SimpleDateFormat(DATE_FORMAT);
-            return cb.equal(lineJoin.get(fieldName), sdf.parse(searchQuery));
-        }
-        return null;
-    }
-
-    private Predicate buildApprovalRequestPredicate(Root<DCC> root, CriteriaQuery<?> query, CriteriaBuilder cb, ColumnInfo columnInfo, String searchQuery) throws ParseException {
-        Subquery<Integer> approvalSub = query.subquery(Integer.class);
-        Root<tbCategoryApprovalRequests> approvalRoot = approvalSub.from(tbCategoryApprovalRequests.class);
-        approvalSub.select(approvalRoot.get("acceptanceRequestRecordNo"));
-        SimpleDateFormat sdf = new SimpleDateFormat(DATE_FORMAT);
-        approvalSub.where(cb.equal(approvalRoot.get(columnInfo.getFieldName()), sdf.parse(searchQuery)));
-        return cb.equal(root.get("recordNo"), approvalSub);
-    }
 
     private Map<String, Object> preloadRelatedData(List<DCC> dccList) {
         Map<String, Object> result = new HashMap<>();
-        Set<String> poNumbers = dccList.stream().map(DCC::getPoNumber).collect(Collectors.toSet());
+        Set<String> poNumbers = dccList.stream().map(DCC::getPoNumber).filter(Objects::nonNull).collect(Collectors.toSet());
         Set<String> dccIds = dccList.stream().map(dcc -> String.valueOf(dcc.getRecordNo())).collect(Collectors.toSet());
 
         // Preload Purchase Orders
-        result.put("poMap", purchaseOrderRepository.findByPoNumberIn(poNumbers)
-                .stream().collect(Collectors.toMap(tbPurchaseOrder::getPoNumber, po -> po, (existing, replacement) -> existing)));
+        List<tbPurchaseOrder> poList = purchaseOrderRepository.findByPoNumberIn(poNumbers);
+        Map<String, tbPurchaseOrder> poMapByPoNumber = new HashMap<>();
+        Map<String, tbPurchaseOrder> poByNumberLine = new HashMap<>();
+        for (tbPurchaseOrder po : poList) {
+            if (po.getPoNumber() != null) {
+                poMapByPoNumber.putIfAbsent(po.getPoNumber(), po);
+                if (po.getLineNumber() != null) {
+                    poByNumberLine.put(po.getPoNumber() + "-" + po.getLineNumber(), po);
+                }
+            }
+        }
+        result.put("poMapByPoNumber", poMapByPoNumber);
+        result.put("poByNumberLine", poByNumberLine);
 
         // Preload Line Items
-        result.put("lineItemsMap", dccLineRepo.findByDccIdIn(dccIds)
-                .stream().collect(Collectors.groupingBy(DCCLineItem::getDccId)));
+        List<DCCLineItem> allLineItems = dccLineRepo.findByDccIdIn(dccIds);
+        Map<String, List<DCCLineItem>> lineItemsMap = allLineItems.stream()
+                .collect(Collectors.groupingBy(DCCLineItem::getDccId));
+        result.put("lineItemsMap", lineItemsMap);
+
+        // Preload UPLs
+        Set<String> poIds = allLineItems.stream().map(DCCLineItem::getPoId).filter(Objects::nonNull).collect(Collectors.toSet());
+        Set<String> lineNumbers = allLineItems.stream().map(DCCLineItem::getLineNumber).filter(Objects::nonNull).collect(Collectors.toSet());
+        Set<String> uplLineNumbers = allLineItems.stream().map(DCCLineItem::getUplLineNumber).filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<String, List<tb_PurchaseOrderUPL>> uplMap = tbPurchaseOrderUPLRepo.findByPoNumberInAndPoLineNumberInAndUplLineIn(poIds, lineNumbers, uplLineNumbers)
+                .stream().collect(Collectors.groupingBy(upl -> upl.getPoNumber() + "-" + upl.getPoLineNumber() + "-" + upl.getUplLine()));
+        result.put("uplMap", uplMap);
 
         // Preload Approval Requests
-        Map<Integer, tbCategoryApprovalRequests> approvalRequestMap = new HashMap<>();
-        tbCategoryApprovalRequestsRepo.findByAcceptanceRequestRecordNoInOrderByRecordDateTimeDesc(
-                dccIds.stream().map(Integer::parseInt).collect(Collectors.toList())
-        ).forEach(req -> approvalRequestMap.putIfAbsent(req.getAcceptanceRequestRecordNo(), req));
-        result.put("approvalRequestMap", approvalRequestMap);
+        Map<Integer, tbCategoryApprovalRequests> approvalRequestMap = tbCategoryApprovalRequestsRepo
+                .findByAcceptanceRequestRecordNoInOrderByRecordDateTimeDesc(dccIds.stream().map(Integer::parseInt).collect(Collectors.toList()))
+                .stream().collect(Collectors.toMap(tbCategoryApprovalRequests::getAcceptanceRequestRecordNo, req -> req, (r1, r2) -> r1));
 
         // Preload Approvals
-        Set<Integer> approvalRecordNos = approvalRequestMap.values().stream()
-                .map(tbCategoryApprovalRequests::getRecordNo).collect(Collectors.toSet());
-        result.put("approvalsMap", tbCategoryApprovalsRepo.findByApprovalRecordIdIn(approvalRecordNos)
-                .stream().collect(Collectors.groupingBy(tbCategoryApprovals::getApprovalRecordId)));
+        Set<Integer> approvalRecordNos = approvalRequestMap.values().stream().map(tbCategoryApprovalRequests::getRecordNo).collect(Collectors.toSet());
+        Map<Integer, List<tbCategoryApprovals>> approvalsMap = tbCategoryApprovalsRepo.findByApprovalRecordIdIn(approvalRecordNos)
+                .stream().collect(Collectors.groupingBy(tbCategoryApprovals::getApprovalRecordId));
+        result.put("approvalsMap", approvalsMap);
+        result.put("approvalRequestMap", approvalRequestMap);
 
         // Preload Users
         Set<String> usernames = new HashSet<>();
-        dccList.forEach(dcc -> {
-            usernames.add(dcc.getCreatedBy());
-            List<tbCategoryApprovals> approvals = ((Map<Integer, List<tbCategoryApprovals>>) result.get("approvalsMap"))
-                    .getOrDefault(approvalRequestMap.getOrDefault((int) dcc.getRecordNo(), new tbCategoryApprovalRequests()).getRecordNo(), Collections.emptyList());
-            approvals.forEach(approval -> {
-                if (approval.getApproverName() != null) usernames.add(approval.getApproverName());
-            });
-        });
-        result.put("userMap", userAccountRepo.findByUsernameIn(usernames)
-                .stream().collect(Collectors.toMap(User::getUsername, u -> u)));
+        dccList.forEach(dcc -> Optional.ofNullable(dcc.getCreatedBy()).ifPresent(usernames::add));
+        approvalsMap.values().forEach(approvals -> approvals.forEach(a -> Optional.ofNullable(a.getApproverName()).ifPresent(usernames::add)));
+        Map<String, User> userMap = userAccountRepo.findByUsernameIn(usernames)
+                .stream().collect(Collectors.toMap(User::getUsername, u -> u, (u1, u2) -> u1));
+        result.put("userMap", userMap);
+
+        // Preload Departments
+        Set<Long> depIds = userMap.values().stream().map(User::getDepartmentId).filter(Objects::nonNull).map(Integer::longValue).collect(Collectors.toSet());
+        Map<Long, departmentsdata> depMap = tbDepartmentRepo.findAllById(depIds)
+                .stream().collect(Collectors.toMap(departmentsdata::getRecordNo, d -> d));
+        result.put("departmentsMap", depMap);
 
         return result;
     }
 
-   private Map<String, Object> buildGroupedRow(
-    DCC dcc,
-    Map<String, tbPurchaseOrder> poMap,
-    Map<String, List<DCCLineItem>> lineItemsMap,
-    Map<Integer, tbCategoryApprovalRequests> approvalRequestMap,
-    Map<Integer, List<tbCategoryApprovals>> approvalsMap,
-    Map<String, User> userMap
-) {
-    Map<String, Object> row = new LinkedHashMap<>();
-    tbPurchaseOrder po = poMap.get(dcc.getPoNumber());
-    List<DCCLineItem> lineItems = lineItemsMap.getOrDefault(String.valueOf(dcc.getRecordNo()), Collections.emptyList());
-    tbCategoryApprovalRequests approvalRequest = approvalRequestMap.get((int) dcc.getRecordNo());
-    DCCLineItem ln = lineItems.isEmpty() ? null : lineItems.get(0);
+    private Map<String, Object> buildGroupedRow(
+            DCC dcc, Map<String, tbPurchaseOrder> poMap, Map<String, List<DCCLineItem>> lineItemsMap,
+            Map<Integer, tbCategoryApprovalRequests> approvalRequestMap, Map<Integer, List<tbCategoryApprovals>> approvalsMap,
+            Map<String, User> userMap, Map<String, List<tb_PurchaseOrderUPL>> uplMap, Map<String, tbPurchaseOrder> poByNumberLine,
+            Map<Long, departmentsdata> depMap) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        tbPurchaseOrder po = poMap.get(dcc.getPoNumber());
+        List<DCCLineItem> lineItems = lineItemsMap.getOrDefault(String.valueOf(dcc.getRecordNo()), Collections.emptyList());
+        tbCategoryApprovalRequests approvalRequest = approvalRequestMap.get((int) dcc.getRecordNo());
+        DCCLineItem ln = lineItems.isEmpty() ? null : lineItems.get(0);
 
-    // DCCId from tb_DCC_LN, currency from tb_PurchaseOrderUPL
-    row.put("dccId", dcc.getDccId() != null ? dcc.getDccId() : String.valueOf(dcc.getRecordNo()));
-    String currency = null;
-for (DCCLineItem dccLn : lineItems) {
-    if (dccLn.getUplLineNumber() != null && dccLn.getLineNumber() != null && dccLn.getPoId() != null) {
-        tb_PurchaseOrderUPL upl = tbPurchaseOrderUPLRepo.findFirstByPoNumberAndPoLineNumberAndUplLine(
-            dccLn.getPoId(), dccLn.getLineNumber(), dccLn.getUplLineNumber()
-        );
-        if (upl != null && upl.getCurrency() != null) {
-            currency = upl.getCurrency();
-            break; // take the first available
-        }
-    }
-}
-if (currency == null) {
-    currency = dcc.getCurrency();
-}
+        // DCC fields
+        row.put("dccId", Optional.ofNullable(dcc.getDccId()).orElse(String.valueOf(dcc.getRecordNo())));
+        row.put("recordNo", dcc.getRecordNo());
+        row.put("projectName", determineProjectName(dcc, po));
+        row.put("newProjectName", po != null ? po.getNewProjectName() : null);
+        row.put("vendorComment", dcc.getVendorComment());
+        row.put("vendorName", dcc.getVendorName());
+        row.put("vendorEmail", dcc.getVendorEmail());
+        row.put("supplierId", po != null ? po.getVendorNumber() : null);
+        row.put("dccCreatedDate", formatDate(dcc.getCreatedDate()));
+        row.put("dateApproved", formatDate(approvalRequest != null ? approvalRequest.getApprovedDate() : null));
+        row.put("poNumber", dcc.getPoNumber());
+        row.put("dccAcceptanceType", dcc.getAcceptanceType());
+        row.put("dccStatus", dcc.getStatus());
+        row.put("vendorNumber", po != null ? po.getVendorNumber() : dcc.getVendorNumber());
 
-    row.put("recordNo", dcc.getRecordNo());
-    row.put("projectName", determineProjectName(dcc, po));
-    row.put("newProjectName", po != null ? po.getNewProjectName() : null);
-    row.put("vendorComment", dcc.getVendorComment());
-    row.put("vendorName", dcc.getVendorName());
-    row.put("vendorEmail", dcc.getVendorEmail());
-    row.put("supplierId", po != null ? po.getVendorNumber() : null);
-    row.put("dccCreatedDate", formatDate(dcc.getCreatedDate()));
-    row.put("dateApproved", formatDate(approvalRequest != null ? approvalRequest.getApprovedDate() : null));
+        // Currency determination
+        String currency = lineItems.stream()
+                .filter(lnItem -> lnItem.getUplLineNumber() != null && lnItem.getLineNumber() != null && lnItem.getPoId() != null)
+                .map(lnItem -> uplMap.getOrDefault(lnItem.getPoId() + "-" + lnItem.getLineNumber() + "-" + lnItem.getUplLineNumber(), Collections.emptyList()))
+                .filter(upls -> !upls.isEmpty())
+                .map(upls -> upls.get(0).getCurrency())
+                .filter(Objects::nonNull)
+                .findFirst()
+                .orElse(dcc.getCurrency());
+        row.put("currency", currency);
 
-    // Calculate total delivered quantity for this DCC
-    double totalDeliveredQty = lineItems.stream()
-        .filter(li -> !Arrays.asList("incomplete", "rejected").contains(dcc.getStatus()))
-        .mapToDouble(DCCLineItem::getDeliveredQty)
-        .sum();
-    row.put("totalDeliveredQty", totalDeliveredQty);
+        // Total delivered quantity
+        double totalDeliveredQty = lineItems.stream()
+                .filter(li -> !Arrays.asList("incomplete", "rejected").contains(dcc.getStatus()))
+                .mapToDouble(DCCLineItem::getDeliveredQty)
+                .sum();
+        row.put("totalDeliveredQty", totalDeliveredQty);
+        row.put("uplacptRequestValue", totalDeliveredQty);
 
-    // Calculate total unit price: sum deliveredQty * uplLineUnitPrice for matching UPL rows
-    BigDecimal totalUnitPrice = BigDecimal.ZERO;
-    for (DCCLineItem dccLn : lineItems) {
-        if (dccLn.getUplLineNumber() != null && dccLn.getLineNumber() != null && dccLn.getPoId() != null) {
-            List<tb_PurchaseOrderUPL> uplMatches = tbPurchaseOrderUPLRepo.findByPoNumberAndPoLineNumberAndUplLine(
-                dccLn.getPoId(), dccLn.getLineNumber(), dccLn.getUplLineNumber()
-            );
-            for (tb_PurchaseOrderUPL upl : uplMatches) {
-                Double deliveredQtyObj = dccLn.getDeliveredQty();
-                double deliveredQty = deliveredQtyObj != null ? deliveredQtyObj : 0.0;
-                Double unitPriceObj = upl.getUplLineUnitPrice();
-                double unitPrice = unitPriceObj != null ? unitPriceObj : 0.0;
-                totalUnitPrice = totalUnitPrice.add(BigDecimal.valueOf(deliveredQty).multiply(BigDecimal.valueOf(unitPrice)));
-            }
-        }
-    }
-    row.put("totalUnitPrice", totalUnitPrice);
+        // Total unit price
+        BigDecimal totalUnitPrice = lineItems.stream()
+                .filter(lnItem -> lnItem.getUplLineNumber() != null && lnItem.getLineNumber() != null && lnItem.getPoId() != null)
+                .flatMap(lnItem -> uplMap.getOrDefault(lnItem.getPoId() + "-" + lnItem.getLineNumber() + "-" + lnItem.getUplLineNumber(), Collections.emptyList()).stream()
+                        .map(upl -> BigDecimal.valueOf(lnItem.getDeliveredQty()).multiply(BigDecimal.valueOf(upl.getUplLineUnitPrice()))))
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        row.put("totalUnitPrice", totalUnitPrice);
 
-    // Original calculation for uplacptRequestValue (legacy)
-    Double uplAcptRequestValue = calculateTotalDeliveredQtyForDcc(dcc.getRecordNo());
-    row.put("uplacptRequestValue", uplAcptRequestValue);
+        // Line item details
+        row.put("lnLocationName", ln != null ? ln.getLocationName() : null);
+        row.put("lnScopeOfWork", ln != null ? ln.getScopeOfWork() : null);
+        row.put("lnInserviceDate", formatDate(ln != null ? ln.getDateInService() : null));
 
-    // Line item details
-    row.put("lnLocationName", ln != null ? ln.getLocationName() : null);
-    row.put("lnScopeOfWork", ln != null ? ln.getScopeOfWork() : null);
-    row.put("lnInserviceDate", formatDate(ln != null ? ln.getDateInService() : null));
+        // Aging calculations
+        List<tbCategoryApprovals> approvals = approvalRequest != null ? approvalsMap.getOrDefault(approvalRequest.getRecordNo(), Collections.emptyList()) : Collections.emptyList();
+        String userAging = calculateUserAgingCustom(dcc, approvalRequest, approvals);
+        String totalAging = calculateTotalAgingCustom(dcc, approvalRequest, approvals);
+        row.put("userAging", userAging);
+        row.put("totalAging", totalAging);
+        row.put("userAgingInDays", extractDaysFromAging(userAging));
+        row.put("totalAgingInDays", extractDaysFromAging(totalAging));
 
-    // Aging calculations
-List<tbCategoryApprovals> approvals = approvalRequest != null
-    ? approvalsMap.getOrDefault(approvalRequest.getRecordNo(), Collections.emptyList())
-    : Collections.emptyList();
+        // Request Amount SAR
+        Double requestAmount = calculateRequestAmount(ln, totalDeliveredQty, poByNumberLine);
+        row.put("requestAmountSAR", requestAmount);
+        row.put("poId", po != null ? po.getPoNumber() : dcc.getPoNumber());
 
-String userAging = calculateUserAgingCustom(dcc, approvalRequest, approvals);
-String totalAging = calculateTotalAgingCustom(dcc, approvalRequest, approvals);
-row.put("userAging", userAging);
-row.put("totalAging", totalAging);
-row.put("userAgingInDays", extractDaysFromAging(userAging));
-row.put("totalAgingInDays", extractDaysFromAging(totalAging));
+        // Created By details
+        String createdByFullName = Optional.ofNullable(userMap.get(dcc.getCreatedBy())).map(User::getFullName).orElse(null);
+        row.put("createdBy", createdByFullName);
+        row.put("requestedBy", createdByFullName);
+        row.put("createdByName", createdByFullName);
 
-    // Request Amount SAR
-    row.put("requestAmountSAR", calculateRequestAmount(ln, uplAcptRequestValue));
-    row.put("poId", po != null ? po.getPoNumber() : dcc.getPoNumber());
+        // Approval Info
+        ApprovalInfo approvalInfo = calculateApprovalInfo(approvals, userMap, depMap);
+        row.put("approvalCount", approvalInfo.approvalCount);
+        row.put("approverComment", approvalInfo.approverComment);
+        row.put("pendingApprovers", approvalInfo.pendingApproverFullName);
+        row.put("departmentName", approvalInfo.pendingApproverDepartmentName);
 
-    // Created By details
-    String createdByFullName = userMap.getOrDefault(dcc.getCreatedBy(), new User()).getFullName();
-    row.put("createdBy", createdByFullName);
-    row.put("requestedBy", createdByFullName);
-    row.put("createdByName", createdByFullName);
-
-    // Approval Info
-
-    ApprovalInfo approvalInfo = calculateApprovalInfo(approvals, userMap);
-    row.put("approvalCount", approvalInfo.approvalCount);
-    row.put("approverComment", approvalInfo.approverComment);
-    row.put("pendingApprovers", approvalInfo.pendingApproverFullName);
-    row.put("departmentName", approvalInfo.pendingApproverDepartmentName);
-
-    row.put("poNumber", dcc.getPoNumber());
-    row.put("dccAcceptanceType", dcc.getAcceptanceType());
-    row.put("dccStatus", dcc.getStatus());
-    row.put("vendorNumber", po != null ? po.getVendorNumber() : dcc.getVendorNumber());
-
-    return row;
-}
-   
-
-private String determineProjectName(DCC dcc, tbPurchaseOrder po) {
-        if (po != null) {
-            if (po.getNewProjectName() != null && !po.getNewProjectName().trim().isEmpty()) {
-                return po.getNewProjectName();
-            } else if (po.getProjectName() != null && !po.getProjectName().trim().isEmpty()) {
-                return po.getProjectName();
-            }
-        }
-        return dcc.getProjectName();
+        return row;
     }
 
-    private ApprovalInfo calculateApprovalInfo(List<tbCategoryApprovals> approvals, Map<String, User> userMap) {
+    private String determineProjectName(DCC dcc, tbPurchaseOrder po) {
+        return Optional.ofNullable(po)
+                .map(p -> Optional.ofNullable(p.getNewProjectName()).filter(name -> !name.trim().isEmpty())
+                        .orElse(Optional.ofNullable(p.getProjectName()).filter(name -> !name.trim().isEmpty()).orElse(null)))
+                .orElse(dcc.getProjectName());
+    }
+
+    private ApprovalInfo calculateApprovalInfo(List<tbCategoryApprovals> approvals, Map<String, User> userMap, Map<Long, departmentsdata> depMap) {
         ApprovalInfo info = new ApprovalInfo();
         if (approvals.isEmpty()) return info;
 
@@ -436,31 +469,29 @@ private String determineProjectName(DCC dcc, tbPurchaseOrder po) {
                         && "pending".equalsIgnoreCase(al.getStatus()))
                 .count();
 
-        Optional<String> readyApprover = approvals.stream()
+        String pendingApproverName = approvals.stream()
                 .filter(al -> "readyForApproval".equals(al.getApprovalStatus()) && "pending".equalsIgnoreCase(al.getStatus()))
                 .map(tbCategoryApprovals::getApproverName)
                 .filter(Objects::nonNull)
-                .findFirst();
-        Optional<String> pendingApprover = approvals.stream()
-                .filter(al -> Arrays.asList("pending", "readyForApproval", "request-info").contains(al.getApprovalStatus())
-                        && "pending".equalsIgnoreCase(al.getStatus()))
-                .map(tbCategoryApprovals::getApproverName)
-                .filter(Objects::nonNull)
-                .findFirst();
-        String pendingApproverName = readyApprover.orElse(pendingApprover.orElse(null));
+                .findFirst()
+                .orElseGet(() -> approvals.stream()
+                        .filter(al -> Arrays.asList("pending", "readyForApproval", "request-info").contains(al.getApprovalStatus())
+                                && "pending".equalsIgnoreCase(al.getStatus()))
+                        .map(tbCategoryApprovals::getApproverName)
+                        .filter(Objects::nonNull)
+                        .findFirst()
+                        .orElse(null));
 
-     if (pendingApproverName != null) {
-    User pendingUser = userMap.get(pendingApproverName);
-    if (pendingUser != null) {
-        info.pendingApproverFullName = pendingUser.getFullName();
-        Integer depId = pendingUser.getDepartmentId();
-        departmentsdata dep = null;
-       if (depId != null) {
-   dep = tbDepartmentRepo.findById(depId.longValue()).orElse(null); // Convert Integer to Long
-}
-        info.pendingApproverDepartmentName = dep != null ? dep.getDeptName() : null;
-    }
-}
+        if (pendingApproverName != null) {
+            User pendingUser = userMap.get(pendingApproverName);
+            if (pendingUser != null) {
+                info.pendingApproverFullName = pendingUser.getFullName();
+                Optional.ofNullable(pendingUser.getDepartmentId())
+                        .map(Integer::longValue)
+                        .map(depMap::get)
+                        .ifPresent(dep -> info.pendingApproverDepartmentName = dep.getDeptName());
+            }
+        }
 
         info.approverComment = approvals.stream()
                 .filter(al -> !Arrays.asList("pending", "readyForApproval").contains(al.getApprovalStatus()))
@@ -482,8 +513,6 @@ private String determineProjectName(DCC dcc, tbPurchaseOrder po) {
         return response;
     }
 
-
-
     private int extractDaysFromAging(String agingString) {
         if (agingString == null || agingString.trim().isEmpty()) return 0;
         try {
@@ -493,30 +522,125 @@ private String determineProjectName(DCC dcc, tbPurchaseOrder po) {
         }
     }
 
-    private Double calculateRequestAmount(DCCLineItem lineItem, Double deliveredQty) {
+    private Double calculateRequestAmount(DCCLineItem lineItem, Double deliveredQty, Map<String, tbPurchaseOrder> poByNumberLine) {
         if (lineItem == null || deliveredQty == null || lineItem.getPoId() == null || lineItem.getLineNumber() == null) {
             return 0.0;
         }
-        try {
-            Integer lineNumber = Integer.valueOf(lineItem.getLineNumber());
-            tbPurchaseOrder po = purchaseOrderRepository.findByPoNumberAndLineNumber(lineItem.getPoId(), lineNumber);
-            Double unitPrice = po != null ? po.getUnitPriceInSAR() : null;
-            return (unitPrice != null ? unitPrice : 0.0) * deliveredQty;
-        } catch (NumberFormatException e) {
-            return 0.0;
-        }
+        String key = lineItem.getPoId() + "-" + lineItem.getLineNumber();
+        return Optional.ofNullable(poByNumberLine.get(key))
+                .map(tbPurchaseOrder::getUnitPriceInSAR)
+                .map(unitPrice -> unitPrice * deliveredQty)
+                .orElse(0.0);
     }
 
     private String formatDate(Date date) {
-        if (date == null) return null;
-        return new SimpleDateFormat(DATE_FORMAT).format(date);
+        return date == null ? null : new SimpleDateFormat(DATE_FORMAT).format(date);
     }
 
-    public double calculateTotalDeliveredQtyForDcc(long dccRecordNo) {
-        return dccLineRepo.findByDccIdAndDccStatusNotIn(
-                String.valueOf(dccRecordNo),
-                Arrays.asList("incomplete", "rejected")
-        ).stream().mapToDouble(DCCLineItem::getDeliveredQty).sum();
+    private String calculateUserAgingCustom(DCC dcc, tbCategoryApprovalRequests approvalRequest, List<tbCategoryApprovals> approvals) {
+        String status = Optional.ofNullable(dcc.getStatus()).map(String::toLowerCase).orElse("");
+        LocalDateTime createdDate = toLocalDateTime(dcc.getCreatedDate());
+        LocalDateTime now = LocalDateTime.now();
+
+        if (Arrays.asList("rejected", "returned", "approved", "approved-received").contains(status)) {
+            return "0 days 0 hrs 0 mins";
+        }
+        if ("request-info".equals(status)) {
+            return approvals.stream()
+                    .filter(a -> "pending".equalsIgnoreCase(a.getStatus()) && "request-info".equalsIgnoreCase(a.getApprovalStatus()))
+                    .findFirst()
+                    .filter(a -> a.getRecordDateTime() != null && a.getApprovedDate() != null)
+                    .map(a -> Duration.between(ensureLocalDateTime(a.getRecordDateTime()), ensureLocalDateTime(a.getApprovedDate())).toMinutes())
+                    .map(this::diffToAgingString)
+                    .orElse("0 days 0 hrs 0 mins");
+        }
+        if ("inprocess".equals(status)) {
+            return approvals.stream()
+                    .filter(a -> "pending".equalsIgnoreCase(a.getStatus()) && "readyforapproval".equalsIgnoreCase(a.getApprovalStatus()))
+                    .findFirst()
+                    .map(a -> Duration.between(ensureLocalDateTime(a.getRecordDateTime()), now).toMinutes())
+                    .map(this::diffToAgingString)
+                    .orElseGet(() -> diffToAgingString(Duration.between(createdDate, now).toMinutes()));
+        }
+        return "0 days 0 hrs 0 mins";
+    }
+
+    private String calculateTotalAgingCustom(DCC dcc, tbCategoryApprovalRequests approvalRequest, List<tbCategoryApprovals> approvals) {
+        String status = Optional.ofNullable(dcc.getStatus()).map(String::toLowerCase).orElse("");
+        LocalDateTime createdDate = toLocalDateTime(dcc.getCreatedDate());
+        LocalDateTime now = LocalDateTime.now();
+
+        if (Arrays.asList("rejected", "returned").contains(status)) {
+            return approvals.stream()
+                    .filter(a -> "rejected".equalsIgnoreCase(a.getStatus()) && "rejected".equalsIgnoreCase(a.getApprovalStatus()))
+                    .findFirst()
+                    .filter(a -> a.getApprovedDate() != null)
+                    .map(a -> Duration.between(createdDate, ensureLocalDateTime(a.getApprovedDate())).toMinutes())
+                    .map(this::diffToAgingString)
+                    .orElse("0 days 0 hrs 0 mins");
+        }
+        if ("request-info".equals(status)) {
+            return approvals.stream()
+                    .filter(a -> "pending".equalsIgnoreCase(a.getStatus()) && "request-info".equalsIgnoreCase(a.getApprovalStatus()))
+                    .findFirst()
+                    .filter(a -> a.getApprovedDate() != null)
+                    .map(a -> approvals.stream()
+                            .map(b -> ensureLocalDateTime(b.getRecordDateTime()))
+                            .filter(Objects::nonNull)
+                            .min(LocalDateTime::compareTo)
+                            .map(firstRecord -> Duration.between(firstRecord, ensureLocalDateTime(a.getApprovedDate())).toMinutes())
+                            .orElse(0L))
+                    .map(this::diffToAgingString)
+                    .orElse("0 days 0 hrs 0 mins");
+        }
+        if ("inprocess".equals(status)) {
+            return approvals.stream()
+                    .map(a -> ensureLocalDateTime(a.getRecordDateTime()))
+                    .filter(Objects::nonNull)
+                    .min(LocalDateTime::compareTo)
+                    .map(firstRecord -> Duration.between(firstRecord, now).toMinutes())
+                    .map(this::diffToAgingString)
+                    .orElseGet(() -> diffToAgingString(Duration.between(createdDate, now).toMinutes()));
+        }
+        if ("approved".equals(status)) {
+            return approvals.stream()
+                    .filter(a -> "approved".equalsIgnoreCase(a.getStatus()) && "approved".equalsIgnoreCase(a.getApprovalStatus()))
+                    .max(Comparator.comparing(a -> ensureLocalDateTime(a.getApprovedDate())))
+                    .filter(a -> a.getApprovedDate() != null)
+                    .map(a -> Duration.between(createdDate, ensureLocalDateTime(a.getApprovedDate())).toMinutes())
+                    .map(this::diffToAgingString)
+                    .orElse("0 days 0 hrs 0 mins");
+        }
+        if ("approved-received".equals(status)) {
+            return Optional.ofNullable(approvalRequest)
+                    .filter(req -> req.getApprovedDate() != null)
+                    .map(req -> Duration.between(createdDate, toLocalDateTime(req.getApprovedDate())).toMinutes())
+                    .map(this::diffToAgingString)
+                    .orElse("0 days 0 hrs 0 mins");
+        }
+        return "0 days 0 hrs 0 mins";
+    }
+
+    private LocalDateTime toLocalDateTime(Date date) {
+        if (date == null) return null;
+        if (date instanceof java.sql.Date) {
+            return ((java.sql.Date) date).toLocalDate().atStartOfDay();
+        }
+        return date.toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime();
+    }
+
+    private LocalDateTime ensureLocalDateTime(Object obj) {
+        if (obj == null) return null;
+        if (obj instanceof LocalDateTime) return (LocalDateTime) obj;
+        if (obj instanceof Date) return toLocalDateTime((Date) obj);
+        throw new IllegalArgumentException("Unsupported temporal type: " + obj.getClass());
+    }
+
+    private String diffToAgingString(long totalMinutes) {
+        long days = totalMinutes / 1440;
+        long hours = (totalMinutes % 1440) / 60;
+        long mins = totalMinutes % 60;
+        return String.format("%d days %d hrs %d mins", days, hours, mins);
     }
 
     private static class ColumnInfo {
@@ -546,235 +670,197 @@ private String determineProjectName(DCC dcc, tbPurchaseOrder po) {
         String pendingApproverDepartmentName = null;
     }
 
-// Helper: Convert your date fields to LocalDateTime
 
-private LocalDateTime toLocalDateTime(LocalDate date) {
-    return date == null ? null : date.atStartOfDay();
-}
-private LocalDateTime toLocalDateTime(Date date) {
-    if (date == null) return null;
-    if (date instanceof java.sql.Date) {
-        // sql.Date represents a date without time info
-        return ((java.sql.Date) date).toLocalDate().atStartOfDay();
+
+public Map<String, Object> getAgingReportWithMultipleFilters(
+    String supplierId, 
+    Map<String, String> filters,
+    int page, 
+    int size) {
+
+    page = Math.max(page, 1);
+    size = Math.max(size, 1);
+    
+    boolean hasFilters = filters != null && !filters.isEmpty();
+    
+    System.out.println("Service - hasFilters: " + hasFilters + ", filters: " + filters);
+    System.out.println("SupplierId: " + supplierId);
+    
+    Page<DCC> pagedDcc;
+    List<DCC> dccList;
+    
+    if (hasFilters) {
+        Pageable unpaged = Pageable.unpaged();
+        pagedDcc = (supplierId != null && !"0".equals(supplierId))
+                ? dccRepository.findAllBySupplierId(supplierId, unpaged)
+                : dccRepository.findAll(unpaged);
+        dccList = pagedDcc.getContent();
+        System.out.println("Loaded " + dccList.size() + " DCC records for filtering");
     } else {
-        // util.Date and others
-        return date.toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime();
+        Pageable pageable = PageRequest.of(page - 1, size, Sort.by(Sort.Direction.DESC, "recordNo"));
+        pagedDcc = (supplierId != null && !"0".equals(supplierId))
+                ? dccRepository.findAllBySupplierId(supplierId, pageable)
+                : dccRepository.findAll(pageable);
+        dccList = pagedDcc.getContent();
+        System.out.println("Loaded " + dccList.size() + " DCC records with pagination");
     }
-}
-// Fetch all requests/approvals for a DCC
-  private List<tbCategoryApprovalRequests> getAllRelatedRequests(int acceptanceRequestRecordNo) {
-        return tbCategoryApprovalRequestsRepo.findByAcceptanceRequestRecordNoOrderByRecordDateTimeDesc(acceptanceRequestRecordNo);
+    
+    if (dccList.isEmpty()) {
+        Map<String, Object> emptyResponse = new HashMap<>();
+        emptyResponse.put("totalRecords", 0);
+        emptyResponse.put("data", Collections.emptyList());
+        emptyResponse.put("totalPages", 0);
+        emptyResponse.put("pageSize", size);
+        emptyResponse.put("currentPage", page);
+        return emptyResponse;
     }
-    private List<tbCategoryApprovals> getAllRelatedApprovals(List<tbCategoryApprovalRequests> requests) {
-        return requests.stream()
-            .flatMap(req -> tbCategoryApprovalsRepo.findByApprovalRecordId(req.getRecordNo()).stream())
+    
+    // Preload related data
+    Map<String, Object> preloaded = preloadRelatedData(dccList);
+    
+    @SuppressWarnings("unchecked")
+    Map<String, tbPurchaseOrder> poMap = (Map<String, tbPurchaseOrder>) preloaded.get("poMapByPoNumber");
+    @SuppressWarnings("unchecked")
+    Map<String, List<DCCLineItem>> lineItemsMap = (Map<String, List<DCCLineItem>>) preloaded.get("lineItemsMap");
+    @SuppressWarnings("unchecked")
+    Map<Integer, tbCategoryApprovalRequests> approvalRequestMap = (Map<Integer, tbCategoryApprovalRequests>) preloaded.get("approvalRequestMap");
+    @SuppressWarnings("unchecked")
+    Map<Integer, List<tbCategoryApprovals>> approvalsMap = (Map<Integer, List<tbCategoryApprovals>>) preloaded.get("approvalsMap");
+    @SuppressWarnings("unchecked")
+    Map<String, User> userMap = (Map<String, User>) preloaded.get("userMap");
+    @SuppressWarnings("unchecked")
+    Map<String, List<tb_PurchaseOrderUPL>> uplMap = (Map<String, List<tb_PurchaseOrderUPL>>) preloaded.get("uplMap");
+    @SuppressWarnings("unchecked")
+    Map<String, tbPurchaseOrder> poByNumberLine = (Map<String, tbPurchaseOrder>) preloaded.get("poByNumberLine");
+    @SuppressWarnings("unchecked")
+    Map<Long, departmentsdata> depMap = (Map<Long, departmentsdata>) preloaded.get("departmentsMap");
+    
+    System.out.println("Preloaded data - PO Map size: " + poMap.size() + ", Line Items: " + lineItemsMap.size());
+    
+    // Build grouped results
+    List<Map<String, Object>> groupedResults = dccList.stream()
+            .map(dcc -> buildGroupedRow(dcc, poMap, lineItemsMap, approvalRequestMap, approvalsMap, 
+                    userMap, uplMap, poByNumberLine, depMap))
             .collect(Collectors.toList());
-    }
-
-    // Accurate userAging calculation (legacy, fallback)
-    private String calculateUserAgingAccurate(tbCategoryApprovalRequests approvalRequest) {
-        if (approvalRequest == null) return "0 days 0 hrs 0 mins";
-        List<tbCategoryApprovalRequests> allRelatedRequests = getAllRelatedRequests(approvalRequest.getAcceptanceRequestRecordNo());
-        List<tbCategoryApprovals> allRelatedApprovals = getAllRelatedApprovals(allRelatedRequests);
-        LocalDateTime nowLocal = LocalDateTime.now();
-
-        List<tbCategoryApprovals> filteredApprovals = allRelatedApprovals.stream()
-            .filter(a -> a.getApprovalRecordId() == approvalRequest.getRecordNo())
-            .filter(a -> "pending".equalsIgnoreCase(a.getStatus()) &&
-                Arrays.asList("pending", "readyForApproval", "request-info")
-                    .contains(a.getApprovalStatus().toLowerCase()))
-            .collect(Collectors.toList());
-
-        String pendingApproverName = filteredApprovals.stream()
-            .filter(a -> "readyForApproval".equalsIgnoreCase(a.getApprovalStatus()))
-            .findFirst()
-            .map(tbCategoryApprovals::getApproverName)
-            .orElseGet(() -> filteredApprovals.stream()
-                .findFirst()
-                .map(tbCategoryApprovals::getApproverName)
-                .orElse(null));
-
-        long totalPausedUserAgingMinutes = allRelatedApprovals.stream()
-            .filter(a -> "request-info".equalsIgnoreCase(a.getStatus()) &&
-                "request-info".equalsIgnoreCase(a.getApprovalStatus()))
-            .filter(a -> pendingApproverName != null && pendingApproverName.equals(a.getApproverName()))
-            .filter(a -> a.getApprovedDate() != null && a.getRecordDateTime() != null)
-            .mapToLong(a -> Duration.between(
-                toLocalDateTime(a.getRecordDateTime()), a.getApprovedDate()
-            ).toMinutes())
-            .sum();
-
-        long currentUserAgingMinutes = 0;
-        if (pendingApproverName != null) {
-            Optional<LocalDateTime> latestReadyForApprovalDate = filteredApprovals.stream()
-                .filter(a -> "readyForApproval".equalsIgnoreCase(a.getApprovalStatus()) &&
-                    pendingApproverName.equals(a.getApproverName()))
-                .map(a -> toLocalDateTime(a.getRecordDateTime()))
-                .filter(Objects::nonNull)
-                .max(LocalDateTime::compareTo);
-
-            currentUserAgingMinutes = latestReadyForApprovalDate
-                .map(date -> Duration.between(date, nowLocal).toMinutes())
-                .orElseGet(() -> toLocalDateTime(approvalRequest.getRecordDateTime()) != null
-                    ? Duration.between(toLocalDateTime(approvalRequest.getRecordDateTime()), nowLocal).toMinutes()
-                    : 0L);
+    
+    System.out.println("Generated " + groupedResults.size() + " grouped rows");
+    
+    if (hasFilters) {
+        // Debug: Check first row to see available data
+        if (!groupedResults.isEmpty()) {
+            System.out.println("Sample row keys: " + groupedResults.get(0).keySet());
+            // Uncomment for detailed debugging
+            // debugRow(groupedResults.get(0));
         }
-
-        long totalUserAgingMinutes = totalPausedUserAgingMinutes + currentUserAgingMinutes;
-        return diffToAgingString(totalUserAgingMinutes);
+        
+        List<Map<String, Object>> filtered = groupedResults.stream()
+                .filter(row -> {
+                    boolean matchesAll = filters.entrySet().stream().allMatch(filterEntry -> {
+                        String columnName = filterEntry.getKey();
+                        String searchQuery = filterEntry.getValue();
+                        
+                        if (searchQuery == null || searchQuery.trim().isEmpty()) {
+                            return true;
+                        }
+                        
+                        System.out.println("Checking filter: " + columnName + " = '" + searchQuery + "'");
+                        
+                        boolean matches = matchesFilter(row, columnName, searchQuery);
+                        System.out.println("Row matches filter " + columnName + ": " + matches);
+                        return matches;
+                    });
+                    return matchesAll;
+                })
+                .collect(Collectors.toList());
+        
+        System.out.println("After filtering: " + filtered.size() + " results");
+        
+        int totalRecords = filtered.size();
+        int totalPages = totalRecords == 0 ? 0 : (int) Math.ceil((double) totalRecords / size);
+        int fromIndex = Math.max(0, (page - 1) * size);
+        int toIndex = Math.min(fromIndex + size, totalRecords);
+        List<Map<String, Object>> pageData = fromIndex < toIndex ? filtered.subList(fromIndex, toIndex) : Collections.emptyList();
+        
+        return buildResponseFromList(pageData, page, size, totalRecords, totalPages);
     }
-
-    // Accurate totalAging calculation (legacy, fallback)
-    private String calculateTotalAgingAccurate(tbCategoryApprovalRequests approvalRequest) {
-        if (approvalRequest == null) return "0 days 0 hrs 0 mins";
-        List<tbCategoryApprovalRequests> allRelatedRequests = getAllRelatedRequests(approvalRequest.getAcceptanceRequestRecordNo());
-        List<tbCategoryApprovals> allRelatedApprovals = getAllRelatedApprovals(allRelatedRequests);
-        LocalDateTime nowLocal = LocalDateTime.now();
-
-        LocalDateTime minRecordDateTime = allRelatedApprovals.stream()
-            .map(a -> toLocalDateTime(a.getRecordDateTime()))
-            .filter(Objects::nonNull)
-            .min(LocalDateTime::compareTo)
-            .orElseGet(() -> toLocalDateTime(approvalRequest.getRecordDateTime()) != null
-                ? toLocalDateTime(approvalRequest.getRecordDateTime())
-                : nowLocal);
-
-        LocalDateTime endDate = allRelatedApprovals.stream()
-            .filter(a -> "pending".equalsIgnoreCase(a.getStatus()) &&
-                "pending".equalsIgnoreCase(a.getApprovalStatus()))
-            .findAny()
-            .map(a -> nowLocal)
-            .orElseGet(() -> allRelatedApprovals.stream()
-                .map(tbCategoryApprovals::getApprovedDate)
-                .filter(Objects::nonNull)
-                .max(LocalDateTime::compareTo)
-                .orElse(nowLocal));
-
-        long totalAgingMinutes = Duration.between(minRecordDateTime, endDate).toMinutes();
-        return diffToAgingString(totalAgingMinutes);
-    }
-
-
-private String calculateUserAgingCustom(DCC dcc, tbCategoryApprovalRequests approvalRequest, List<tbCategoryApprovals> approvals) {
-    String status = dcc.getStatus() != null ? dcc.getStatus().toLowerCase() : "";
-    LocalDateTime createdDate = toLocalDateTime(dcc.getCreatedDate());
-    LocalDateTime now = LocalDateTime.now();
-
-    if (Arrays.asList("rejected", "returned", "approved", "approved-received").contains(status)) {
-        return "0 days 0 hrs 0 mins";
-    }
-    if ("request-info".equals(status)) {
-        Optional<tbCategoryApprovals> reqInfo = approvals.stream()
-            .filter(a -> "pending".equalsIgnoreCase(a.getStatus()) && "request-info".equalsIgnoreCase(a.getApprovalStatus()))
-            .findFirst();
-        if (reqInfo.isPresent() && reqInfo.get().getRecordDateTime() != null && reqInfo.get().getApprovedDate() != null) {
-            LocalDateTime recordDateTime = ensureLocalDateTime(reqInfo.get().getRecordDateTime());
-            LocalDateTime approvedDate = ensureLocalDateTime(reqInfo.get().getApprovedDate());
-            long mins = Duration.between(recordDateTime, approvedDate).toMinutes();
-            return diffToAgingString(mins);
-        }
-        return "0 days 0 hrs 0 mins";
-    }
-    if ("inprocess".equals(status)) {
-        // Find the approval row with status=pending and approvalStatus=readyForApproval
-        Optional<tbCategoryApprovals> readyRow = approvals.stream()
-            .filter(a -> "pending".equalsIgnoreCase(a.getStatus()) && "readyforapproval".equalsIgnoreCase(a.getApprovalStatus()))
-            .findFirst();
-        if (readyRow.isPresent() && readyRow.get().getRecordDateTime() != null) {
-            LocalDateTime readyRecordDateTime = ensureLocalDateTime(readyRow.get().getRecordDateTime());
-            long mins = Duration.between(readyRecordDateTime, now).toMinutes();
-            return diffToAgingString(mins);
-        } else {
-            // Fallback: use createdDate if no readyForApproval row
-            long mins = Duration.between(createdDate, now).toMinutes();
-            return diffToAgingString(mins);
-        }
-    }
-    return calculateUserAgingAccurate(approvalRequest);
+    
+    // No filters: return DB pagination
+    return buildResponse(pagedDcc, groupedResults, page, size);
 }
 
-private String calculateTotalAgingCustom(DCC dcc, tbCategoryApprovalRequests approvalRequest, List<tbCategoryApprovals> approvals) {
-    String status = dcc.getStatus() != null ? dcc.getStatus().toLowerCase() : "";
-    LocalDateTime createdDate = toLocalDateTime(dcc.getCreatedDate());
-    LocalDateTime now = LocalDateTime.now();
+// Add this debug method for troubleshooting
+private void debugRow(Map<String, Object> row) {
+    System.out.println("=== Row Debug ===");
+    row.entrySet().stream()
+        .sorted(Map.Entry.comparingByKey())
+        .forEach(entry -> {
+            System.out.println(entry.getKey() + ": " + entry.getValue() + 
+                " (type: " + (entry.getValue() != null ? entry.getValue().getClass().getSimpleName() : "null") + ")");
+        });
+    System.out.println("=================");
+}
 
-    if (Arrays.asList("rejected", "returned").contains(status)) {
-        Optional<tbCategoryApprovals> rejectedApproval = approvals.stream()
-            .filter(a -> "rejected".equalsIgnoreCase(a.getStatus()) && "rejected".equalsIgnoreCase(a.getApprovalStatus()))
-            .findFirst();
-        if (rejectedApproval.isPresent() && rejectedApproval.get().getApprovedDate() != null) {
-            LocalDateTime approvedDate = ensureLocalDateTime(rejectedApproval.get().getApprovedDate());
-            long mins = Duration.between(createdDate, approvedDate).toMinutes();
-            return diffToAgingString(mins);
-        }
-        return "0 days 0 hrs 0 mins";
+// Make sure these helper methods are available
+private boolean matchesFilter(Map<String, Object> row, String columnName, String searchQuery) {
+    if (searchQuery == null || searchQuery.trim().isEmpty()) {
+        return true;
     }
-    if ("request-info".equals(status)) {
-        Optional<tbCategoryApprovals> reqInfo = approvals.stream()
-            .filter(a -> "pending".equalsIgnoreCase(a.getStatus()) && "request-info".equalsIgnoreCase(a.getApprovalStatus()))
-            .findFirst();
-        if (reqInfo.isPresent() && reqInfo.get().getApprovedDate() != null) {
-            LocalDateTime approvedDate = ensureLocalDateTime(reqInfo.get().getApprovedDate());
-            // Find the first recordDateTime among all approvals
-            Optional<LocalDateTime> firstRecordDateTime = approvals.stream()
-                .map(a -> ensureLocalDateTime(a.getRecordDateTime()))
-                .filter(Objects::nonNull)
-                .min(LocalDateTime::compareTo);
-            if (firstRecordDateTime.isPresent()) {
-                long mins = Duration.between(firstRecordDateTime.get(), approvedDate).toMinutes();
-                return diffToAgingString(mins);
+    
+    ColumnInfo mapping = COLUMN_MAPPINGS.get(columnName);
+    String targetKey = (mapping != null && mapping.getFieldName() != null && !mapping.getFieldName().trim().isEmpty())
+            ? mapping.getFieldName()
+            : columnName;
+    
+    Object value = row.get(targetKey);
+    System.out.println("Target key: '" + targetKey + "', found: " + (value != null));
+    
+    if (value == null) {
+        System.out.println("Value is null for key: " + targetKey);
+        return false;
+    }
+    
+    String rawSearch = searchQuery.trim();
+    String searchPattern = rawSearch.toLowerCase();
+    
+    // Exact match columns - CASE INSENSITIVE
+    if (isExactMatchColumn(columnName)) {
+        String valueStr = value.toString().trim();
+        boolean matches = valueStr.equalsIgnoreCase(rawSearch);
+        System.out.println("Exact match - " + columnName + ": '" + valueStr + "' vs '" + rawSearch + "' = " + matches);
+        return matches;
+    }
+    
+    // Numeric columns
+    if (isNumericColumn(columnName)) {
+        try {
+            double searchNum = Double.parseDouble(rawSearch);
+            if (value instanceof Number) {
+                return Math.abs(((Number) value).doubleValue() - searchNum) < 0.001;
+            } else {
+                double valueNum = Double.parseDouble(value.toString().trim());
+                return Math.abs(valueNum - searchNum) < 0.001;
             }
-        }
-        return "0 days 0 hrs 0 mins";
-    }
-    if ("inprocess".equals(status)) {
-        // Total aging: first recordDateTime difference with now
-        Optional<LocalDateTime> firstRecordDateTime = approvals.stream()
-            .map(a -> ensureLocalDateTime(a.getRecordDateTime()))
-            .filter(Objects::nonNull)
-            .min(LocalDateTime::compareTo);
-        if (firstRecordDateTime.isPresent()) {
-            long mins = Duration.between(firstRecordDateTime.get(), now).toMinutes();
-            return diffToAgingString(mins);
-        } else {
-            long mins = Duration.between(createdDate, now).toMinutes();
-            return diffToAgingString(mins);
+        } catch (NumberFormatException nfe) {
+            System.out.println("Numeric parse error for: " + rawSearch);
+            return false;
         }
     }
-    if ("approved".equals(status)) {
-        Optional<tbCategoryApprovals> lastApproved = approvals.stream()
-            .filter(a -> "approved".equalsIgnoreCase(a.getStatus()) && "approved".equalsIgnoreCase(a.getApprovalStatus()))
-            .max(Comparator.comparing(a -> ensureLocalDateTime(a.getApprovedDate())));
-        if (lastApproved.isPresent() && lastApproved.get().getApprovedDate() != null) {
-            LocalDateTime approvedDate = ensureLocalDateTime(lastApproved.get().getApprovedDate());
-            long mins = Duration.between(createdDate, approvedDate).toMinutes();
-            return diffToAgingString(mins);
-        }
-        return "0 days 0 hrs 0 mins";
+    
+    // Date columns - exact match
+    if (isDateColumn(columnName, mapping)) {
+        String formattedValue = formatValueForDateComparison(value);
+        String formattedSearch = formatSearchForDateComparison(rawSearch);
+        boolean matches = formattedValue != null && formattedValue.equals(formattedSearch);
+        System.out.println("Date match - " + columnName + ": '" + formattedValue + "' vs '" + formattedSearch + "' = " + matches);
+        return matches;
     }
-    if ("approved-received".equals(status)) {
-        if (approvalRequest != null && approvalRequest.getApprovedDate() != null) {
-            LocalDateTime approvedDate = toLocalDateTime(approvalRequest.getApprovedDate());
-            long mins = Duration.between(createdDate, approvedDate).toMinutes();
-            return diffToAgingString(mins);
-        }
-        return "0 days 0 hrs 0 mins";
-    }
-    return calculateTotalAgingAccurate(approvalRequest);
-}
-    private LocalDateTime ensureLocalDateTime(Object obj) {
-    if (obj == null) return null;
-    if (obj instanceof LocalDateTime) return (LocalDateTime) obj;
-    if (obj instanceof LocalDate) return ((LocalDate) obj).atStartOfDay();
-    if (obj instanceof Date) return toLocalDateTime((Date) obj);
-    throw new IllegalArgumentException("Unsupported temporal type: " + obj.getClass());
+    
+    // Default: case-insensitive contains for other strings
+    String valueStr = value.toString().toLowerCase().trim();
+    boolean containsMatch = valueStr.contains(searchPattern);
+    System.out.println("Contains match - " + columnName + ": '" + valueStr + "' contains '" + searchPattern + "' = " + containsMatch);
+    return containsMatch;
 }
 
-    // Format aging output
-    private String diffToAgingString(long totalMinutes) {
-        long days = totalMinutes / 1440;
-        long hours = (totalMinutes % 1440) / 60;
-        long mins = totalMinutes % 60;
-        return String.format("%d days %d hrs %d mins", days, hours, mins);
-    }
+
 }
