@@ -848,7 +848,12 @@ public class DccPOController {
             if (filters.containsKey("createdByName") && !filters.get("createdByName").toString().trim().isEmpty()) {
                 fieldFilters.put("createdByName", filters.get("createdByName").toString().trim());
             }
-            // ADDED: Support "createdBy" as well
+
+            if (filters.containsKey("supplierId") && !filters.get("supplierId").toString().trim().isEmpty()
+                    && !filters.get("supplierId").toString().trim().equals("0")) {
+                fieldFilters.put("supplierId", filters.get("supplierId").toString().trim());
+            }
+
             if (filters.containsKey("createdBy") && !filters.get("createdBy").toString().trim().isEmpty()) {
                 fieldFilters.put("createdByName", filters.get("createdBy").toString().trim());
             }
@@ -964,6 +969,12 @@ public class DccPOController {
                                 case "createdByName":
                                     if (dto.getCreatedByName() == null ||
                                             !dto.getCreatedByName().toLowerCase().equals(value)) {
+                                        return false;
+                                    }
+                                    break;
+                                case "supplierId":
+                                    if (dto.getSupplierId() == null ||
+                                            !dto.getSupplierId().toLowerCase().equals(value)) {
                                         return false;
                                     }
                                     break;
