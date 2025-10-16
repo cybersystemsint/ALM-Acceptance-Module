@@ -676,7 +676,7 @@ public class DccPOService {
         return (poQtyNew != null && !poQtyNew.isEmpty()) ? Double.parseDouble(poQtyNew) : purchaseOrder.getAmountDueLine();
     }
 
-    // Add this method to DccPOService.java
+    // Synchronous method for filter endpoint to avoid async blocking with CompletableFuture.get()
     public DccPOFetchResult getDccPOCombinedViewSync(
             String supplierId,
             String pendingApprovers,
