@@ -19,6 +19,8 @@ public class AgingReportDTO {
     private BigDecimal totalDeliveredQty;
     private BigDecimal totalUnitPrice;
     private String currency;
+    private String projectName;
+    private String inScopeOfWork;
     
 
     // Constructors, getters and setters
@@ -42,7 +44,9 @@ public class AgingReportDTO {
             String departmentName,
             BigDecimal totalDeliveredQty,
             BigDecimal totalUnitPrice,
-            String currency
+            String currency,
+            String projectName,
+            String inScopeOfWork
     ) {
         this.recordNo = recordNo;
         this.poNumber = poNumber;
@@ -60,6 +64,8 @@ public class AgingReportDTO {
         this.totalDeliveredQty = totalDeliveredQty;
         this.totalUnitPrice = totalUnitPrice;
         this.currency = currency;
+        this.projectName = projectName;
+        this.inScopeOfWork = inScopeOfWork;
     }
 
     // Getters and Setters
@@ -114,6 +120,23 @@ public class AgingReportDTO {
     public void setCurrency(String currency) {
         this.currency = currency;
     }
+        public String getProjectName() {
+        return projectName;
+    }
+
+    public void setProjectName(String projectName) {
+        this.projectName = projectName;
+    }
+
+    public String getInScopeOfWork() {
+        return inScopeOfWork;
+    }
+
+    public void setInScopeOfWork(String inScopeOfWork) {
+        this.inScopeOfWork = inScopeOfWork;
+    }
+
+
 
     
 }

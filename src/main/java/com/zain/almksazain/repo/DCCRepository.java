@@ -28,4 +28,11 @@ public interface DCCRepository extends JpaRepository<DCC, Long>, JpaSpecificatio
         @Query("SELECT d FROM DCC d WHERE d.recordNo IN :recordNos")
     List<DCC> findByRecordNoIn(@Param("recordNos") List<Long> recordNos);
        Page<DCC> findAllBySupplierId(String supplierId, Pageable pageable);
+           // For pageable queries:
+    Page<DCC> findAllByStatus(String status, Pageable pageable);
+    Page<DCC> findAllBySupplierIdAndStatus(String supplierId, String status, Pageable pageable);
+
+    // For unpaged / list results (used with Pageable.unpaged())
+    List<DCC> findAllByStatus(String status);
+    List<DCC> findAllBySupplierIdAndStatus(String supplierId, String status);
 }
