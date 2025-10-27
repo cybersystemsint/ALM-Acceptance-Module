@@ -926,7 +926,8 @@ public DeferredResult<ResponseEntity<byte[]>> exportDccPOCombinedViewToExcelV2(@
                     row.createCell(col++).setCellValue(dto.getPoLineDescription());
                     row.createCell(col++).setCellValue(dto.getUplLineDescription());
                     row.createCell(col++).setCellValue(dto.getPoPendingQuantity());
-                    row.createCell(col++).setCellValue(dto.getPoOrderQuantity());
+                    row.createCell(col++).setCellValue(dto.getLnDeliveredQty());
+//                    row.createCell(col++).setCellValue(dto.getPoOrderQuantity());
                     row.createCell(col++).setCellValue(dto.getLnLocationName());
                     row.createCell(col++).setCellValue(dto.getLnScopeOfWork());
                     // Date: In-Service Date (parse from String)
