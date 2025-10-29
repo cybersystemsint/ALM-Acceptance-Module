@@ -103,19 +103,35 @@ public class DccPoCombinedService {
 
         Page<DCC> pagedDcc;
         List<DCC> dccList;
-        if (hasFilter) {
-            Pageable unpaged = Pageable.unpaged();
-            pagedDcc = (supplierId != null && !"0".equals(supplierId))
-                    ? dccRepository.findAllBySupplierId(supplierId, unpaged)
-                    : dccRepository.findAll(unpaged);
-            dccList = pagedDcc.getContent();
-        } else {
-            Pageable pageable = PageRequest.of(page - 1, size, Sort.by(Sort.Direction.DESC, "recordNo"));
-            pagedDcc = (supplierId != null && !"0".equals(supplierId))
-                    ? dccRepository.findAllBySupplierId(supplierId, pageable)
-                    : dccRepository.findAll(pageable);
-            dccList = pagedDcc.getContent();
-        }
+
+        final String onlyStatus = "inprocess";
+        
+        // if (hasFilter) {
+        //     Pageable unpaged = Pageable.unpaged();
+        //     pagedDcc = (supplierId != null && !"0".equals(supplierId))
+        //             ? dccRepository.findAllBySupplierId(supplierId, unpaged)
+        //             : dccRepository.findAll(unpaged);
+        //     dccList = pagedDcc.getContent();
+        // } else {
+        //     Pageable pageable = PageRequest.of(page - 1, size, Sort.by(Sort.Direction.DESC, "recordNo"));
+        //     pagedDcc = (supplierId != null && !"0".equals(supplierId))
+        //             ? dccRepository.findAllBySupplierId(supplierId, pageable)
+        //             : dccRepository.findAll(pageable);
+        //     dccList = pagedDcc.getContent();
+        // }
+            if (hasFilter) {
+        Pageable unpaged = Pageable.unpaged();
+        pagedDcc = (supplierId != null && !"0".equals(supplierId))
+                ? dccRepository.findAllBySupplierIdAndStatus(supplierId, onlyStatus, unpaged)
+                : dccRepository.findAllByStatus(onlyStatus, unpaged);
+        dccList = pagedDcc.getContent();
+    } else {
+        Pageable pageable = PageRequest.of(page - 1, size, Sort.by(Sort.Direction.DESC, "recordNo"));
+        pagedDcc = (supplierId != null && !"0".equals(supplierId))
+                ? dccRepository.findAllBySupplierIdAndStatus(supplierId, onlyStatus, pageable)
+                : dccRepository.findAllByStatus(onlyStatus, pageable);
+        dccList = pagedDcc.getContent();
+    }
 
         Map<String, Object> preloaded = preloadRelatedData(dccList);
 
@@ -689,18 +705,20 @@ public Map<String, Object> getAgingReportWithMultipleFilters(
     Page<DCC> pagedDcc;
     List<DCC> dccList;
     
+    final String onlyStatus = "inprocess";
+
     if (hasFilters) {
         Pageable unpaged = Pageable.unpaged();
         pagedDcc = (supplierId != null && !"0".equals(supplierId))
-                ? dccRepository.findAllBySupplierId(supplierId, unpaged)
-                : dccRepository.findAll(unpaged);
+                ? dccRepository.findAllBySupplierIdAndStatus(supplierId, onlyStatus, unpaged)
+                : dccRepository.findAllByStatus(onlyStatus, unpaged);
         dccList = pagedDcc.getContent();
         System.out.println("Loaded " + dccList.size() + " DCC records for filtering");
     } else {
         Pageable pageable = PageRequest.of(page - 1, size, Sort.by(Sort.Direction.DESC, "recordNo"));
         pagedDcc = (supplierId != null && !"0".equals(supplierId))
-                ? dccRepository.findAllBySupplierId(supplierId, pageable)
-                : dccRepository.findAll(pageable);
+                ? dccRepository.findAllBySupplierIdAndStatus(supplierId, onlyStatus, pageable)
+                : dccRepository.findAllByStatus(onlyStatus, pageable);
         dccList = pagedDcc.getContent();
         System.out.println("Loaded " + dccList.size() + " DCC records with pagination");
     }
