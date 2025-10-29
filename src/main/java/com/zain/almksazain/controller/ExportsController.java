@@ -39,6 +39,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
+import com.zain.almksazain.services.PurchaseOrderExportService;
 
 @RestController
 @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
@@ -46,6 +47,8 @@ public class ExportsController {
     // private static final Logger logger = LoggerFactory.getLogger(ExportsController.class);
     @Autowired
     private JdbcTemplate jdbcTemplate;
+    @Autowired
+     private  PurchaseOrderExportService exportService;
 
 
 
@@ -332,7 +335,7 @@ private String convertToSqlDate(String input) {
 }
 
 
-     @PostMapping(value = "/reports/getNestedPurchaseOrders/export")
+      @PostMapping(value = "/reports/getNestedPurchaseOrders/export")
     public void exportPurchaseOrdersNested(@RequestBody String req, HttpServletResponse response) throws IOException {
         try {
             JsonObject obj = JsonParser.parseString(req).getAsJsonObject();
@@ -349,12 +352,12 @@ private String convertToSqlDate(String input) {
             searchableColumns.put("lineNumber", "PO.lineNumber");
             searchableColumns.put("recordNo", "PO.recordNo");
             searchableColumns.put("lineCancelFlag", "PO.lineCancelFlag");
+            // extend this map if you allow more client filter keys
 
             // numeric columns that should use exact match / IN semantics
-
             Set<String> numericColumns = new HashSet<>(Arrays.asList(
-        "recordNo", "lineNumber", "vendorNumber", "supplierId", "poNumber"
-       ));
+                    "recordNo", "lineNumber", "vendorNumber", "supplierId", "poNumber"
+            ));
 
             // control keys that are not filters
             Set<String> controlKeys = new HashSet<>(Arrays.asList(
@@ -362,12 +365,11 @@ private String convertToSqlDate(String input) {
                     "poDateFrom", "poDateTo", "format"
             ));
 
-            // Build filtersObj
+            // Build filtersObj from either nested "filters" or top-level keys (legacy support)
             JsonObject filtersObj = new JsonObject();
             if (obj.has("filters") && obj.get("filters").isJsonObject()) {
                 filtersObj = obj.getAsJsonObject("filters");
             } else {
-                // collect top-level keys as filters (except control keys)
                 for (Map.Entry<String, JsonElement> ent : obj.entrySet()) {
                     String key = ent.getKey();
                     if (controlKeys.contains(key)) continue;
@@ -387,9 +389,8 @@ private String convertToSqlDate(String input) {
                 }
             }
 
-            // Build WHERE clause and params (same style as getNestedPurchaseOrders)
-            jdbcTemplate.execute("SET SESSION sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''))");
-            StringBuilder whereClause = new StringBuilder(" WHERE 1=1 ");
+            // Build WHERE fragment (no leading WHERE) and params
+            StringBuilder whereFrag = new StringBuilder(); // will contain " AND ..." pieces
             List<Object> params = new ArrayList<>();
 
             for (Map.Entry<String, JsonElement> entry : filtersObj.entrySet()) {
@@ -414,27 +415,27 @@ private String convertToSqlDate(String input) {
                     if (tokens.length == 0) continue;
 
                     if (numericColumns.contains(columnKey)) {
-                        whereClause.append(" AND ").append(sqlCol).append(" IN (")
+                        whereFrag.append(" AND ").append(sqlCol).append(" IN (")
                                 .append(String.join(",", Collections.nCopies(tokens.length, "?"))).append(") ");
                         for (String t : tokens) params.add(t);
                     } else {
                         // grouped OR of LIKEs for strings
-                        whereClause.append(" AND (");
+                        whereFrag.append(" AND (");
                         for (int i = 0; i < tokens.length; i++) {
-                            if (i > 0) whereClause.append(" OR ");
-                            whereClause.append("LOWER(").append(sqlCol).append(") LIKE LOWER(?)");
+                            if (i > 0) whereFrag.append(" OR ");
+                            whereFrag.append("LOWER(").append(sqlCol).append(") LIKE LOWER(?)");
                             params.add("%" + tokens[i] + "%");
                         }
-                        whereClause.append(") ");
+                        whereFrag.append(") ");
                     }
                 } else {
                     // single value
-                   if (numericColumns.contains(columnKey)) {
-                    whereClause.append(" AND LOWER(").append(sqlCol).append(") = LOWER(?) ");
-                    params.add(rawValue);
-
+                    if (numericColumns.contains(columnKey)) {
+                        // numeric exact style
+                        whereFrag.append(" AND ").append(sqlCol).append(" = ? ");
+                        params.add(rawValue);
                     } else {
-                        whereClause.append(" AND LOWER(").append(sqlCol).append(") LIKE LOWER(?) ");
+                        whereFrag.append(" AND LOWER(").append(sqlCol).append(") LIKE LOWER(?) ");
                         params.add("%" + rawValue + "%");
                     }
                 }
@@ -444,26 +445,26 @@ private String convertToSqlDate(String input) {
             String poDateFrom = obj.has("poDateFrom") ? convertToSqlDate(safeGetAsString(obj, "poDateFrom")) : "";
             String poDateTo = obj.has("poDateTo") ? convertToSqlDate(safeGetAsString(obj, "poDateTo")) : "";
             if (!poDateFrom.isEmpty() && !poDateTo.isEmpty()) {
-                whereClause.append(" AND DATE(PO.poDate) BETWEEN ? AND ? ");
+                whereFrag.append(" AND DATE(PO.poDate) BETWEEN ? AND ? ");
                 params.add(poDateFrom);
                 params.add(poDateTo);
             } else if (!poDateFrom.isEmpty()) {
-                whereClause.append(" AND DATE(PO.poDate) >= ? ");
+                whereFrag.append(" AND DATE(PO.poDate) >= ? ");
                 params.add(poDateFrom);
             } else if (!poDateTo.isEmpty()) {
-                whereClause.append(" AND DATE(PO.poDate) <= ? ");
+                whereFrag.append(" AND DATE(PO.poDate) <= ? ");
                 params.add(poDateTo);
             }
 
-            // Pagination parameters
+            // Pagination parameters (used to paginate by PO number)
             int page = obj.has("page") ? Math.max(1, obj.get("page").getAsInt()) : 1;
             int size = obj.has("size") ? Math.max(1, obj.get("size").getAsInt()) : 20000;
 
-            // Fetch unique PO numbers using the same WHERE clause
-            String uniquePOsSql = "SELECT DISTINCT PO.poNumber FROM tb_PurchaseOrder PO " + whereClause.toString() + " ORDER BY PO.poNumber";
+            // Fetch unique PO numbers using the same WHERE fragment (this result set is small compared to lines)
+            String uniquePOsSql = "SELECT DISTINCT PO.poNumber FROM tb_PurchaseOrder PO WHERE 1=1 " + whereFrag.toString() + " ORDER BY PO.poNumber";
             List<String> uniquePONumbers = jdbcTemplate.queryForList(uniquePOsSql, params.toArray(), String.class);
 
-            if (uniquePONumbers.isEmpty()) {
+            if (uniquePONumbers == null || uniquePONumbers.isEmpty()) {
                 sendEmptyWorkbook(response, "No data matched the provided filters");
                 return;
             }
@@ -483,237 +484,21 @@ private String convertToSqlDate(String input) {
                 }
             }
 
-            // Fetch all line items for the selected POs using SELECT * to avoid Unknown column issues
-            String inClause = pagedPONumbers.stream().map(p -> "?").collect(Collectors.joining(","));
-            List<Object> lineParams = new ArrayList<>(pagedPONumbers.size());
-            lineParams.addAll(pagedPONumbers);
-
-            String lineItemsSql = "SELECT * FROM tb_PurchaseOrder PO WHERE PO.poNumber IN (" + inClause + ") ORDER BY PO.poNumber, PO.lineNumber";
-            List<Map<String, Object>> lineItems = jdbcTemplate.queryForList(lineItemsSql, lineParams.toArray());
-
-            // Group by PO number and compute totals in Java (defensive: only use columns that exist in the Map)
-            Map<String, Map<String, Object>> groupedResults = new LinkedHashMap<>();
-            for (Map<String, Object> lineItem : lineItems) {
-                String poNumber = String.valueOf(lineItem.getOrDefault("poNumber", ""));
-                if (!groupedResults.containsKey(poNumber)) {
-                    Map<String, Object> groupedRow = new LinkedHashMap<>();
-                    // copy all top-level fields present in this row to the grouped header (we will remove line fields)
-                    groupedRow.putAll(lineItem);
-
-                    // Ensure fields that might not exist are present with defaults
-                    groupedRow.putIfAbsent("projectName", "");
-                    groupedRow.putIfAbsent("recordNo", "");
-                    groupedRow.putIfAbsent("vendorName", lineItem.getOrDefault("vendorNumber", ""));
-                    groupedRow.putIfAbsent("currency", lineItem.getOrDefault("currency", ""));
-                    groupedRow.putIfAbsent("createdDate", null);
-                    groupedRow.putIfAbsent("approvedDate", null);
-
-                    // Convert boolean-like flags to N/Y if present
-                    Object lc = lineItem.get("lineCancelFlag");
-                    groupedRow.put("lineCancelFlag", (lc == null) ? "" : ("false".equalsIgnoreCase(String.valueOf(lc)) ? "N" : "Y"));
-                    Object sa = lineItem.get("prSubAllow");
-                    groupedRow.put("prSubAllow", (sa == null) ? "" : ("false".equalsIgnoreCase(String.valueOf(sa)) ? "N" : "Y"));
-
-                    // Initialize totals
-                    groupedRow.put("totalPoQtyNew", 0.0);
-                    groupedRow.put("totalQuantityReceived", 0.0);
-                    groupedRow.put("totalQuantityDueOld", 0.0);
-                    groupedRow.put("totalQuantityDueNew", 0.0);
-                    groupedRow.put("totalQuantityBilled", 0.0);
-                    groupedRow.put("totalpoOrderQuantity", 0.0);
-                    groupedRow.put("totallinePriceInSAR", 0.0);
-                    groupedRow.put("totalamountBilled", 0.0);
-
-                    groupedRow.put("POlineItems", new ArrayList<Map<String, Object>>());
-                    groupedResults.put(poNumber, groupedRow);
-                }
-
-                // Build line map with only the line-level keys we need
-                Map<String, Object> poLineItem = new LinkedHashMap<>();
-                poLineItem.put("recordNo", lineItem.get("recordNo"));
-                poLineItem.put("poNumber", lineItem.get("poNumber"));
-                poLineItem.put("lineNumber", lineItem.get("lineNumber"));
-                poLineItem.put("itemPartNumber", lineItem.get("itemPartNumber"));
-                poLineItem.put("poLineDescription", lineItem.get("poLineDescription"));
-                poLineItem.put("poOrderQuantity", lineItem.get("poOrderQuantity"));
-                poLineItem.put("poQtyNew", lineItem.get("poQtyNew"));
-                poLineItem.put("quantityReceived", lineItem.get("quantityReceived"));
-                poLineItem.put("amountReceived", lineItem.get("amountReceived"));
-                poLineItem.put("quantityDueOld", lineItem.get("quantityDueOld"));
-                poLineItem.put("amountDue", lineItem.get("amountDue"));
-                poLineItem.put("quantityDueNew", lineItem.get("quantityDueNew"));
-                poLineItem.put("amountDueNew", lineItem.get("amountDueNew"));
-                poLineItem.put("quantityBilled", lineItem.get("quantityBilled"));
-                poLineItem.put("amountBilled", lineItem.get("amountBilled"));
-                poLineItem.put("unitPriceInSAR", lineItem.get("unitPriceInSAR"));
-                poLineItem.put("linePriceInSAR", lineItem.get("linePriceInSAR"));
-                poLineItem.put("descopedLinePriceInPoCurrency", lineItem.get("descopedLinePriceInPoCurrency"));
-                poLineItem.put("newLinePriceInPoCurrency", lineItem.get("newLinePriceInPoCurrency"));
-
-                ((List<Map<String, Object>>) groupedResults.get(poNumber).get("POlineItems")).add(poLineItem);
-
-                // Update totals defensively
-                Map<String, Object> groupedRow = groupedResults.get(poNumber);
-                groupedRow.put("totalPoQtyNew", toDouble(groupedRow.get("totalPoQtyNew")) + toDouble(poLineItem.get("poQtyNew")));
-                groupedRow.put("totalQuantityReceived", toDouble(groupedRow.get("totalQuantityReceived")) + toDouble(poLineItem.get("quantityReceived")));
-                groupedRow.put("totalQuantityDueOld", toDouble(groupedRow.get("totalQuantityDueOld")) + toDouble(poLineItem.get("quantityDueOld")));
-                groupedRow.put("totalQuantityDueNew", toDouble(groupedRow.get("totalQuantityDueNew")) + toDouble(poLineItem.get("quantityDueNew")));
-                groupedRow.put("totalQuantityBilled", toDouble(groupedRow.get("totalQuantityBilled")) + toDouble(poLineItem.get("quantityBilled")));
-                groupedRow.put("totalpoOrderQuantity", toDouble(groupedRow.get("totalpoOrderQuantity")) + toDouble(poLineItem.get("poOrderQuantity")));
-                groupedRow.put("totallinePriceInSAR", toDouble(groupedRow.get("totallinePriceInSAR")) + toDouble(poLineItem.get("linePriceInSAR")));
-                groupedRow.put("totalamountBilled", toDouble(groupedRow.get("totalamountBilled")) + toDouble(poLineItem.get("amountBilled")));
+            // Append PO-number IN-clause to whereFrag and create final params list for export
+            StringBuilder finalWhere = new StringBuilder(whereFrag); // copy base filters
+            List<Object> finalParams = new ArrayList<>(params);
+            if (!pagedPONumbers.isEmpty()) {
+                finalWhere.append(" AND PO.poNumber IN (")
+                        .append(pagedPONumbers.stream().map(p -> "?").collect(Collectors.joining(",")))
+                        .append(") ");
+                finalParams.addAll(pagedPONumbers);
             }
 
-            // Prepare Excel response
-            response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-            response.setHeader("Content-Disposition", "attachment; filename=\"purchase_orders_export.xlsx\"");
+            // Delegate to streaming export service which will SELECT only needed columns, ORDER BY PO.poNumber, PO.lineNumber
+            exportService.exportToExcel(finalWhere.toString(), finalParams, response);
 
-            // Column ordering: PO columns then line columns
-            List<String> poCols = Arrays.asList(
-                    "Purchase Order", "Project Name", "PR (recordNo)", "Type Lookup Code", "Vendor Name",
-                    "Currency Code", "Total PO Qty New", "Total Order Qty", "Total Received Qty",
-                    "Total Qty Due (Old)", "Total Qty Due (New)", "Total Billed Qty", "Total Line Price (SAR)",
-                    "Created Date", "Approved Date"
-            );
-
-            List<String> lineCols = Arrays.asList(
-                    "Line Number", "Item Part Number", "Line Description", "Order Qty", "PO Qty New",
-                    "Qty Received", "Amount Received", "Qty Due Old", "Amount Due Old", "Qty Due New",
-                    "Amount Due New", "Qty Billed", "Amount Billed", "Unit Price (SAR)", "Line Price (SAR)",
-                    "Descoped Line Price PO Currency (SAR)", "New Line Price PO Currency (SAR)"
-            );
-
-            try (SXSSFWorkbook workbook = new SXSSFWorkbook(100)) {
-                Sheet sheet = workbook.createSheet("PO Export");
-                int rowIdx = 0;
-
-                // Header row
-                Row header = sheet.createRow(rowIdx++);
-                int colIdx = 0;
-                for (String h : poCols) header.createCell(colIdx++).setCellValue(h);
-                for (String h : lineCols) header.createCell(colIdx++).setCellValue(h);
-
-                // Date style
-                CellStyle dateCellStyle = workbook.createCellStyle();
-                CreationHelper createHelper = workbook.getCreationHelper();
-                short dateFormat = createHelper.createDataFormat().getFormat("dd-mmm-yyyy");
-                dateCellStyle.setDataFormat(dateFormat);
-                dateCellStyle.setAlignment(HorizontalAlignment.CENTER);
-
-                // Write rows: one row per line, PO columns repeated
-                for (Map.Entry<String, Map<String, Object>> poEntry : groupedResults.entrySet()) {
-                    Map<String, Object> po = poEntry.getValue();
-                    List<Map<String, Object>> lines = (List<Map<String, Object>>) po.get("POlineItems");
-                    if (lines == null || lines.isEmpty()) {
-                        // still write a PO-only row (with blanks for line columns)
-                        Row r = sheet.createRow(rowIdx++);
-                        int c = 0;
-                        r.createCell(c++).setCellValue(defaultString(po.get("poNumber")));
-                        r.createCell(c++).setCellValue(defaultString(po.get("projectName")));
-                        r.createCell(c++).setCellValue(defaultString(po.get("recordNo")));
-                        r.createCell(c++).setCellValue(defaultString(po.get("typeLookupCode")));
-                        r.createCell(c++).setCellValue(defaultString(po.get("vendorName")));
-                        r.createCell(c++).setCellValue(defaultString(po.get("currency")));
-                        r.createCell(c++).setCellValue(getDoubleString(po.get("totalPoQtyNew")));
-                        r.createCell(c++).setCellValue(getDoubleString(po.get("totalpoOrderQuantity")));
-                        r.createCell(c++).setCellValue(getDoubleString(po.get("totalQuantityReceived")));
-                        r.createCell(c++).setCellValue(getDoubleString(po.get("totalQuantityDueOld")));
-                        r.createCell(c++).setCellValue(getDoubleString(po.get("totalQuantityDueNew")));
-                        r.createCell(c++).setCellValue(getDoubleString(po.get("totalQuantityBilled")));
-                        r.createCell(c++).setCellValue(getDoubleString(po.get("totallinePriceInSAR")));
-                        // dates
-                        Timestamp cd = (po.get("createdDate") instanceof Timestamp) ? (Timestamp) po.get("createdDate") : null;
-                        if (cd != null) {
-                            Cell cell = r.createCell(c++);
-                            cell.setCellType(CellType.NUMERIC);
-                            cell.setCellValue(new java.util.Date(cd.getTime()));
-                            cell.setCellStyle(dateCellStyle);
-                        } else {
-                            r.createCell(c++).setCellValue("");
-                        }
-                        Timestamp ad = (po.get("approvedDate") instanceof Timestamp) ? (Timestamp) po.get("approvedDate") : null;
-                        if (ad != null) {
-                            Cell cell = r.createCell(c++);
-                            cell.setCellType(CellType.NUMERIC);
-                            cell.setCellValue(new java.util.Date(ad.getTime()));
-                            cell.setCellStyle(dateCellStyle);
-                        } else {
-                            r.createCell(c++).setCellValue("");
-                        }
-                        // fill line columns with blanks
-                        for (int i = 0; i < lineCols.size(); i++) r.createCell(c++).setCellValue("");
-                        continue;
-                    }
-
-                    // Write one row per line item
-                    for (Map<String, Object> line : lines) {
-                        Row r = sheet.createRow(rowIdx++);
-                        int c = 0;
-                        // PO-level repeated columns
-                        r.createCell(c++).setCellValue(defaultString(po.get("poNumber")));
-                        r.createCell(c++).setCellValue(defaultString(po.get("projectName")));
-                        r.createCell(c++).setCellValue(defaultString(po.get("recordNo")));
-                        r.createCell(c++).setCellValue(defaultString(po.get("typeLookupCode")));
-                        r.createCell(c++).setCellValue(defaultString(po.get("vendorName")));
-                        r.createCell(c++).setCellValue(defaultString(po.get("currency")));
-                        r.createCell(c++).setCellValue(getDoubleString(po.get("totalPoQtyNew")));
-                        r.createCell(c++).setCellValue(getDoubleString(po.get("totalpoOrderQuantity")));
-                        r.createCell(c++).setCellValue(getDoubleString(po.get("totalQuantityReceived")));
-                        r.createCell(c++).setCellValue(getDoubleString(po.get("totalQuantityDueOld")));
-                        r.createCell(c++).setCellValue(getDoubleString(po.get("totalQuantityDueNew")));
-                        r.createCell(c++).setCellValue(getDoubleString(po.get("totalQuantityBilled")));
-                        r.createCell(c++).setCellValue(getDoubleString(po.get("totallinePriceInSAR")));
-
-                        // Created Date
-                        Timestamp cd = (po.get("createdDate") instanceof Timestamp) ? (Timestamp) po.get("createdDate") : null;
-                        if (cd != null) {
-                            Cell cell = r.createCell(c++);
-                            cell.setCellType(CellType.NUMERIC);
-                            cell.setCellValue(new java.util.Date(cd.getTime()));
-                            cell.setCellStyle(dateCellStyle);
-                        } else {
-                            r.createCell(c++).setCellValue("");
-                        }
-                        // Approved Date
-                        Timestamp ad = (po.get("approvedDate") instanceof Timestamp) ? (Timestamp) po.get("approvedDate") : null;
-                        if (ad != null) {
-                            Cell cell = r.createCell(c++);
-                            cell.setCellType(CellType.NUMERIC);
-                            cell.setCellValue(new java.util.Date(ad.getTime()));
-                            cell.setCellStyle(dateCellStyle);
-                        } else {
-                            r.createCell(c++).setCellValue("");
-                        }
-
-                        // Line-level columns
-                        r.createCell(c++).setCellValue(defaultString(line.get("lineNumber")));
-                        r.createCell(c++).setCellValue(defaultString(line.get("itemPartNumber")));
-                        r.createCell(c++).setCellValue(defaultString(line.get("poLineDescription")));
-                        r.createCell(c++).setCellValue(getDoubleString(line.get("poOrderQuantity")));
-                        r.createCell(c++).setCellValue(getDoubleString(line.get("poQtyNew")));
-                        r.createCell(c++).setCellValue(getDoubleString(line.get("quantityReceived")));
-                        r.createCell(c++).setCellValue(getDoubleString(line.get("amountReceived")));
-                        r.createCell(c++).setCellValue(getDoubleString(line.get("quantityDueOld")));
-                        r.createCell(c++).setCellValue(getDoubleString(line.get("amountDue")));
-                        r.createCell(c++).setCellValue(getDoubleString(line.get("quantityDueNew")));
-                        r.createCell(c++).setCellValue(getDoubleString(line.get("amountDueNew")));
-                        r.createCell(c++).setCellValue(getDoubleString(line.get("quantityBilled")));
-                        r.createCell(c++).setCellValue(getDoubleString(line.get("amountBilled")));
-                        r.createCell(c++).setCellValue(getDoubleString(line.get("unitPriceInSAR")));
-                        r.createCell(c++).setCellValue(getDoubleString(line.get("linePriceInSAR")));
-                        r.createCell(c++).setCellValue(getDoubleString(line.get("descopedLinePriceInPoCurrency")));
-                        r.createCell(c++).setCellValue(getDoubleString(line.get("newLinePriceInPoCurrency")));
-                    }
-                }
-
-                workbook.write(response.getOutputStream());
-                response.flushBuffer();
-                workbook.dispose();
-            }
         } catch (Exception e) {
-            // Log the full stacktrace (assumes a logger is available)
-            // logger.error("Excel export failed", e);
-            // If response already committed we can't replace it; just log or rethrow
+            // logger.error("Export failed", e);
             if (!response.isCommitted()) {
                 response.reset();
                 response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
@@ -724,30 +509,7 @@ private String convertToSqlDate(String input) {
         }
     }
 
-    // helper methods
-    private static Double toDouble(Object o) {
-        if (o == null) return 0.0;
-        if (o instanceof Number) return ((Number) o).doubleValue();
-        try {
-            return Double.parseDouble(String.valueOf(o));
-        } catch (Exception e) {
-            return 0.0;
-        }
-    }
-
-    private static String defaultString(Object o) {
-        return o == null ? "" : String.valueOf(o);
-    }
-
-    private static String getDoubleString(Object o) {
-        if (o == null) return "0";
-        if (o instanceof Number) return String.valueOf(((Number) o).doubleValue());
-        try {
-            return String.valueOf(Double.parseDouble(String.valueOf(o)));
-        } catch (Exception e) {
-            return String.valueOf(o);
-        }
-    }
+    // helpers --------------------------------------------------------------
 
     private static String safeGetAsString(JsonObject obj, String member) {
         try {
@@ -758,17 +520,17 @@ private String convertToSqlDate(String input) {
         }
     }
 
+
     private static void sendEmptyWorkbook(HttpServletResponse response, String firstCellText) throws IOException {
         response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         response.setHeader("Content-Disposition", "attachment; filename=\"purchase_orders_export.xlsx\"");
         try (SXSSFWorkbook workbook = new SXSSFWorkbook(100)) {
-            Sheet sheet = workbook.createSheet("PO Export");
-            Row header = sheet.createRow(0);
+            org.apache.poi.ss.usermodel.Sheet sheet = workbook.createSheet("PO Export");
+            org.apache.poi.ss.usermodel.Row header = sheet.createRow(0);
             header.createCell(0).setCellValue(firstCellText);
             workbook.write(response.getOutputStream());
             response.flushBuffer();
             workbook.dispose();
         }
     }
-
 }
