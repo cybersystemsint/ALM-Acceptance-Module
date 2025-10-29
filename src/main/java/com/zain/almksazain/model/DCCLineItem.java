@@ -20,7 +20,7 @@ public class DCCLineItem implements Serializable {
     private BigDecimal unitPrice;
     private String scopeOfWork;
     private String remarks;
-    private String dccId;
+   private String dccId;
     private String itemCode;
     private String actualItemCode;
     //NEW
@@ -39,9 +39,14 @@ public class DCCLineItem implements Serializable {
     private String linkId;
     private String tagNumber;
     private double poAcceptanceQty;
+            @ManyToOne(fetch = FetchType.LAZY)
+@JoinColumn(name = "dccId", referencedColumnName = "recordNo", insertable = false, updatable = false)
+private DCC dcc;
 
     // Constructors, getters, and setters
 
+
+    
     public String getItemCode() {
         return itemCode;
     }
@@ -90,13 +95,6 @@ public class DCCLineItem implements Serializable {
         this.uplItemDescription = uplItemDescription;
     }
 
-    public String getDccId() {
-        return dccId;
-    }
-
-    public void setDccId(String dccId) {
-        this.dccId = dccId;
-    }
 
     public long getRecordNo() {
         return recordNo;
@@ -248,5 +246,21 @@ public class DCCLineItem implements Serializable {
 
     public void setPoAcceptanceQty(double poAcceptanceQty) {
         this.poAcceptanceQty = poAcceptanceQty;
+    }
+
+    public DCC getDcc() {
+        return dcc;
+    }
+
+    public void setDcc(DCC dcc) {
+        this.dcc = dcc;
+    }
+
+    public String getDccId() {
+        return dccId;
+    }
+
+    public void setDccId(String dccId) {
+        this.dccId = dccId;
     }
 }
