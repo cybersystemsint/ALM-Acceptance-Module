@@ -1,6 +1,8 @@
 package com.zain.almksazain.controller;
 
 import java.io.IOException;
+import java.sql.SQLException;
+import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
@@ -9,10 +11,12 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 import javax.servlet.http.HttpServletResponse;
 
@@ -31,18 +35,23 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import com.google.gson.JsonElement;
 import com.google.gson.JsonPrimitive;
-import java.sql.Timestamp;
+import com.zain.almksazain.services.PurchaseOrderExportService;
 
 @RestController
 @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
 public class ExportsController {
+    // private static final Logger logger = LoggerFactory.getLogger(ExportsController.class);
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+    @Autowired
+     private  PurchaseOrderExportService exportService;
 
-@Autowired
-private JdbcTemplate jdbcTemplate;
+
+
 
 @PostMapping(value = "/reports/v2/capitalizationReport/export")
 @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
@@ -378,4 +387,203 @@ private String convertToSqlDate(String input) {
     }
 }
 
+
+      @PostMapping(value = "/reports/getNestedPurchaseOrders/export")
+    public void exportPurchaseOrdersNested(@RequestBody String req, HttpServletResponse response) throws IOException {
+        try {
+            JsonObject obj = JsonParser.parseString(req).getAsJsonObject();
+
+            // Whitelist columns mapping (input key -> SQL expression)
+            Map<String, String> searchableColumns = new HashMap<>();
+            searchableColumns.put("poNumber", "PO.poNumber");
+            searchableColumns.put("vendorNumber", "PO.vendorNumber");
+            searchableColumns.put("supplierId", "PO.vendorNumber"); // alias
+            searchableColumns.put("status", "PO.status");
+            searchableColumns.put("currency", "PO.currency");
+            searchableColumns.put("itemPartNumber", "PO.itemPartNumber");
+            searchableColumns.put("poLineDescription", "PO.poLineDescription");
+            searchableColumns.put("lineNumber", "PO.lineNumber");
+            searchableColumns.put("recordNo", "PO.recordNo");
+            searchableColumns.put("lineCancelFlag", "PO.lineCancelFlag");
+            // extend this map if you allow more client filter keys
+
+            // numeric columns that should use exact match / IN semantics
+            Set<String> numericColumns = new HashSet<>(Arrays.asList(
+                    "recordNo", "lineNumber", "vendorNumber", "supplierId", "poNumber"
+            ));
+
+            // control keys that are not filters
+            Set<String> controlKeys = new HashSet<>(Arrays.asList(
+                    "page", "size", "sort", "filters", "columnName", "searchQuery",
+                    "poDateFrom", "poDateTo", "format"
+            ));
+
+            // Build filtersObj from either nested "filters" or top-level keys (legacy support)
+            JsonObject filtersObj = new JsonObject();
+            if (obj.has("filters") && obj.get("filters").isJsonObject()) {
+                filtersObj = obj.getAsJsonObject("filters");
+            } else {
+                for (Map.Entry<String, JsonElement> ent : obj.entrySet()) {
+                    String key = ent.getKey();
+                    if (controlKeys.contains(key)) continue;
+                    JsonElement val = ent.getValue();
+                    if (val == null || val.isJsonNull()) continue;
+                    if (val.isJsonPrimitive()) {
+                        filtersObj.add(key, val);
+                    }
+                }
+                // legacy single-filter style
+                if (obj.has("columnName") && obj.has("searchQuery")) {
+                    String col = safeGetAsString(obj, "columnName");
+                    String q = safeGetAsString(obj, "searchQuery");
+                    if (col != null && !col.trim().isEmpty() && q != null && !q.trim().isEmpty()) {
+                        filtersObj.add(col, new JsonPrimitive(q));
+                    }
+                }
+            }
+
+            // Build WHERE fragment (no leading WHERE) and params
+            StringBuilder whereFrag = new StringBuilder(); // will contain " AND ..." pieces
+            List<Object> params = new ArrayList<>();
+
+            for (Map.Entry<String, JsonElement> entry : filtersObj.entrySet()) {
+                String columnKey = entry.getKey();
+                if (!searchableColumns.containsKey(columnKey)) {
+                    // ignore unknown/wildcard keys for safety
+                    continue;
+                }
+                String rawValue = entry.getValue().getAsString();
+                if (rawValue == null) continue;
+                rawValue = rawValue.trim();
+                if (rawValue.isEmpty()) continue;
+
+                String sqlCol = searchableColumns.get(columnKey);
+
+                // Multi-value (comma separated)
+                if (rawValue.contains(",")) {
+                    String[] tokens = Arrays.stream(rawValue.split(","))
+                            .map(String::trim)
+                            .filter(s -> !s.isEmpty())
+                            .toArray(String[]::new);
+                    if (tokens.length == 0) continue;
+
+                    if (numericColumns.contains(columnKey)) {
+                        whereFrag.append(" AND ").append(sqlCol).append(" IN (")
+                                .append(String.join(",", Collections.nCopies(tokens.length, "?"))).append(") ");
+                        for (String t : tokens) params.add(t);
+                    } else {
+                        // grouped OR of LIKEs for strings
+                        whereFrag.append(" AND (");
+                        for (int i = 0; i < tokens.length; i++) {
+                            if (i > 0) whereFrag.append(" OR ");
+                            whereFrag.append("LOWER(").append(sqlCol).append(") LIKE LOWER(?)");
+                            params.add("%" + tokens[i] + "%");
+                        }
+                        whereFrag.append(") ");
+                    }
+                } else {
+                    // single value
+                    if (numericColumns.contains(columnKey)) {
+                        // numeric exact style
+                        whereFrag.append(" AND ").append(sqlCol).append(" = ? ");
+                        params.add(rawValue);
+                    } else {
+                        whereFrag.append(" AND LOWER(").append(sqlCol).append(") LIKE LOWER(?) ");
+                        params.add("%" + rawValue + "%");
+                    }
+                }
+            }
+
+            // PO date range support (optional)
+            String poDateFrom = obj.has("poDateFrom") ? convertToSqlDate(safeGetAsString(obj, "poDateFrom")) : "";
+            String poDateTo = obj.has("poDateTo") ? convertToSqlDate(safeGetAsString(obj, "poDateTo")) : "";
+            if (!poDateFrom.isEmpty() && !poDateTo.isEmpty()) {
+                whereFrag.append(" AND DATE(PO.poDate) BETWEEN ? AND ? ");
+                params.add(poDateFrom);
+                params.add(poDateTo);
+            } else if (!poDateFrom.isEmpty()) {
+                whereFrag.append(" AND DATE(PO.poDate) >= ? ");
+                params.add(poDateFrom);
+            } else if (!poDateTo.isEmpty()) {
+                whereFrag.append(" AND DATE(PO.poDate) <= ? ");
+                params.add(poDateTo);
+            }
+
+            // Pagination parameters (used to paginate by PO number)
+            int page = obj.has("page") ? Math.max(1, obj.get("page").getAsInt()) : 1;
+            int size = obj.has("size") ? Math.max(1, obj.get("size").getAsInt()) : 20000;
+
+            // Fetch unique PO numbers using the same WHERE fragment (this result set is small compared to lines)
+            String uniquePOsSql = "SELECT DISTINCT PO.poNumber FROM tb_PurchaseOrder PO WHERE 1=1 " + whereFrag.toString() + " ORDER BY PO.poNumber";
+            List<String> uniquePONumbers = jdbcTemplate.queryForList(uniquePOsSql, params.toArray(), String.class);
+
+            if (uniquePONumbers == null || uniquePONumbers.isEmpty()) {
+                sendEmptyWorkbook(response, "No data matched the provided filters");
+                return;
+            }
+
+            // Apply pagination to the list of PO numbers before fetching lines (if requested)
+            List<String> pagedPONumbers;
+            if (page == 1 && size == 20000) {
+                pagedPONumbers = uniquePONumbers;
+            } else {
+                int from = (page - 1) * size;
+                int to = Math.min(from + size, uniquePONumbers.size());
+                if (from >= uniquePONumbers.size()) {
+                    sendEmptyWorkbook(response, "No data in requested page");
+                    return;
+                } else {
+                    pagedPONumbers = uniquePONumbers.subList(from, to);
+                }
+            }
+
+            // Append PO-number IN-clause to whereFrag and create final params list for export
+            StringBuilder finalWhere = new StringBuilder(whereFrag); // copy base filters
+            List<Object> finalParams = new ArrayList<>(params);
+            if (!pagedPONumbers.isEmpty()) {
+                finalWhere.append(" AND PO.poNumber IN (")
+                        .append(pagedPONumbers.stream().map(p -> "?").collect(Collectors.joining(",")))
+                        .append(") ");
+                finalParams.addAll(pagedPONumbers);
+            }
+
+            // Delegate to streaming export service which will SELECT only needed columns, ORDER BY PO.poNumber, PO.lineNumber
+            exportService.exportToExcel(finalWhere.toString(), finalParams, response);
+
+        } catch (Exception e) {
+            // logger.error("Export failed", e);
+            if (!response.isCommitted()) {
+                response.reset();
+                response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+                response.setContentType("text/plain; charset=utf-8");
+                response.getWriter().write("Excel export failed: " + e.toString());
+                response.getWriter().flush();
+            }
+        }
+    }
+
+    // helpers --------------------------------------------------------------
+
+    private static String safeGetAsString(JsonObject obj, String member) {
+        try {
+            if (!obj.has(member) || obj.get(member).isJsonNull()) return null;
+            return obj.get(member).getAsString();
+        } catch (Exception ex) {
+            return null;
+        }
+    }
+
+
+    private static void sendEmptyWorkbook(HttpServletResponse response, String firstCellText) throws IOException {
+        response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        response.setHeader("Content-Disposition", "attachment; filename=\"purchase_orders_export.xlsx\"");
+        try (SXSSFWorkbook workbook = new SXSSFWorkbook(100)) {
+            org.apache.poi.ss.usermodel.Sheet sheet = workbook.createSheet("PO Export");
+            org.apache.poi.ss.usermodel.Row header = sheet.createRow(0);
+            header.createCell(0).setCellValue(firstCellText);
+            workbook.write(response.getOutputStream());
+            response.flushBuffer();
+            workbook.dispose();
+        }
+    }
 }
