@@ -1157,6 +1157,12 @@ public class DccPOController {
                     filters.get("dateApproved").toString().trim() : "";
             String dccCreatedDate = filters.containsKey("dccCreatedDate") ?
                     filters.get("dccCreatedDate").toString().trim() : "";
+            String userAging = filters.containsKey("userAging") ?
+                    filters.get("userAging").toString().trim() : "";
+            String totalAging = filters.containsKey("totalAging") ?
+                    filters.get("totalAging").toString().trim() : "";
+            String pendingApproversFilter = filters.containsKey("pendingApproversFilter") ?
+                    filters.get("pendingApproversFilter").toString().trim() : "";
 
             page = Math.max(page, 1);
             size = Math.max(size, 1);
@@ -1224,6 +1230,26 @@ public class DccPOController {
                                         Date endDate = sdf.parse(approvedDateEnd);
                                         if (approvedDate.after(endDate)) return false;
                                     }
+                                }
+                            }
+                            if (!userAging.isEmpty()) {
+                                if (dto.getUserAging() == null ||
+                                        !dto.getUserAging().equals(userAging)) {
+                                    return false;
+                                }
+                            }
+
+                            if (!totalAging.isEmpty()) {
+                                if (dto.getTotalAging() == null ||
+                                        !dto.getTotalAging().equals(totalAging)) {
+                                    return false;
+                                }
+                            }
+
+                            if (!pendingApproversFilter.isEmpty()) {
+                                if (dto.getPendingApprovers() == null ||
+                                        !dto.getPendingApprovers().equals(pendingApproversFilter)) {
+                                    return false;
                                 }
                             }
 
