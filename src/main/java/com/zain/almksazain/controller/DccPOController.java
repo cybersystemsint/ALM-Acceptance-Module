@@ -1465,39 +1465,6 @@ public class DccPOController {
                             }
                         } else {
                             dateApprovedCell.setCellValue("");
-                    row.createCell(col++).setCellValue(firstRecord.getVendorName());
-                    row.createCell(col++).setCellValue(firstRecord.getCreatedBy());
-                    row.createCell(col++).setCellValue(firstRecord.getApprovalCount() != null ? firstRecord.getApprovalCount() : 0);
-                    row.createCell(col++).setCellValue(firstRecord.getPendingApprovers());
-                    row.createCell(col++).setCellValue(firstRecord.getUserAging());
-                    row.createCell(col++).setCellValue(firstRecord.getTotalAging());
-                    row.createCell(col++).setCellValue(firstRecord.getVendorComment());
-                    row.createCell(col++).setCellValue(firstRecord.getApproverComment());
-                    row.createCell(col++).setCellValue(dto.getLineNumber());
-                    row.createCell(col++).setCellValue(dto.getUplLineNumber());
-                    row.createCell(col++).setCellValue(dto.getLnProductSerialNo());
-                    row.createCell(col++).setCellValue(dto.getItemPartNumber());
-                    row.createCell(col++).setCellValue(dto.getActualItemCode());
-                    row.createCell(col++).setCellValue(dto.getUplLineItemCode());
-                    row.createCell(col++).setCellValue(dto.getpoAcceptanceQty() != null ? dto.getpoAcceptanceQty() : 0);
-                    row.createCell(col++).setCellValue(dto.getPoLineDescription());
-                    row.createCell(col++).setCellValue(dto.getUplLineDescription());
-                    row.createCell(col++).setCellValue(dto.getPoPendingQuantity());
-                    row.createCell(col++).setCellValue(dto.getLnDeliveredQty());
-//                    row.createCell(col++).setCellValue(dto.getPoOrderQuantity());
-                    row.createCell(col++).setCellValue(dto.getLnLocationName());
-                    row.createCell(col++).setCellValue(dto.getLnScopeOfWork());
-                    // Date: In-Service Date (parse from String)
-                    Cell inserviceDateCell = row.createCell(col++);
-                    String inserviceDateStr = dto.getLnInserviceDate();
-                    if (inserviceDateStr != null && !inserviceDateStr.isEmpty()) {
-                        try {
-                            Date inserviceDate = dateFormatter.parse(inserviceDateStr);
-                            inserviceDateCell.setCellValue(inserviceDate);
-                            inserviceDateCell.setCellStyle(dateOnlyStyle); // Use dd-MM-yyyy style
-                        } catch (ParseException e) {
-                            logger.warn("Failed to parse In-Service Date '{}': {}", inserviceDateStr, e.getMessage());
-                            inserviceDateCell.setCellValue(inserviceDateStr); // Fallback to string
                         }
 
                         row.createCell(col++).setCellValue(firstRecord.getVendorName());
@@ -1518,10 +1485,12 @@ public class DccPOController {
                         row.createCell(col++).setCellValue(dto.getPoLineDescription());
                         row.createCell(col++).setCellValue(dto.getUplLineDescription());
                         row.createCell(col++).setCellValue(dto.getPoPendingQuantity());
-                        row.createCell(col++).setCellValue(dto.getPoOrderQuantity());
+                        row.createCell(col++).setCellValue(dto.getLnDeliveredQty());
+//row.createCell(col++).setCellValue(dto.getPoOrderQuantity());
                         row.createCell(col++).setCellValue(dto.getLnLocationName());
                         row.createCell(col++).setCellValue(dto.getLnScopeOfWork());
-                        // Date: In-Service Date (parse from String)
+
+// Date: In-Service Date (parse from String)
                         Cell inserviceDateCell = row.createCell(col++);
                         String inserviceDateStr = dto.getLnInserviceDate();
                         if (inserviceDateStr != null && !inserviceDateStr.isEmpty()) {
@@ -1536,30 +1505,31 @@ public class DccPOController {
                         } else {
                             inserviceDateCell.setCellValue("");
                         }
+
                         row.createCell(col++).setCellValue(dto.getLinkId() != null ? String.valueOf(dto.getLinkId()) : "");
                         row.createCell(col++).setCellValue(dto.getTagNumber());
                         row.createCell(col++).setCellValue(dto.getLnRemarks());
 
 
-                        //The following has been commented as they are required  in the export templete
-//                    row.createCell(col++).setCellValue(firstRecord.getDccVendorEmail());
-//                    row.createCell(col++).setCellValue(firstRecord.getNewProjectName());
-//                    row.createCell(col++).setCellValue(firstRecord.getDccCurrency());
-//                    row.createCell(col++).setCellValue(firstRecord.getDccId() != null ? firstRecord.getDccId().toString() : "");
-//                    row.createCell(col++).setCellValue(firstRecord.getPoId());
-//                    row.createCell(col++).setCellValue(firstRecord.getProjectName());
-//                    row.createCell(col++).setCellValue(firstRecord.getSupplierId());
-//                    row.createCell(col++).setCellValue(firstRecord.getVendorNumber());
-//                    // Line fields from dto
-//                    row.createCell(col++).setCellValue(dto.getLnRecordNo() != null ? dto.getLnRecordNo().toString() : "");
-//                    row.createCell(col++).setCellValue(dto.getLnProductName());
-//                    row.createCell(col++).setCellValue(dto.getLnDeliveredQty() != null ? dto.getLnDeliveredQty() : 0);
-//                    row.createCell(col++).setCellValue(dto.getLnUnitPrice());
-//                    row.createCell(col++).setCellValue(dto.getPOLineAcceptanceQty());
-//                    row.createCell(col++).setCellValue(dto.getUplLineQuantity() != null ? dto.getUplLineQuantity() : 0);
-//                    row.createCell(col++).setCellValue(dto.getUnitOfMeasure());
-//                    row.createCell(col++).setCellValue(dto.getActiveOrPassive());
-//                    row.createCell(col++).setCellValue(dto.getUplPendingQuantity());
+//The following has been commented as they are not required in the export template
+//row.createCell(col++).setCellValue(firstRecord.getDccVendorEmail());
+//row.createCell(col++).setCellValue(firstRecord.getNewProjectName());
+//row.createCell(col++).setCellValue(firstRecord.getDccCurrency());
+//row.createCell(col++).setCellValue(firstRecord.getDccId() != null ? firstRecord.getDccId().toString() : "");
+//row.createCell(col++).setCellValue(firstRecord.getPoId());
+//row.createCell(col++).setCellValue(firstRecord.getProjectName());
+//row.createCell(col++).setCellValue(firstRecord.getSupplierId());
+//row.createCell(col++).setCellValue(firstRecord.getVendorNumber());
+// Line fields from dto
+//row.createCell(col++).setCellValue(dto.getLnRecordNo() != null ? dto.getLnRecordNo().toString() : "");
+//row.createCell(col++).setCellValue(dto.getLnProductName());
+//row.createCell(col++).setCellValue(dto.getLnDeliveredQty() != null ? dto.getLnDeliveredQty() : 0);
+//row.createCell(col++).setCellValue(dto.getLnUnitPrice());
+//row.createCell(col++).setCellValue(dto.getPOLineAcceptanceQty());
+//row.createCell(col++).setCellValue(dto.getUplLineQuantity() != null ? dto.getUplLineQuantity() : 0);
+//row.createCell(col++).setCellValue(dto.getUnitOfMeasure());
+//row.createCell(col++).setCellValue(dto.getActiveOrPassive());
+//row.createCell(col++).setCellValue(dto.getUplPendingQuantity());
                     }
                 }
 
