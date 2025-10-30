@@ -44,7 +44,7 @@ public class PurchaseOrderExportService {
    public void exportToExcel(String whereFragment, List<Object> params, HttpServletResponse response) throws SQLException, IOException {
         // Desired columns (DB column names, without PO. prefix)
         List<String> desiredCols = Arrays.asList(
-                "poNumber", "projectName", "recordNo", "typeLookupCode", "vendorName", "currency",
+                "poNumber", "projectName", "recordNo", "typeLookupCode", "vendorName","currencyCode",
                 "createdDate", "approvedDate", "lineNumber", "itemPartNumber", "poLineDescription",
                 "poOrderQuantity", "poQtyNew", "quantityReceived", "amountReceived",
                 "quantityDueOld", "amountDue", "quantityDueNew", "amountDueNew",
@@ -103,8 +103,7 @@ public class PurchaseOrderExportService {
             // Excel column headings (these are static labels for the sheet; missing DB columns will result in blank cells)
             List<String> poCols = Arrays.asList(
                     "Purchase Order", "Project Name", "PR (recordNo)", "Type Lookup Code", "Vendor Name",
-                    "Currency Code", "Total PO Qty New", "Total Order Qty", "Total Received Qty",
-                    "Total Qty Due (Old)", "Total Qty Due (New)", "Total Billed Qty", "Total Line Price (SAR)",
+                    "Currency Code",
                     "Created Date", "Approved Date"
             );
 
@@ -177,12 +176,12 @@ public class PurchaseOrderExportService {
                                 poHeader.put("recordNo", safeGetString(rs, "recordNo", rsColsLower));
                                 poHeader.put("typeLookupCode", safeGetString(rs, "typeLookupCode", rsColsLower));
                                 poHeader.put("vendorName", safeGetString(rs, "vendorName", rsColsLower));
-                                poHeader.put("currency", safeGetString(rs, "currency", rsColsLower));
+                                poHeader.put("currencyCode", safeGetString(rs, "currencyCode", rsColsLower));
                                 poHeader.put("createdDate", rsColsLower.contains("createddate") ? rs.getTimestamp("createdDate") : null);
                                 poHeader.put("approvedDate", rsColsLower.contains("approveddate") ? rs.getTimestamp("approvedDate") : null);
                             }
 
-                            // build line-level map using only available columns
+                            // build line-level map using only                                          available columns
                             Map<String, Object> line = new HashMap<>();
                             line.put("lineNumber", safeGetString(rs, "lineNumber", rsColsLower));
                             line.put("itemPartNumber", safeGetString(rs, "itemPartNumber", rsColsLower));
@@ -205,7 +204,7 @@ public class PurchaseOrderExportService {
                             poLines.add(line);
                             currentPo = poNumber;
                         }
-
+  
                         // flush last PO block
                         if (currentPo != null && !poLines.isEmpty()) {
                             rowIdx = writePoBlock(sheet, rowIdx, poHeader, poLines, dateCellStyle);
@@ -221,27 +220,8 @@ public class PurchaseOrderExportService {
         }
     }
 
-    // write all lines for a PO (computes totals defensively)
+    // write all lines for a PO (no PO-level totals written anymore)
     private int writePoBlock(Sheet sheet, int startRow, Map<String, Object> poHeader, List<Map<String, Object>> lines, CellStyle dateCellStyle) {
-        double totalPoQtyNew = 0.0;
-        double totalQuantityReceived = 0.0;
-        double totalQuantityDueOld = 0.0;
-        double totalQuantityDueNew = 0.0;
-        double totalQuantityBilled = 0.0;
-        double totalpoOrderQuantity = 0.0;
-        double totallinePriceInSAR = 0.0;
-        double totalamountBilled = 0.0;
-
-        for (Map<String, Object> line : lines) {
-            totalPoQtyNew += toDouble(line.get("poQtyNew"));
-            totalQuantityReceived += toDouble(line.get("quantityReceived"));
-            totalQuantityDueOld += toDouble(line.get("quantityDueOld"));
-            totalQuantityDueNew += toDouble(line.get("quantityDueNew"));
-            totalQuantityBilled += toDouble(line.get("quantityBilled"));
-            totalpoOrderQuantity += toDouble(line.get("poOrderQuantity"));
-            totallinePriceInSAR += toDouble(line.get("linePriceInSAR"));
-            totalamountBilled += toDouble(line.get("amountBilled"));
-        }
 
         for (Map<String, Object> line : lines) {
             Row r = sheet.createRow(startRow++);
@@ -251,14 +231,7 @@ public class PurchaseOrderExportService {
             r.createCell(c++).setCellValue(defaultString(poHeader.get("recordNo")));
             r.createCell(c++).setCellValue(defaultString(poHeader.get("typeLookupCode")));
             r.createCell(c++).setCellValue(defaultString(poHeader.get("vendorName")));
-            r.createCell(c++).setCellValue(defaultString(poHeader.get("currency")));
-            r.createCell(c++).setCellValue(getDoubleString(totalPoQtyNew));
-            r.createCell(c++).setCellValue(getDoubleString(totalpoOrderQuantity));
-            r.createCell(c++).setCellValue(getDoubleString(totalQuantityReceived));
-            r.createCell(c++).setCellValue(getDoubleString(totalQuantityDueOld));
-            r.createCell(c++).setCellValue(getDoubleString(totalQuantityDueNew));
-            r.createCell(c++).setCellValue(getDoubleString(totalQuantityBilled));
-            r.createCell(c++).setCellValue(getDoubleString(totallinePriceInSAR));
+            r.createCell(c++).setCellValue(defaultString(poHeader.get("currencyCode")));
 
             Timestamp cd = (poHeader.get("createdDate") instanceof Timestamp) ? (Timestamp) poHeader.get("createdDate") : null;
             if (cd != null) {
