@@ -2,16 +2,18 @@ package com.zain.almksazain.model;
 
 import javax.persistence.*;
 
-
-
 @Entity
-@Table(name = "tb_Departments")
+@Table(name = "tb_Department")
 public class departmentsdata {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
-    long recordNo;
-    String deptName;
-    boolean sysStatus;
+    private long recordNo;
+
+    @Column(name = "departmentName")
+    private String deptName;
+
+    @Column(name = "status") 
+    private boolean sysStatus;
 
     public long getRecordNo() {
         return recordNo;
