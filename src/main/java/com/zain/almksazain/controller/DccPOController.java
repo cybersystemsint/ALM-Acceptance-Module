@@ -824,21 +824,43 @@ public DeferredResult<ResponseEntity<byte[]>> exportDccPOCombinedViewToExcelV2(@
 
             CellStyle dateOnlyStyle = workbook.createCellStyle();
             dateOnlyStyle.setDataFormat(createHelper.createDataFormat().getFormat("dd-MM-yyyy"));
+
+            CellStyle headerStyle = workbook.createCellStyle();
+            Font headerFont = workbook.createFont();
+            headerFont.setBold(true);
+            headerFont.setColor(IndexedColors.BLACK.getIndex());
+            headerStyle.setFont(headerFont);
+
             // Create header row
             Row headerRow = sheet.createRow(0);
             String[] columnHeaders = {
-                    "Record No", "DCC PO Number", "New Project Name", "Acceptance Type", "Status", "Created Date", "Date Approved",
-                    "Vendor Comment", "DCC ID", "PO ID", "Project Name", "Supplier ID", "Vendor Number", "Vendor Name",
-                    "Created By", "Approval Count", "Pending Approvers", "Approver Comment", "User Aging", "Total Aging",
-                    "Vendor Email", "Currency", "Line Item Record No", "Product Name", "Serial Number", "Delivered Qty",
-                    "Location Name", "In-Service Date", "Unit Price", "Scope of Work", "Remarks", "Item Code", "Link ID",
-                    "Tag Number", "PO Line Number", "Actual Item Code", "UPL Line Number", "PO Acceptance Qty",
-                    "PO Line Acceptance Qty", "PO Pending Quantity", "PO Order Quantity", "Item Part Number",
-                    "PO Line Description", "UPL Line Quantity", "UPL Line Item Code", "UPL Line Description", "UOM",
-                    "Active/Passive", "UPL Pending Quantity"
+                    "Request No", "PO Number", "Project Name", "Acceptance Type", "Status", "Created Date", "Approval Date",
+                    "Vendor", "Created By", "Approval Count","Pending Approvers", "User Aging", "Total Aging", "Vendor Comment",
+                    "Last Approver Comment", "PO Line Number", "UPL Line Number", "Serial Number", "PO Item Code", "Actual Item Code",
+                    "UPL Item Code",  "PO Acceptance Qty", "PO Line Description", "UPL Line Description", "PO Pending Qty",
+                    "Acceptance Qty", "Location", "Scope of Work", "In Service Date", "Link ID", "TAG Number", "Remarks"
             };
+
+//            String[] columnHeaders = {
+//                    "Record No", "DCC PO Number", "New Project Name", "Acceptance Type", "Status", "Created Date", "Date Approved",
+//                    "Vendor Comment", "DCC ID", "PO ID", "Project Name", "Supplier ID", "Vendor Number", "Vendor Name",
+//                    "Created By", "Approval Count", "Pending Approvers", "Approver Comment", "User Aging", "Total Aging",
+//                    "Vendor Email", "Currency", "Line Item Record No", "Product Name", "Serial Number", "Delivered Qty",
+//                    "Location Name", "In-Service Date", "Unit Price", "Scope of Work", "Remarks", "Item Code", "Link ID",
+//                    "Tag Number", "PO Line Number", "Actual Item Code", "UPL Line Number", "PO Acceptance Qty",
+//                    "PO Line Acceptance Qty", "PO Pending Quantity", "PO Order Quantity", "Item Part Number",
+//                    "PO Line Description", "UPL Line Quantity", "UPL Line Item Code", "UPL Line Description", "UOM",
+//                    "Active/Passive", "UPL Pending Quantity"
+//            };
+//            for (int i = 0; i < columnHeaders.length; i++) {
+//                headerRow.createCell(i).setCellValue(columnHeaders[i]);
+//
+//            }
+
             for (int i = 0; i < columnHeaders.length; i++) {
-                headerRow.createCell(i).setCellValue(columnHeaders[i]);
+                Cell cell = headerRow.createCell(i);
+                cell.setCellValue(columnHeaders[i]);
+                cell.setCellStyle(headerStyle);
             }
 
             // Populate data rows - use firstRecord for parent fields, dto for line fields
@@ -851,7 +873,7 @@ public DeferredResult<ResponseEntity<byte[]>> exportDccPOCombinedViewToExcelV2(@
                     // Parent fields from firstRecord
                     row.createCell(col++).setCellValue(firstRecord.getDccRecordNo() != null ? firstRecord.getDccRecordNo().toString() : "");
                     row.createCell(col++).setCellValue(firstRecord.getDccPoNumber());
-                    row.createCell(col++).setCellValue(firstRecord.getNewProjectName());
+                    row.createCell(col++).setCellValue(firstRecord.getProjectName());
                     row.createCell(col++).setCellValue(firstRecord.getDccAcceptanceType());
                     row.createCell(col++).setCellValue(firstRecord.getDccStatus());
 
@@ -886,29 +908,28 @@ public DeferredResult<ResponseEntity<byte[]>> exportDccPOCombinedViewToExcelV2(@
                         dateApprovedCell.setCellValue("");
                     }
 
-                    row.createCell(col++).setCellValue(firstRecord.getVendorComment());
-                    row.createCell(col++).setCellValue(firstRecord.getDccId() != null ? firstRecord.getDccId().toString() : "");
-                    row.createCell(col++).setCellValue(firstRecord.getPoId());
-                    row.createCell(col++).setCellValue(firstRecord.getProjectName());
-                    row.createCell(col++).setCellValue(firstRecord.getSupplierId());
-                    row.createCell(col++).setCellValue(firstRecord.getVendorNumber());
                     row.createCell(col++).setCellValue(firstRecord.getVendorName());
                     row.createCell(col++).setCellValue(firstRecord.getCreatedBy());
                     row.createCell(col++).setCellValue(firstRecord.getApprovalCount() != null ? firstRecord.getApprovalCount() : 0);
                     row.createCell(col++).setCellValue(firstRecord.getPendingApprovers());
-                    row.createCell(col++).setCellValue(firstRecord.getApproverComment());
                     row.createCell(col++).setCellValue(firstRecord.getUserAging());
                     row.createCell(col++).setCellValue(firstRecord.getTotalAging());
-                    row.createCell(col++).setCellValue(firstRecord.getDccVendorEmail());
-                    row.createCell(col++).setCellValue(firstRecord.getDccCurrency());
-
-                    // Line fields from dto
-                    row.createCell(col++).setCellValue(dto.getLnRecordNo() != null ? dto.getLnRecordNo().toString() : "");
-                    row.createCell(col++).setCellValue(dto.getLnProductName());
+                    row.createCell(col++).setCellValue(firstRecord.getVendorComment());
+                    row.createCell(col++).setCellValue(firstRecord.getApproverComment());
+                    row.createCell(col++).setCellValue(dto.getLineNumber());
+                    row.createCell(col++).setCellValue(dto.getUplLineNumber());
                     row.createCell(col++).setCellValue(dto.getLnProductSerialNo());
-                    row.createCell(col++).setCellValue(dto.getLnDeliveredQty() != null ? dto.getLnDeliveredQty() : 0);
+                    row.createCell(col++).setCellValue(dto.getItemPartNumber());
+                    row.createCell(col++).setCellValue(dto.getActualItemCode());
+                    row.createCell(col++).setCellValue(dto.getUplLineItemCode());
+                    row.createCell(col++).setCellValue(dto.getpoAcceptanceQty() != null ? dto.getpoAcceptanceQty() : 0);
+                    row.createCell(col++).setCellValue(dto.getPoLineDescription());
+                    row.createCell(col++).setCellValue(dto.getUplLineDescription());
+                    row.createCell(col++).setCellValue(dto.getPoPendingQuantity());
+                    row.createCell(col++).setCellValue(dto.getLnDeliveredQty());
+//                    row.createCell(col++).setCellValue(dto.getPoOrderQuantity());
                     row.createCell(col++).setCellValue(dto.getLnLocationName());
-
+                    row.createCell(col++).setCellValue(dto.getLnScopeOfWork());
                     // Date: In-Service Date (parse from String)
                     Cell inserviceDateCell = row.createCell(col++);
                     String inserviceDateStr = dto.getLnInserviceDate();
@@ -924,29 +945,32 @@ public DeferredResult<ResponseEntity<byte[]>> exportDccPOCombinedViewToExcelV2(@
                     } else {
                         inserviceDateCell.setCellValue("");
                     }
-
-
-                    row.createCell(col++).setCellValue(dto.getLnUnitPrice());
-                    row.createCell(col++).setCellValue(dto.getLnScopeOfWork());
-                    row.createCell(col++).setCellValue(dto.getLnRemarks());
-                    row.createCell(col++).setCellValue(dto.getUplLineItemCode());
                     row.createCell(col++).setCellValue(dto.getLinkId() != null ? String.valueOf(dto.getLinkId()) : "");
                     row.createCell(col++).setCellValue(dto.getTagNumber());
-                    row.createCell(col++).setCellValue(dto.getLineNumber());
-                    row.createCell(col++).setCellValue(dto.getActualItemCode());
-                    row.createCell(col++).setCellValue(dto.getUplLineNumber());
-                    row.createCell(col++).setCellValue(dto.getpoAcceptanceQty() != null ? dto.getpoAcceptanceQty() : 0);
-                    row.createCell(col++).setCellValue(dto.getPOLineAcceptanceQty());
-                    row.createCell(col++).setCellValue(dto.getPoPendingQuantity());
-                    row.createCell(col++).setCellValue(dto.getPoOrderQuantity());
-                    row.createCell(col++).setCellValue(dto.getItemPartNumber());
-                    row.createCell(col++).setCellValue(dto.getPoLineDescription());
-                    row.createCell(col++).setCellValue(dto.getUplLineQuantity() != null ? dto.getUplLineQuantity() : 0);
-                    row.createCell(col++).setCellValue(dto.getUplLineItemCode());
-                    row.createCell(col++).setCellValue(dto.getUplLineDescription());
-                    row.createCell(col++).setCellValue(dto.getUnitOfMeasure());
-                    row.createCell(col++).setCellValue(dto.getActiveOrPassive());
-                    row.createCell(col++).setCellValue(dto.getUplPendingQuantity());
+                    row.createCell(col++).setCellValue(dto.getLnRemarks());
+
+
+
+
+                    //The following has been commented as they are required  in the export templete
+//                    row.createCell(col++).setCellValue(firstRecord.getDccVendorEmail());
+//                    row.createCell(col++).setCellValue(firstRecord.getNewProjectName());
+//                    row.createCell(col++).setCellValue(firstRecord.getDccCurrency());
+//                    row.createCell(col++).setCellValue(firstRecord.getDccId() != null ? firstRecord.getDccId().toString() : "");
+//                    row.createCell(col++).setCellValue(firstRecord.getPoId());
+//                    row.createCell(col++).setCellValue(firstRecord.getProjectName());
+//                    row.createCell(col++).setCellValue(firstRecord.getSupplierId());
+//                    row.createCell(col++).setCellValue(firstRecord.getVendorNumber());
+//                    // Line fields from dto
+//                    row.createCell(col++).setCellValue(dto.getLnRecordNo() != null ? dto.getLnRecordNo().toString() : "");
+//                    row.createCell(col++).setCellValue(dto.getLnProductName());
+//                    row.createCell(col++).setCellValue(dto.getLnDeliveredQty() != null ? dto.getLnDeliveredQty() : 0);
+//                    row.createCell(col++).setCellValue(dto.getLnUnitPrice());
+//                    row.createCell(col++).setCellValue(dto.getPOLineAcceptanceQty());
+//                    row.createCell(col++).setCellValue(dto.getUplLineQuantity() != null ? dto.getUplLineQuantity() : 0);
+//                    row.createCell(col++).setCellValue(dto.getUnitOfMeasure());
+//                    row.createCell(col++).setCellValue(dto.getActiveOrPassive());
+//                    row.createCell(col++).setCellValue(dto.getUplPendingQuantity());
                 }
             }
 
