@@ -2,7 +2,7 @@
 <configuration>
 
     <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
-    <property name="LOG_FILE" value="/home/app/logs/ALM/POUPL/application.log"/>
+    <property name="LOG_FILE" value="/data/app/logs/ALM/POUPL/application.log"/>
     <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
 
     <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
