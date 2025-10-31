@@ -676,7 +676,23 @@ public class DccPOService {
         return (poQtyNew != null && !poQtyNew.isEmpty()) ? Double.parseDouble(poQtyNew) : purchaseOrder.getAmountDueLine();
     }
 
+    // Synchronous method for filter endpoint to avoid async blocking with CompletableFuture.get()
+    public DccPOFetchResult getDccPOCombinedViewSync(
+            String supplierId,
+            String pendingApprovers,
+            int page,
+            int size,
+            String columnName,
+            String searchQuery,
+            boolean exporting,
+            String operator) {
 
+        logger.info("Starting SYNCHRONOUS retrieval of DCC PO Combined View with supplierId: {}, pendingApprovers: {}, page: {}, size: {}, columnName: {}, searchQuery: {}, exporting: {}, operator: {}",
+                supplierId, pendingApprovers, page, size, columnName, searchQuery, exporting, operator);
+
+        // Call the private method directly (synchronously)
+        return fetchDccPOCombinedView(supplierId, pendingApprovers, page, size, columnName, searchQuery, exporting, operator);
+    }
 
    // service method export for excelendpoint
     @Async("taskExecutor")
