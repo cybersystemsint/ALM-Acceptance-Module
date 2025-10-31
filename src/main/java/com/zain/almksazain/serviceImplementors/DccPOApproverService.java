@@ -7,18 +7,8 @@ import com.zain.almksazain.DTO.DccPOCombinedViewDTO;
 import com.zain.almksazain.DTO.DccPOLineItemDTO;
 import com.zain.almksazain.DTO.DccPOParentDTO;
 import com.zain.almksazain.exception.DccPOProcessingException;
-import com.zain.almksazain.model.DCC;
-import com.zain.almksazain.model.DCCLineItem;
-import com.zain.almksazain.model.TbCategoryApprovalRequests;
-import com.zain.almksazain.model.TbCategoryApprovals;
-import com.zain.almksazain.model.tbPurchaseOrder;
-import com.zain.almksazain.model.tb_PurchaseOrderUPL;
-import com.zain.almksazain.repo.TbCategoryApprovalRequestsRepository;
-import com.zain.almksazain.repo.TbCategoryApprovalsRepository;
-import com.zain.almksazain.repo.TbDccLnRepository;
-import com.zain.almksazain.repo.TbDccRepository;
-import com.zain.almksazain.repo.TbPurchaseOrderRepository;
-import com.zain.almksazain.repo.TbPurchaseOrderUplRepository;
+import com.zain.almksazain.model.*;
+import com.zain.almksazain.repo.*;
 import com.zain.almksazain.serviceImplementors.DccSpecification;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -71,6 +61,9 @@ public class DccPOApproverService {
     @Autowired
     private TbCategoryApprovalsRepository tbCategoryApprovalsRepository;
 
+    @Autowired
+    private AcceptanceRequestReceiptRepository acceptanceRequestReceiptRepository;
+
     public CompletableFuture<DccPOFetchResult> getDccPOCombinedView(String supplierId, String pendingApprovers, int page, int size, String columnName, String searchQuery, boolean exporting, String operator) {
         try {
             logger.info("Starting retrieval of DCC PO Combined View with supplierId: {}, pendingApprovers: {}, page: {}, size: {}, columnName: {}, searchQuery: {}, exporting: {}, operator: {}",
@@ -100,45 +93,70 @@ public class DccPOApproverService {
 
             Specification<DCC> spec = new DccSpecification(supplierId, null, columnName, searchQuery, operator);
 
-            // Custom logic for approver involvement: filter DCCs where the approver has been
             if (pendingApprovers != null && !pendingApprovers.isEmpty()) {
-//                List<TbCategoryApprovals> approvals = tbCategoryApprovalsRepository.findByApproverName(pendingApprovers);
-//                List<TbCategoryApprovals> approvals = tbCategoryApprovalsRepository.findByApproverName(pendingApprovers).stream()
-//                        .filter(a -> !"pending".equals(a.getStatus()))  // Only past actions (e.g., approved, rejected, request-info completed, etc.)
-//                        .collect(Collectors.toList());
-//                if (approvals.isEmpty()) {
-//                    logger.info("No approvals found for approver: {}", pendingApprovers);
-//                    return new DccPOFetchResult(new ArrayList<>(), 0L, totalUnfilteredRecords);
-//                }
-                List<TbCategoryApprovals> approvals = tbCategoryApprovalsRepository.findByApprovedBy(pendingApprovers).stream()
-//                List<TbCategoryApprovals> approvals = tbCategoryApprovalsRepository.findByApproverName(pendingApprovers).stream()
-                        .filter(a -> {
-                            if ("pending".equals(a.getStatus())) {
-                                // Include only if approval status is "request info", exclude other pendings
-                                return "request-info".equals(a.getApprovalStatus());
-                            }
-                            // Include all non-pending statuses
-                            return true;
-                        })
-                        .collect(Collectors.toList());
-                if (approvals.isEmpty()) {
-                    logger.info("No approvals found for approver: {}", pendingApprovers);
+                // Parse approver ID as Integer
+                Integer approverIdAsInt;
+                try {
+                    approverIdAsInt = Integer.parseInt(pendingApprovers);
+                } catch (NumberFormatException e) {
+                    logger.error("Failed to parse pendingApprovers '{}' as Integer", pendingApprovers, e);
                     return new DccPOFetchResult(new ArrayList<>(), 0L, totalUnfilteredRecords);
                 }
+
+                // Step 1: Get approvals by this user (with request-info logic)
+                List<TbCategoryApprovals> approvals = tbCategoryApprovalsRepository.findByApprovedBy(pendingApprovers).stream()
+                        .filter(a -> {
+                            if ("pending".equals(a.getStatus())) {
+                                return "request-info".equals(a.getApprovalStatus());
+                            }
+                            return true; // include approved, rejected, etc.
+                        })
+                        .collect(Collectors.toList());
 
                 Set<Long> approvalRecordIds = approvals.stream()
                         .map(TbCategoryApprovals::getApprovalRecordId)
                         .collect(Collectors.toSet());
-                List<TbCategoryApprovalRequests> requests = tbCategoryApprovalRequestsRepository.findByRecordNoIn(new ArrayList<>(approvalRecordIds));
-                Set<Long> dccRecordNosSet = requests.stream()
+
+                logger.debug("Approvals found: {} for approver {}", approvalRecordIds.size(), pendingApprovers);
+
+                // Step 2: Get receipts by this user
+                List<AcceptanceRequestReceipt> userReceipts =
+                        acceptanceRequestReceiptRepository.findByApprovedBy(approverIdAsInt);
+
+                Set<Long> userReceiptIds = userReceipts.stream()
+                        .map(r -> r.getCategoryApprovalRequestId().longValue())
+                        .collect(Collectors.toSet());
+
+                logger.debug("Receipts found for approver {}: {}", pendingApprovers, userReceiptIds.size());
+
+                // Step 3: Combine approval and receipt record IDs
+                Set<Long> combinedRecordIds = new HashSet<>(approvalRecordIds);
+                combinedRecordIds.addAll(userReceiptIds);
+
+                logger.debug("Combined record IDs (approvals + receipts): {}", combinedRecordIds.size());
+
+                if (combinedRecordIds.isEmpty()) {
+                    logger.info("No approval or receipt actions found for user: {}", pendingApprovers);
+                    return new DccPOFetchResult(new ArrayList<>(), 0L, totalUnfilteredRecords);
+                }
+
+                // Step 4: Fetch DCC records (NO FILTERING - show all actions by this user)
+                List<TbCategoryApprovalRequests> requests =
+                        tbCategoryApprovalRequestsRepository.findByRecordNoIn(new ArrayList<>(combinedRecordIds));
+
+                Set<Long> dccRecordNos = requests.stream()
                         .filter(r -> r.getAcceptanceRequestRecordNo() != null)
                         .map(TbCategoryApprovalRequests::getAcceptanceRequestRecordNo)
                         .collect(Collectors.toSet());
-                if (dccRecordNosSet.isEmpty()) {
-                    logger.info("No DCC records found for approver: {}", pendingApprovers);
+
+                if (dccRecordNos.isEmpty()) {
+                    logger.info("No DCC records found for user: {}", pendingApprovers);
                     return new DccPOFetchResult(new ArrayList<>(), 0L, totalUnfilteredRecords);
                 }
-                spec = spec.and((root, query, cb) -> root.get("recordNo").in(dccRecordNosSet));
+
+                logger.debug("Final DCC record count for user {}: {}", pendingApprovers, dccRecordNos.size());
+
+                spec = spec.and((root, query, cb) -> root.get("recordNo").in(dccRecordNos));
             }
 
             Page<DCC> dccPage = tbDccRepository.findAll(spec, pageable);
