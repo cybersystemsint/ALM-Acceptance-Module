@@ -1111,12 +1111,13 @@ public class DccPOController {
         try {
             logger.info("DCC PO Approver Filter request received with {} filters", filters.size());
 
-            String pendingApprovers = filters.containsKey("pendingApprovers") ?
-                    filters.get("pendingApprovers").toString().trim() : "";
+            // REQUIRED: Approver ID to fetch data for
+            String approverIdParam = filters.containsKey("approverId") ?
+                    filters.get("approverId").toString().trim() : "";
 
-            if (pendingApprovers.isEmpty()) {
+            if (approverIdParam.isEmpty()) {
                 return new ResponseEntity<>(
-                        Collections.singletonMap("message", "pendingApprovers is required"),
+                        Collections.singletonMap("message", "approverId is required"),
                         HttpStatus.BAD_REQUEST
                 );
             }
@@ -1133,17 +1134,21 @@ public class DccPOController {
                     "dccStatus", "status", "vendorName", "vendorNumber", "vendorEmail",
                     "dccEmail", "createdBy", "createdByName", "vendorComment", "vendorComments",
                     "approverComment", "approvalCount", "dccCurrency", "currency", "supplierId"
+                    // NOTE: pendingApprovers is NOT in this array - handled separately below
             };
 
             for (String field : filterFields) {
                 if (filters.containsKey(field) && !filters.get(field).toString().trim().isEmpty()) {
-                    // Don't add supplierId to fieldFilters if it's "0" (means all suppliers)
                     if ("supplierId".equals(field) && "0".equals(filters.get(field).toString().trim())) {
                         continue;
                     }
                     fieldFilters.put(field, filters.get(field).toString().trim());
                 }
             }
+
+            // OPTIONAL FILTER: pendingApprovers (approver name to filter by)
+            String pendingApproversFilter = filters.containsKey("pendingApprovers") ?
+                    filters.get("pendingApprovers").toString().trim() : "";
 
             String createdDateStart = filters.containsKey("createdDateStart") ?
                     filters.get("createdDateStart").toString().trim() : "";
@@ -1161,15 +1166,14 @@ public class DccPOController {
                     filters.get("userAging").toString().trim() : "";
             String totalAging = filters.containsKey("totalAging") ?
                     filters.get("totalAging").toString().trim() : "";
-            String pendingApproversFilter = filters.containsKey("pendingApproversFilter") ?
-                    filters.get("pendingApproversFilter").toString().trim() : "";
 
             page = Math.max(page, 1);
             size = Math.max(size, 1);
 
+            // Call service with approverIdParam (the ID, not the name)
             CompletableFuture<List<DccPOCombinedViewDTO>> future =
                     dccPOApproverExportService.getAllDccPOForApproverExportWithDirectFilters(
-                            supplierId, pendingApprovers, fieldFilters, operator);
+                            supplierId, approverIdParam, fieldFilters, operator);
 
             List<DccPOCombinedViewDTO> allData = future.get(120, TimeUnit.SECONDS);
 
@@ -1191,6 +1195,15 @@ public class DccPOController {
             List<DccPOCombinedViewDTO> filteredData = allData.stream()
                     .filter(dto -> {
                         try {
+                            // Filter by pendingApprovers NAME (if provided)
+                            if (!pendingApproversFilter.isEmpty()) {
+                                if (dto.getPendingApprovers() == null ||
+                                        !dto.getPendingApprovers().toLowerCase()
+                                                .contains(pendingApproversFilter.toLowerCase())) {
+                                    return false;
+                                }
+                            }
+
                             if (!dateApproved.isEmpty()) {
                                 if (dto.getDateApproved() == null ||
                                         !dto.getDateApproved().equals(dateApproved)) {
@@ -1232,6 +1245,7 @@ public class DccPOController {
                                     }
                                 }
                             }
+
                             if (!userAging.isEmpty()) {
                                 if (dto.getUserAging() == null ||
                                         !dto.getUserAging().equals(userAging)) {
@@ -1242,13 +1256,6 @@ public class DccPOController {
                             if (!totalAging.isEmpty()) {
                                 if (dto.getTotalAging() == null ||
                                         !dto.getTotalAging().equals(totalAging)) {
-                                    return false;
-                                }
-                            }
-
-                            if (!pendingApproversFilter.isEmpty()) {
-                                if (dto.getPendingApprovers() == null ||
-                                        !dto.getPendingApprovers().equals(pendingApproversFilter)) {
                                     return false;
                                 }
                             }
