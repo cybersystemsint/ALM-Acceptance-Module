@@ -6,6 +6,8 @@ package com.zain.almksazain.repo;
 
 import com.zain.almksazain.model.tb_PurchaseOrderUPL;
 import java.util.List;
+import java.util.Set;
+
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -31,7 +33,15 @@ public interface tbPurchaseOrderUPLRepo extends JpaRepository<tb_PurchaseOrderUP
 
     @Query(value = "SELECT * FROM tb_PurchaseOrderUPL d WHERE d.poNumber = :poNumber AND  d.poLineNumber = :poLineNumber AND d.uplLine = :uplLine ORDER BY d.recordNo DESC LIMIT 1", nativeQuery = true)
     tb_PurchaseOrderUPL findTopByPoNumberAndPoLineNumberAndUplLine(@Param("poNumber") String poNumber, @Param("poLineNumber") String poLineNumber, @Param("uplLine") String uplLine);
-
+     
+    tb_PurchaseOrderUPL findFirstByPoNumberAndPoLineNumberAndUplLine(String poNumber, String poLineNumber, String uplLine);
+    List<tb_PurchaseOrderUPL> findByPoNumberInAndPoLineNumberInAndUplLineIn(
+        List<String> poNumbers,
+        List<String> poLineNumbers,
+        List<String> uplLines
+    );
+    List<tb_PurchaseOrderUPL> findByPoNumberInAndPoLineNumberInAndUplLineIn(
+    Set<String> poNumbers, Set<String> lineNumbers, Set<String> uplLines);
 //    //NEW CODE 
 //    List<tb_PurchaseOrderUPL> findByPoNumber(String poNumber);
 
