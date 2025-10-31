@@ -1353,28 +1353,229 @@ public class DccPOController {
             );
         }
     }
-
     @PostMapping(value = "/export-combined-view", produces = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    public DeferredResult<ResponseEntity<byte[]>> exportDccPOCombinedViewToExcelV2(@RequestBody DccPORequestDTO request) {
+    public DeferredResult<ResponseEntity<byte[]>> exportDccPOCombinedViewToExcelV2(@RequestBody Map<String, Object> request) {
         DeferredResult<ResponseEntity<byte[]>> deferredResult = new DeferredResult<>(120000L); // 2 minutes timeout for V2
 
-        // Use new export service
+        // Extract parameters safely
+        Object supplierIdObj = request.get("supplierId");
+        String supplierId = (supplierIdObj != null) ? supplierIdObj.toString() : "0";
+
+        Object pendingApproversObj = request.get("pendingApprovers");
+        String pendingApprovers = (pendingApproversObj != null) ? pendingApproversObj.toString() : null;
+
+        Object columnNameObj = request.get("columnName");
+        String columnName = (columnNameObj != null) ? columnNameObj.toString() : null;
+
+        Object searchQueryObj = request.get("searchQuery");
+        String searchQuery = (searchQueryObj != null) ? searchQueryObj.toString() : null;
+
+        Object operatorObj = request.get("operator");
+        String operator = (operatorObj != null) ? operatorObj.toString() : null;
+
+        // ===== NEW: Extract additional field filters OUTSIDE lambda (same as filter endpoint) =====
+        final Map<String, String> fieldFilters = new HashMap<>();
+
+        // String filters (exact match - case-insensitive)
+        if (request.containsKey("dccPoNumber") && !request.get("dccPoNumber").toString().trim().isEmpty()) {
+            fieldFilters.put("dccPoNumber", request.get("dccPoNumber").toString().trim());
+        }
+
+        if (request.containsKey("newProjectName") && !request.get("newProjectName").toString().trim().isEmpty()) {
+            fieldFilters.put("newProjectName", request.get("newProjectName").toString().trim());
+        }
+
+        if (request.containsKey("dccStatus") && !request.get("dccStatus").toString().trim().isEmpty()) {
+            fieldFilters.put("dccStatus", request.get("dccStatus").toString().trim());
+        }
+
+        if (request.containsKey("dccAcceptanceType") && !request.get("dccAcceptanceType").toString().trim().isEmpty()) {
+            fieldFilters.put("dccAcceptanceType", request.get("dccAcceptanceType").toString().trim());
+        }
+
+        if (request.containsKey("vendorName") && !request.get("vendorName").toString().trim().isEmpty()) {
+            fieldFilters.put("vendorName", request.get("vendorName").toString().trim());
+        }
+
+        if (request.containsKey("vendorNumber") && !request.get("vendorNumber").toString().trim().isEmpty()) {
+            fieldFilters.put("vendorNumber", request.get("vendorNumber").toString().trim());
+        }
+
+        if (request.containsKey("createdByName") && !request.get("createdByName").toString().trim().isEmpty()) {
+            fieldFilters.put("createdByName", request.get("createdByName").toString().trim());
+        }
+
+        if (request.containsKey("createdBy") && !request.get("createdBy").toString().trim().isEmpty()) {
+            fieldFilters.put("createdByName", request.get("createdBy").toString().trim());
+        }
+
+        // Support "recordNo" (from response) AND "dccRecordNo" (internal)
+        if (request.containsKey("recordNo") && !request.get("recordNo").toString().trim().isEmpty()) {
+            try {
+                fieldFilters.put("dccRecordNo", request.get("recordNo").toString().trim());
+            } catch (NumberFormatException e) {
+                logger.warn("Invalid recordNo format: {}", request.get("recordNo"));
+            }
+        }
+
+        if (request.containsKey("dccRecordNo") && !request.get("dccRecordNo").toString().trim().isEmpty()) {
+            try {
+                fieldFilters.put("dccRecordNo", request.get("dccRecordNo").toString().trim());
+            } catch (NumberFormatException e) {
+                logger.warn("Invalid dccRecordNo format: {}", request.get("dccRecordNo"));
+            }
+        }
+
+        if (request.containsKey("approvalCount") && !request.get("approvalCount").toString().trim().isEmpty()) {
+            try {
+                fieldFilters.put("approvalCount", request.get("approvalCount").toString().trim());
+            } catch (NumberFormatException e) {
+                logger.warn("Invalid approvalCount format: {}", request.get("approvalCount"));
+            }
+        }
+
+        // Date range filters
+        final String createdDateStart = request.containsKey("createdDateStart") ?
+                request.get("createdDateStart").toString().trim() : "";
+        final String createdDateEnd = request.containsKey("createdDateEnd") ?
+                request.get("createdDateEnd").toString().trim() : "";
+        final String approvedDateStart = request.containsKey("approvedDateStart") ?
+                request.get("approvedDateStart").toString().trim() : "";
+        final String approvedDateEnd = request.containsKey("approvedDateEnd") ?
+                request.get("approvedDateEnd").toString().trim() : "";
+        // ===== END NEW =====
+
         CompletableFuture<List<DccPOCombinedViewDTO>> future = dccPOExportService.getAllDccPOForExportV2(
-                request.getSupplierId(), request.getPendingApprovers(), request.getColumnName(), request.getSearchQuery(), request.getOperator());
+                supplierId, pendingApprovers, columnName, searchQuery, operator);
 
         future.thenAccept(data -> {
             try {
+                // ===== NEW: Apply additional filters in memory (same as filter endpoint) =====
+                SimpleDateFormat sdf = new SimpleDateFormat("d-MMM-yyyy", Locale.ENGLISH);
+
+                List<DccPOCombinedViewDTO> filteredData = data.stream()
+                        .filter(dto -> {
+                            // Apply field filters
+                            for (Map.Entry<String, String> entry : fieldFilters.entrySet()) {
+                                String field = entry.getKey();
+                                String value = entry.getValue().toLowerCase();
+
+                                switch (field) {
+                                    case "dccRecordNo":
+                                        if (dto.getDccRecordNo() != null &&
+                                                !dto.getDccRecordNo().toString().equals(value)) {
+                                            return false;
+                                        }
+                                        break;
+                                    case "dccPoNumber":
+                                        if (dto.getDccPoNumber() == null ||
+                                                !dto.getDccPoNumber().toLowerCase().equals(value)) {
+                                            return false;
+                                        }
+                                        break;
+                                    case "newProjectName":
+                                        if (dto.getNewProjectName() == null ||
+                                                !dto.getNewProjectName().toLowerCase().equals(value)) {
+                                            return false;
+                                        }
+                                        break;
+                                    case "dccStatus":
+                                        if (dto.getDccStatus() == null ||
+                                                !dto.getDccStatus().toLowerCase().equals(value)) {
+                                            return false;
+                                        }
+                                        break;
+                                    case "dccAcceptanceType":
+                                        if (dto.getDccAcceptanceType() == null ||
+                                                !dto.getDccAcceptanceType().toLowerCase().equals(value)) {
+                                            return false;
+                                        }
+                                        break;
+                                    case "vendorName":
+                                        if (dto.getVendorName() == null ||
+                                                !dto.getVendorName().toLowerCase().equals(value)) {
+                                            return false;
+                                        }
+                                        break;
+                                    case "vendorNumber":
+                                        if (dto.getVendorNumber() == null ||
+                                                !dto.getVendorNumber().toLowerCase().equals(value)) {
+                                            return false;
+                                        }
+                                        break;
+                                    case "createdByName":
+                                        if (dto.getCreatedByName() == null ||
+                                                !dto.getCreatedByName().toLowerCase().equals(value)) {
+                                            return false;
+                                        }
+                                        break;
+                                    case "supplierId":
+                                        if (dto.getSupplierId() == null ||
+                                                !dto.getSupplierId().toLowerCase().equals(value)) {
+                                            return false;
+                                        }
+                                        break;
+                                    case "approvalCount":
+                                        if (dto.getApprovalCount() != null &&
+                                                !dto.getApprovalCount().toString().equals(value)) {
+                                            return false;
+                                        }
+                                        break;
+                                }
+                            }
+
+                            // Apply date range filters
+                            try {
+                                if (!createdDateStart.isEmpty() || !createdDateEnd.isEmpty()) {
+                                    if (dto.getDccCreatedDate() != null) {
+                                        Date dccDate = sdf.parse(dto.getDccCreatedDate());
+                                        if (!createdDateStart.isEmpty()) {
+                                            Date startDate = sdf.parse(createdDateStart);
+                                            if (dccDate.before(startDate)) return false;
+                                        }
+                                        if (!createdDateEnd.isEmpty()) {
+                                            Date endDate = sdf.parse(createdDateEnd);
+                                            if (dccDate.after(endDate)) return false;
+                                        }
+                                    }
+                                }
+
+                                if (!approvedDateStart.isEmpty() || !approvedDateEnd.isEmpty()) {
+                                    if (dto.getDateApproved() != null) {
+                                        Date approvedDate = sdf.parse(dto.getDateApproved());
+                                        if (!approvedDateStart.isEmpty()) {
+                                            Date startDate = sdf.parse(approvedDateStart);
+                                            if (approvedDate.before(startDate)) return false;
+                                        }
+                                        if (!approvedDateEnd.isEmpty()) {
+                                            Date endDate = sdf.parse(approvedDateEnd);
+                                            if (approvedDate.after(endDate)) return false;
+                                        }
+                                    }
+                                }
+                            } catch (ParseException e) {
+                                logger.warn("Error parsing dates for filtering", e);
+                            }
+
+                            return true;
+                        })
+                        .collect(Collectors.toList());
+
+                logger.info("Export filter applied: {} records after filtering (from {} original)",
+                        filteredData.size(), data.size());
+                // ===== END NEW =====
+
                 // Group by dccRecordNo to create hierarchical structure
-                Map<Long, List<DccPOCombinedViewDTO>> groupedByDccRecordNo = data.stream()
+                Map<Long, List<DccPOCombinedViewDTO>> groupedByDccRecordNo = filteredData.stream()
                         .collect(Collectors.groupingBy(DccPOCombinedViewDTO::getDccRecordNo));
 
                 // Sort the entire data list descending by Approval Count, then DccRecordNo (before grouping affects iteration)
-                data.sort(Comparator.comparing(DccPOCombinedViewDTO::getApprovalCount, Comparator.reverseOrder())
+                filteredData.sort(Comparator.comparing(DccPOCombinedViewDTO::getApprovalCount, Comparator.reverseOrder())
                         .thenComparing(DccPOCombinedViewDTO::getDccRecordNo, Comparator.reverseOrder())
                         .thenComparing(DccPOCombinedViewDTO::getLineNumber, Comparator.reverseOrder()));
 
                 // Re-group after sorting to preserve order in lists
-                groupedByDccRecordNo = data.stream()
+                groupedByDccRecordNo = filteredData.stream()
                         .collect(Collectors.groupingBy(DccPOCombinedViewDTO::getDccRecordNo, LinkedHashMap::new, Collectors.toList()));
 
                 // Create Excel workbook with streaming for large data
@@ -1407,22 +1608,6 @@ public class DccPOController {
                         "UPL Item Code", "PO Acceptance Qty", "PO Line Description", "UPL Line Description", "PO Pending Qty",
                         "Acceptance Qty", "Location", "Scope of Work", "In Service Date", "Link ID", "TAG Number", "Remarks"
                 };
-
-//            String[] columnHeaders = {
-//                    "Record No", "DCC PO Number", "New Project Name", "Acceptance Type", "Status", "Created Date", "Date Approved",
-//                    "Vendor Comment", "DCC ID", "PO ID", "Project Name", "Supplier ID", "Vendor Number", "Vendor Name",
-//                    "Created By", "Approval Count", "Pending Approvers", "Approver Comment", "User Aging", "Total Aging",
-//                    "Vendor Email", "Currency", "Line Item Record No", "Product Name", "Serial Number", "Delivered Qty",
-//                    "Location Name", "In-Service Date", "Unit Price", "Scope of Work", "Remarks", "Item Code", "Link ID",
-//                    "Tag Number", "PO Line Number", "Actual Item Code", "UPL Line Number", "PO Acceptance Qty",
-//                    "PO Line Acceptance Qty", "PO Pending Quantity", "PO Order Quantity", "Item Part Number",
-//                    "PO Line Description", "UPL Line Quantity", "UPL Line Item Code", "UPL Line Description", "UOM",
-//                    "Active/Passive", "UPL Pending Quantity"
-//            };
-//            for (int i = 0; i < columnHeaders.length; i++) {
-//                headerRow.createCell(i).setCellValue(columnHeaders[i]);
-//
-//            }
 
                 for (int i = 0; i < columnHeaders.length; i++) {
                     Cell cell = headerRow.createCell(i);
@@ -1550,7 +1735,7 @@ public class DccPOController {
                 HttpHeaders responseHeaders = new HttpHeaders();
                 responseHeaders.add("Content-Disposition", "attachment; filename=dcc_po_export_v2.xlsx");
                 deferredResult.setResult(new ResponseEntity<>(baos.toByteArray(), responseHeaders, HttpStatus.OK));
-                logger.info("Successfully exported Excel V2 file with {} parent records and {} total rows", groupedByDccRecordNo.size(), data.size());
+                logger.info("Successfully exported Excel V2 file with {} parent records and {} total rows", groupedByDccRecordNo.size(), filteredData.size());
             } catch (Exception ex) {
                 logger.error("Error generating Excel V2 file", ex);
                 deferredResult.setErrorResult(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
@@ -1565,7 +1750,6 @@ public class DccPOController {
 
         return deferredResult;
     }
-
     @PostMapping(value = "/export-combined-view-approvers", produces = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     public DeferredResult<ResponseEntity<byte[]>> exportDccPOCombinedViewApproversToExcel(@RequestBody Map<String, Object> request) {
         DeferredResult<ResponseEntity<byte[]>> deferredResult = new DeferredResult<>(120000L);
