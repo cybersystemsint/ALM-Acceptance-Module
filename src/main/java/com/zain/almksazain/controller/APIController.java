@@ -1,63 +1,12 @@
 package com.zain.almksazain.controller;
 
-import com.zain.almksazain.repo.DCCRepository;
-import com.zain.almksazain.repo.dccstatusrepo;
-import com.zain.almksazain.repo.DccLineRepo;
-import com.zain.almksazain.repo.uplrepo;
-import com.zain.almksazain.repo.polnrepo;
-import com.zain.almksazain.repo.supplierrepo;
-import com.zain.almksazain.repo.pohdrepo;
-import com.zain.almksazain.model.pohddata;
-import com.zain.almksazain.model.tbPurchaseOrder;
-import com.zain.almksazain.model.tbScope;
-import com.zain.almksazain.model.tbScopeApprovalLevels;
-import com.zain.almksazain.model.DCCLineItem;
-import com.zain.almksazain.model.dccstatus;
-import com.zain.almksazain.model.supplierdata;
-import com.zain.almksazain.model.tbSerialNumber;
-import com.zain.almksazain.model.DCC;
-import com.zain.almksazain.model.polndata;
-import com.zain.almksazain.model.upldata;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
-import com.google.gson.JsonSyntaxException;
-import com.zain.almksazain.services.DCCService;
-import com.zain.almzainksa.helper.helper;
-import com.zain.almksazain.model.FileRecord;
-import com.zain.almksazain.model.tb_Approval_Log;
-import com.zain.almksazain.model.tb_PurchaseOrderUPL;
-import com.zain.almksazain.repo.fileRecordRepo;
-import com.zain.almksazain.repo.tbApprovalLogRepo;
-import com.zain.almksazain.repo.tbPurchaseOrderRepo;
-import com.zain.almksazain.repo.tbPurchaseOrderUPLRepo;
-import com.zain.almksazain.model.tb_ChargeAccount;
-import com.zain.almksazain.model.tb_ErrorMessage;
-import com.zain.almksazain.model.tb_Site;
-import com.zain.almksazain.model.tb_Region;
-import com.zain.almksazain.model.tbItemCodeSubstitute;
-import com.zain.almksazain.model.tbNode;
-import com.zain.almksazain.repo.tbSiteRepo;
-import com.zain.almksazain.repo.tbRegionRepo;
-import com.zain.almksazain.repo.tbItemCodeSubstituteRepo;
-import com.zain.almksazain.repo.tbErrorMessageRepo;
-import com.zain.almksazain.repo.tbChargeAccountRepo;
-import com.zain.almksazain.repo.tbScopeApprovalLevelsRepo;
-import com.zain.almksazain.repo.tbScopeRepo;
-import com.zain.almksazain.repo.tbNodeRepo;
-import com.zain.almksazain.repo.tbPassiveInventoryRepo;
-import com.zain.almksazain.repo.tbSerialNumberRepo;
-import com.zain.almksazain.utlities.Httpcall;
-import org.json.JSONArray;
-import org.json.JSONObject;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.web.bind.annotation.CrossOrigin;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RestController;
-import java.io.*;
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.net.InetAddress;
@@ -72,19 +21,86 @@ import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Calendar;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
+
 import org.apache.logging.log4j.LogManager;
+import org.json.JSONArray;
 import org.json.JSONException;
+import org.json.JSONObject;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.CrossOrigin;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestPart;
+import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import com.google.gson.JsonSyntaxException;
+import com.zain.almksazain.model.DCC;
+import com.zain.almksazain.model.DCCLineItem;
+import com.zain.almksazain.model.FileRecord;
+import com.zain.almksazain.model.dccstatus;
+import com.zain.almksazain.model.pohddata;
+import com.zain.almksazain.model.polndata;
+import com.zain.almksazain.model.supplierdata;
+import com.zain.almksazain.model.tbItemCodeSubstitute;
+import com.zain.almksazain.model.tbNode;
+import com.zain.almksazain.model.tbPurchaseOrder;
+import com.zain.almksazain.model.tbScope;
+import com.zain.almksazain.model.tbScopeApprovalLevels;
+import com.zain.almksazain.model.tbSerialNumber;
+import com.zain.almksazain.model.tb_Approval_Log;
+import com.zain.almksazain.model.tb_ChargeAccount;
+import com.zain.almksazain.model.tb_ErrorMessage;
+import com.zain.almksazain.model.tb_PurchaseOrderUPL;
+import com.zain.almksazain.model.tb_Region;
+import com.zain.almksazain.model.tb_Site;
+import com.zain.almksazain.model.upldata;
+import com.zain.almksazain.repo.DCCRepository;
+import com.zain.almksazain.repo.DccLineRepo;
+import com.zain.almksazain.repo.dccstatusrepo;
+import com.zain.almksazain.repo.fileRecordRepo;
+import com.zain.almksazain.repo.pohdrepo;
+import com.zain.almksazain.repo.polnrepo;
+import com.zain.almksazain.repo.supplierrepo;
+import com.zain.almksazain.repo.tbApprovalLogRepo;
+import com.zain.almksazain.repo.tbChargeAccountRepo;
+import com.zain.almksazain.repo.tbErrorMessageRepo;
+import com.zain.almksazain.repo.tbItemCodeSubstituteRepo;
+import com.zain.almksazain.repo.tbNodeRepo;
+import com.zain.almksazain.repo.tbPassiveInventoryRepo;
+import com.zain.almksazain.repo.tbPurchaseOrderRepo;
+import com.zain.almksazain.repo.tbPurchaseOrderUPLRepo;
+import com.zain.almksazain.repo.tbRegionRepo;
+import com.zain.almksazain.repo.tbScopeApprovalLevelsRepo;
+import com.zain.almksazain.repo.tbScopeRepo;
+import com.zain.almksazain.repo.tbSerialNumberRepo;
+import com.zain.almksazain.repo.tbSiteRepo;
+import com.zain.almksazain.repo.uplrepo;
+import com.zain.almksazain.services.DCCService;
+import com.zain.almksazain.utlities.Httpcall;
+import com.zain.almzainksa.helper.helper;
 
 @RestController
 public class APIController {
@@ -160,9 +176,8 @@ public class APIController {
     private DCCService dccService;
 
     // UNCOMMENT THIS PATH TO CHANGE THE FILE DIRECTORY PATH
-//        @Value("${alm.uploadpath}")
-//        private String docsuploadpath;
-
+    //    @Value("${alm.uploadpath}")
+    //    private String docsuploadpath;
     Httpcall utils = new Httpcall();
 
     HashMap requestMap = new HashMap();
@@ -1045,7 +1060,6 @@ public class APIController {
 
 //        String uploadDir = "/home/app/logs/ALM/POUPL/";
         String uploadDir = "/data/app/logs/ALM/POUPL/";
-//        String uploadDir = docsuploadpath;
         List<String> InvalidItems = new ArrayList<>();
 
         long maxFileSize = 100 * 1024 * 1024;
