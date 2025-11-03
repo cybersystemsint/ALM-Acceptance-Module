@@ -30,6 +30,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.gson.Gson;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonSyntaxException;
@@ -606,73 +607,196 @@ private String convertToSqlDate(String input) {
 
 
     ///GET ALL CREATED CHARGE ACCOUNTS
-    @PostMapping(value = "/reports/getAllItemCodeSubstitutes", produces = "application/json")
-    @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
-    public Map<String, Object> getAllItemCodeSubstitutes(@RequestBody String req) {
-        JsonObject obj = new JsonParser().parse(req).getAsJsonObject();
-        Integer recordNo = obj.get("recordNo").getAsInt();
-        String columnName = obj.has("columnName") ? obj.get("columnName").getAsString() : "";
-        String searchQuery = obj.has("searchQuery") ? obj.get("searchQuery").getAsString() : "";
+@PostMapping(value = "/reports/getAllItemCodeSubstitutes", produces = "application/json")
+@CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
+public Map<String, Object> getAllItemCodeSubstitutes(@RequestBody String req) {
+    JsonObject obj = JsonParser.parseString(req).getAsJsonObject();
 
-        int page = obj.has("page") ? obj.get("page").getAsInt() : 1;
-        int size = obj.has("size") ? obj.get("size").getAsInt() : 20000;
+    // required / simple params
+    Integer recordNo = obj.has("recordNo") && !obj.get("recordNo").isJsonNull() ? obj.get("recordNo").getAsInt() : 0;
+    String columnName = obj.has("columnName") && !obj.get("columnName").isJsonNull() ? obj.get("columnName").getAsString() : "";
+    String searchQuery = obj.has("searchQuery") && !obj.get("searchQuery").isJsonNull() ? obj.get("searchQuery").getAsString() : "";
 
-        page = Math.max(page, 0);
-        size = Math.max(size, 0);
+    int page = obj.has("page") && !obj.get("page").isJsonNull() ? obj.get("page").getAsInt() : 1;
+    int size = obj.has("size") && !obj.get("size").isJsonNull() ? obj.get("size").getAsInt() : 20000;
 
-        String paginationSql = "";
+    page = Math.max(page, 0);
+    size = Math.max(size, 0);
 
-        List<Object> params = new ArrayList<>();
-        String whereClause = " WHERE 1=1";
+    // Allowed columns -> map frontend keys to actual DB column names to avoid SQL injection.
+    // Add/remove mappings if your DB column names differ.
+    Map<String, String> allowedColumns = new HashMap<>();
+    allowedColumns.put("recordno", "recordNo");
+    allowedColumns.put("record_no", "recordNo");
+    allowedColumns.put("recordDateTime".toLowerCase(), "recordDateTime");
+    allowedColumns.put("recorddatetime", "recordDateTime");
+    allowedColumns.put("record_date_time", "recordDateTime");
+    allowedColumns.put("itemcode", "itemCode");
+    allowedColumns.put("relateditemcode", "relatedItemCode");
+    allowedColumns.put("reciprocalflag", "reciprocalFlag");
+    allowedColumns.put("createdby", "createdBy");
+    allowedColumns.put("createddatetime", "createdDatetime");
+    allowedColumns.put("created_datetime", "createdDatetime");
+    allowedColumns.put("updatedby", "updatedBy");
 
-        if (recordNo != 0) {
-            whereClause += " AND recordNo = ?";
-            params.add(recordNo);
-        }
+    String whereClause = " WHERE 1=1";
+    List<Object> params = new ArrayList<>();
 
-        if (!columnName.isEmpty() && !searchQuery.isEmpty()) {
-            whereClause += " AND " + columnName + " LIKE ?";
-            params.add("%" + searchQuery + "%");
-        }
-
-        String countScript = "SELECT COUNT(*) FROM tb_ItemCodeSubstitute" + whereClause;
-        int totalRecords = jdbcTemplate.queryForObject(countScript, Integer.class, params.toArray());
-
-        if (page == 0 && size == 0) {
-            paginationSql = "";
-        } else if (page == 1 && size == 20000) {
-            page = 0;
-            size = totalRecords;
-            page = Math.max(page, 1);
-            size = Math.max(size, 1);
-            int offset = (page - 1) * size;
-
-            paginationSql = " LIMIT " + size + " OFFSET " + offset;
-
-        } else {
-            page = Math.max(page, 1);
-            size = Math.max(size, 1);
-            int offset = (page - 1) * size;
-            paginationSql = " LIMIT " + size + " OFFSET " + offset;
-        }
-
-        String itemCodes = "SELECT recordNo, recordDateTime, itemCode, relatedItemCode, reciprocalFlag, "
-                + "createdBy, createdDatetime, updatedBy, updatedDateTime FROM tb_ItemCodeSubstitute"
-                + whereClause + paginationSql;
-
-        List<Map<String, Object>> result = jdbcTemplate.queryForList(itemCodes, params.toArray());
-
-        Map<String, Object> response = new HashMap<>();
-        response.put("data", result);
-        response.put("totalRecords", totalRecords);
-        response.put("currentPage", page);
-        response.put("pageSize", size);
-        response.put("totalPages", (int) Math.ceil((double) totalRecords / size));
-
-        return response;
+    if (recordNo != null && recordNo != 0) {
+        whereClause += " AND recordNo = ?";
+        params.add(recordNo);
     }
 
-    ///GET ALL CREATED CHARGE ACCOUNTS
+    // columnName + searchQuery (single-field search)
+    if (!columnName.isEmpty() && !searchQuery.isEmpty()) {
+        String colKey = columnName.trim().toLowerCase();
+        String mapped = allowedColumns.get(colKey);
+        if (mapped != null) {
+            // use LIKE for string-like columns, equality for numeric
+            if ("recordNo".equals(mapped)) {
+                try {
+                    Long v = Long.valueOf(searchQuery);
+                    whereClause += " AND " + mapped + " = ?";
+                    params.add(v);
+                } catch (NumberFormatException nfe) {
+                    // invalid numeric, produce no results - use false predicate
+                    whereClause += " AND 1=0";
+                }
+            } else {
+                whereClause += " AND " + mapped + " LIKE ?";
+                params.add("%" + searchQuery + "%");
+            }
+        } else {
+            // unknown column - ignore (or optionally throw BadRequest)
+        }
+    }
+
+    // MULTI-FILTER support: filterBy can be JSON object with values that are string, comma-separated string or array.
+    if (obj.has("filterBy") && obj.get("filterBy").isJsonObject()) {
+        JsonObject filterBy = obj.getAsJsonObject("filterBy");
+        for (Map.Entry<String, JsonElement> entry : filterBy.entrySet()) {
+            String rawKey = entry.getKey();
+            if (rawKey == null) continue;
+            String key = rawKey.trim().toLowerCase();
+            String mapped = allowedColumns.get(key);
+            if (mapped == null) {
+                // skip unknown/unsafe filter keys
+                continue;
+            }
+            JsonElement valElem = entry.getValue();
+            List<String> values = new ArrayList<>();
+
+            // normalize value(s) into list of strings
+            if (valElem == null || valElem.isJsonNull()) {
+                continue;
+            } else if (valElem.isJsonArray()) {
+                for (JsonElement e : valElem.getAsJsonArray()) {
+                    if (!e.isJsonNull()) values.add(e.getAsString());
+                }
+            } else {
+                String raw = valElem.getAsString();
+                if (raw.contains(",")) {
+                    for (String s : raw.split(",")) {
+                        if (!s.trim().isEmpty()) values.add(s.trim());
+                    }
+                } else {
+                    values.add(raw);
+                }
+            }
+
+            if (values.isEmpty()) continue;
+
+            // Build predicate depending on mapped column type
+            if ("recordNo".equals(mapped)) {
+                // numeric IN
+                List<Long> longVals = new ArrayList<>();
+                for (String s : values) {
+                    try { longVals.add(Long.valueOf(s)); } catch (NumberFormatException ignored) {}
+                }
+                if (!longVals.isEmpty()) {
+                    String placeholders = longVals.stream().map(x -> "?").collect(Collectors.joining(","));
+                    whereClause += " AND " + mapped + " IN (" + placeholders + ")";
+                    params.addAll(longVals);
+                }
+            } else if ("createdDatetime".equals(mapped) || "recordDateTime".equals(mapped)) {
+                // date/datetime filtering: if multiple values use OR (IN-like via LIKE)
+                // We use LIKE so common formats "yyyy-MM-dd" or "yyyy-MM-dd HH:mm:ss" match.
+                List<String> likes = values.stream().map(v -> "%" + v + "%").collect(Collectors.toList());
+                whereClause += " AND (";
+                for (int i = 0; i < likes.size(); i++) {
+                    if (i > 0) whereClause += " OR ";
+                    whereClause += mapped + " LIKE ?";
+                    params.add(likes.get(i));
+                }
+                whereClause += ")";
+            } else {
+                // default: string fields -> if multiple values => IN (exact) AND/OR? we'll treat as OR using LIKE for partial matches
+                // If caller passed exact values, they will still match via LIKE
+                List<String> likes = values.stream().map(v -> "%" + v + "%").collect(Collectors.toList());
+                whereClause += " AND (";
+                for (int i = 0; i < likes.size(); i++) {
+                    if (i > 0) whereClause += " OR ";
+                    whereClause += mapped + " LIKE ?";
+                    params.add(likes.get(i));
+                }
+                whereClause += ")";
+            }
+        }
+    }
+
+    // COUNT
+    String countScript = "SELECT COUNT(*) FROM tb_ItemCodeSubstitute" + whereClause;
+    int totalRecords = 0;
+    if (params.isEmpty()) {
+        totalRecords = jdbcTemplate.queryForObject(countScript, Integer.class);
+    } else {
+        totalRecords = jdbcTemplate.queryForObject(countScript, Integer.class, params.toArray());
+    }
+
+    // Pagination SQL
+    String paginationSql = "";
+    if (page == 0 && size == 0) {
+        paginationSql = "";
+    } else if (page == 1 && size == 20000) {
+        // legacy behavior: return all
+        page = 0;
+        size = totalRecords;
+        page = Math.max(page, 1);
+        size = Math.max(size, 1);
+        int offset = (page - 1) * size;
+        paginationSql = " LIMIT " + size + " OFFSET " + offset;
+    } else {
+        page = Math.max(page, 1);
+        size = Math.max(size, 1);
+        int offset = (page - 1) * size;
+        paginationSql = " LIMIT " + size + " OFFSET " + offset;
+    }
+
+    // Final select
+    String itemCodes = "SELECT recordNo, recordDateTime, itemCode, relatedItemCode, reciprocalFlag, "
+            + "createdBy, createdDatetime, updatedBy, updatedDateTime FROM tb_ItemCodeSubstitute"
+            + whereClause + paginationSql;
+
+    List<Map<String, Object>> result;
+    if (params.isEmpty()) {
+        result = jdbcTemplate.queryForList(itemCodes);
+    } else {
+        result = jdbcTemplate.queryForList(itemCodes, params.toArray());
+    }
+
+    // Build response
+    Map<String, Object> response = new HashMap<>();
+    response.put("data", result);
+    response.put("totalRecords", totalRecords);
+    response.put("currentPage", page);
+    response.put("pageSize", size);
+    response.put("totalPages", size > 0 ? (int) Math.ceil((double) totalRecords / size) : 0);
+
+    return response;
+}
+  
+
+///GET ALL CREATED CHARGE ACCOUNTS
     @PostMapping(value = "/reports/getAllChargeAccounts", produces = "application/json")
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
     public List<Map<String, Object>> getAllChargeAccounts(@RequestBody String req) {

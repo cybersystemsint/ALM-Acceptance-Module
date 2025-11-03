@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 import javax.servlet.http.HttpServletResponse;
 
@@ -35,6 +36,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonPrimitive;
+import com.google.gson.JsonArray;
 import java.sql.Timestamp;
 
 @RestController
@@ -375,6 +377,241 @@ private String convertToSqlDate(String input) {
         throw new IllegalArgumentException("Invalid date format for input: " + input);
     } catch (Exception e) {
         throw new IllegalArgumentException("Invalid date format for input: " + input + ". Supported formats: dd-MM-yyyy, yyyy-MM-dd, MM/dd/yyyy");
+    }
+}
+
+
+//ITEM CODE EXPORT
+@PostMapping(value = "/reports/getAllItemCodeSubstitutes/export")
+@CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
+public void exportItemCodeSubstitutes(@RequestBody String req, HttpServletResponse response) throws IOException {
+    JsonObject obj = JsonParser.parseString(req).getAsJsonObject();
+
+    // Allowed columns mapping (whitelist) - map frontend keys to DB columns
+    Map<String, String> allowedColumns = new HashMap<>();
+    allowedColumns.put("recordno", "recordNo");
+    allowedColumns.put("record_no", "recordNo");
+    allowedColumns.put("recorddatetime", "recordDateTime");
+    allowedColumns.put("record_date_time", "recordDateTime");
+    allowedColumns.put("itemcode", "itemCode");
+    allowedColumns.put("relateditemcode", "relatedItemCode");
+    allowedColumns.put("reciprocalflag", "reciprocalFlag");
+    allowedColumns.put("createdby", "createdBy");
+    allowedColumns.put("createddatetime", "createdDatetime");
+    allowedColumns.put("created_datetime", "createdDatetime");
+    allowedColumns.put("updatedby", "updatedBy");
+    allowedColumns.put("updateddatetime", "updatedDateTime");
+
+    String whereClause = " WHERE 1=1";
+    List<Object> params = new ArrayList<>();
+
+    // recordNo filter (top-level)
+    Integer recordNo = obj.has("recordNo") && !obj.get("recordNo").isJsonNull() ? obj.get("recordNo").getAsInt() : 0;
+    if (recordNo != null && recordNo != 0) {
+        whereClause += " AND recordNo = ?";
+        params.add(recordNo);
+    }
+
+    // legacy single-field search: columnName + searchQuery
+    String columnName = obj.has("columnName") && !obj.get("columnName").isJsonNull() ? obj.get("columnName").getAsString() : "";
+    String searchQuery = obj.has("searchQuery") && !obj.get("searchQuery").isJsonNull() ? obj.get("searchQuery").getAsString() : "";
+    if (!columnName.isEmpty() && !searchQuery.isEmpty()) {
+        String colKey = columnName.trim().toLowerCase();
+        String mapped = allowedColumns.get(colKey);
+        if (mapped != null) {
+            if ("recordNo".equals(mapped)) {
+                try {
+                    Long v = Long.valueOf(searchQuery);
+                    whereClause += " AND " + mapped + " = ?";
+                    params.add(v);
+                } catch (NumberFormatException nfe) {
+                    whereClause += " AND 1=0";
+                }
+            } else {
+                whereClause += " AND LOWER(" + mapped + ") LIKE LOWER(?)";
+                params.add("%" + searchQuery + "%");
+            }
+        }
+    }
+
+    // filterBy - multi-filter support
+    if (obj.has("filterBy") && obj.get("filterBy").isJsonObject()) {
+        JsonObject filterBy = obj.getAsJsonObject("filterBy");
+        for (Map.Entry<String, JsonElement> entry : filterBy.entrySet()) {
+            String rawKey = entry.getKey();
+            if (rawKey == null) continue;
+            String key = rawKey.trim().toLowerCase();
+            String mapped = allowedColumns.get(key);
+            if (mapped == null) {
+                // skip unknown keys
+                continue;
+            }
+            JsonElement valElem = entry.getValue();
+            List<String> values = new ArrayList<>();
+
+            if (valElem == null || valElem.isJsonNull()) {
+                continue;
+            } else if (valElem.isJsonArray()) {
+                JsonArray arr = valElem.getAsJsonArray();
+                for (JsonElement e : arr) {
+                    if (!e.isJsonNull()) values.add(e.getAsString());
+                }
+            } else {
+                String raw = valElem.getAsString();
+                if (raw.contains(",")) {
+                    for (String s : raw.split(",")) {
+                        if (!s.trim().isEmpty()) values.add(s.trim());
+                    }
+                } else {
+                    values.add(raw);
+                }
+            }
+
+            if (values.isEmpty()) continue;
+
+            if ("recordNo".equals(mapped)) {
+                List<Long> longVals = new ArrayList<>();
+                for (String s : values) {
+                    try {
+                        longVals.add(Long.valueOf(s));
+                    } catch (NumberFormatException ignored) {}
+                }
+                if (!longVals.isEmpty()) {
+                    String placeholders = longVals.stream().map(x -> "?").collect(Collectors.joining(","));
+                    whereClause += " AND " + mapped + " IN (" + placeholders + ")";
+                    params.addAll(longVals);
+                }
+            } else if ("createdDatetime".equals(mapped) || "recordDateTime".equals(mapped)) {
+                List<String> likes = values.stream().map(v -> "%" + v + "%").collect(Collectors.toList());
+                whereClause += " AND (";
+                for (int i = 0; i < likes.size(); i++) {
+                    if (i > 0) whereClause += " OR ";
+                    whereClause += mapped + " LIKE ?";
+                    params.add(likes.get(i));
+                }
+                whereClause += ")";
+            } else {
+                List<String> likes = values.stream().map(v -> "%" + v + "%").collect(Collectors.toList());
+                whereClause += " AND (";
+                for (int i = 0; i < likes.size(); i++) {
+                    if (i > 0) whereClause += " OR ";
+                    whereClause += "LOWER(" + mapped + ") LIKE LOWER(?)";
+                    params.add(likes.get(i));
+                }
+                whereClause += ")";
+            }
+        }
+    }
+
+    // Build final SQL - export all matching rows (ignore pagination)
+    // SELECT and headers are ordered to match the screenshot (no Record DateTime column)
+    String sql = "SELECT recordNo, itemCode, relatedItemCode, reciprocalFlag, createdBy, createdDatetime, updatedBy, updatedDateTime " +
+            "FROM tb_ItemCodeSubstitute " + whereClause + " ORDER BY recordNo DESC";
+
+    // Excel setup
+    response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    String filename = "item_code_substitutes_export.xlsx";
+    response.setHeader("Content-Disposition", "attachment; filename=" + filename);
+
+    // Columns & headers arranged to match screenshot: Record No, Item Code, Related Item Code, Reciprocal Flag, Created By, Created Datetime, Updated By, Updated Datetime
+    List<String> columns = Arrays.asList("recordNo", "itemCode", "relatedItemCode",
+            "reciprocalFlag", "createdBy", "createdDatetime", "updatedBy", "updatedDateTime");
+    List<String> headers = Arrays.asList("Record No", "Item Code", "Related Item Code",
+            "Reciprocal Flag", "Created By", "Created Datetime", "Updated By", "Updated Datetime");
+
+    try (SXSSFWorkbook workbook = new SXSSFWorkbook(100)) {
+        Sheet sheet = workbook.createSheet("ItemCodeSubstitutes");
+
+        // Header
+        Row headerRow = sheet.createRow(0);
+        for (int i = 0; i < headers.size(); i++) {
+            headerRow.createCell(i).setCellValue(headers.get(i));
+        }
+
+        AtomicInteger rowIdx = new AtomicInteger(1);
+
+        // Date style for created/updated datetime columns (show as dd-mmm-yyyy)
+        CellStyle dateCellStyle = workbook.createCellStyle();
+        CreationHelper createHelper = workbook.getCreationHelper();
+        short dateFormat = createHelper.createDataFormat().getFormat("dd-mmm-yyyy");
+        dateCellStyle.setDataFormat(dateFormat);
+        dateCellStyle.setAlignment(HorizontalAlignment.CENTER);
+
+        // Query and write rows
+        if (params.isEmpty()) {
+            jdbcTemplate.query(sql, (org.springframework.jdbc.core.RowCallbackHandler) rs -> {
+                Row row = sheet.createRow(rowIdx.getAndIncrement());
+                for (int i = 0; i < columns.size(); i++) {
+                    String col = columns.get(i);
+                    Cell cell = row.createCell(i);
+                    if ("createdDatetime".equals(col) || "updatedDateTime".equals(col)) {
+                        Timestamp ts = rs.getTimestamp(col);
+                        if (ts != null) {
+                            cell.setCellType(CellType.NUMERIC);
+                            cell.setCellValue(new java.util.Date(ts.getTime()));
+                            cell.setCellStyle(dateCellStyle);
+                        } else {
+                            cell.setBlank();
+                        }
+                    } else if ("recordNo".equals(col)) {
+                        long rn = rs.getLong(col);
+                        if (rs.wasNull()) {
+                            cell.setCellValue("");
+                        } else {
+                            cell.setCellValue(rn);
+                        }
+                    } else {
+                        String val = rs.getString(col);
+                        cell.setCellValue(val == null ? "" : val);
+                    }
+                }
+            });
+        } else {
+            jdbcTemplate.query(sql, params.toArray(), (org.springframework.jdbc.core.RowCallbackHandler) rs -> {
+                Row row = sheet.createRow(rowIdx.getAndIncrement());
+                for (int i = 0; i < columns.size(); i++) {
+                    String col = columns.get(i);
+                    Cell cell = row.createCell(i);
+                    if ("createdDatetime".equals(col) || "updatedDateTime".equals(col)) {
+                        Timestamp ts = rs.getTimestamp(col);
+                        if (ts != null) {
+                            cell.setCellType(CellType.NUMERIC);
+                            cell.setCellValue(new java.util.Date(ts.getTime()));
+                            cell.setCellStyle(dateCellStyle);
+                        } else {
+                            cell.setBlank();
+                        }
+                    } else if ("recordNo".equals(col)) {
+                        long rn = rs.getLong(col);
+                        if (rs.wasNull()) {
+                            cell.setCellValue("");
+                        } else {
+                            cell.setCellValue(rn);
+                        }
+                    } else {
+                        String val = rs.getString(col);
+                        cell.setCellValue(val == null ? "" : val);
+                    }
+                }
+            });
+        }
+
+        // Optional: autosize columns (may be slow for very large exports; uncomment if desired)
+        // for (int i = 0; i < headers.size(); i++) sheet.autoSizeColumn(i);
+
+        workbook.write(response.getOutputStream());
+        response.flushBuffer();
+        workbook.dispose();
+    } catch (Exception e) {
+        try {
+            response.reset();
+            response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+            response.setContentType("text/plain");
+            response.getWriter().write("Excel export failed: " + e.getMessage());
+            response.getWriter().flush();
+        } catch (IOException ioException) {
+            ioException.printStackTrace();
+        }
     }
 }
 
