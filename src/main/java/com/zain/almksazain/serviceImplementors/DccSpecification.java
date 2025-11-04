@@ -9,9 +9,9 @@ import javax.persistence.criteria.Predicate;
 import javax.persistence.criteria.Root;
 import javax.persistence.criteria.Subquery;
 
+import java.text.SimpleDateFormat;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 
 /**
  * JPA Specification for filtering DCC records.
@@ -23,14 +23,36 @@ public class DccSpecification implements Specification<DCC> {
     private final String columnName;
     private final String searchQuery;
     private final String operator;
+    private final Map<String, String> fieldFilters;
+    private final String createdDateStart;
+    private final String createdDateEnd;
 
+    // New constructor with all filters
+    public DccSpecification(String supplierId, String pendingApprovers, String columnName, String searchQuery,
+                            String operator, Map<String, String> fieldFilters,
+                            String createdDateStart, String createdDateEnd) {
+        this.supplierId = supplierId;
+        this.pendingApprovers = pendingApprovers;
+        this.columnName = columnName;
+        this.searchQuery = searchQuery;
+        this.operator = operator;
+        this.fieldFilters = fieldFilters;
+        this.createdDateStart = createdDateStart;
+        this.createdDateEnd = createdDateEnd;
+    }
+
+    // Old constructor for backward compatibility - FIXED to initialize new fields
     public DccSpecification(String supplierId, String pendingApprovers, String columnName, String searchQuery, String operator) {
         this.supplierId = supplierId;
         this.pendingApprovers = pendingApprovers;
         this.columnName = columnName;
         this.searchQuery = searchQuery;
         this.operator = operator;
+        this.fieldFilters = null;
+        this.createdDateStart = null;
+        this.createdDateEnd = null;
     }
+
     @Override
     public Predicate toPredicate(Root<DCC> root, CriteriaQuery<?> query, CriteriaBuilder cb) {
         List<Predicate> predicates = new ArrayList<>();
@@ -117,11 +139,70 @@ public class DccSpecification implements Specification<DCC> {
             }
         }
 
+        // Apply field filters (CONTAINS for strings, EXACT for IDs/numbers)
+        if (fieldFilters != null && !fieldFilters.isEmpty()) {
+            for (Map.Entry<String, String> entry : fieldFilters.entrySet()) {
+                String field = entry.getKey();
+                String value = entry.getValue();
+
+                if (value == null || value.trim().isEmpty()) continue;
+
+                String dbField = mapFieldToDbColumn(field);
+                if (dbField == null) continue;
+
+                // EXACT match for recordNo (ID field)
+                if (field.equals("dccRecordNo") || field.equals("recordNo")) {
+                    try {
+                        Long recordNo = Long.parseLong(value);
+                        predicates.add(cb.equal(root.get(dbField), recordNo));
+                    } catch (NumberFormatException e) {
+                        // Skip invalid number
+                    }
+                }
+                // Skip fields not in DCC table (these will be filtered later in memory)
+                else if (field.equals("approvalCount") || field.equals("supplierId")) {
+                    // These fields are not in DCC entity, skip
+                }
+                // CONTAINS match for all other string fields
+                else {
+                    try {
+                        predicates.add(cb.like(
+                                cb.lower(root.get(dbField).as(String.class)),
+                                "%" + value.toLowerCase() + "%"
+                        ));
+                    } catch (Exception e) {
+                        // Skip if field doesn't support string operations
+                    }
+                }
+            }
+        }
+
+        // Date range filters
+        if (createdDateStart != null && !createdDateStart.isEmpty()) {
+            try {
+                SimpleDateFormat sdf = new SimpleDateFormat("d-MMM-yyyy", Locale.ENGLISH);
+                Date startDate = sdf.parse(createdDateStart);
+                predicates.add(cb.greaterThanOrEqualTo(root.get("createdDate"), startDate));
+            } catch (Exception e) {
+                // Skip invalid date
+            }
+        }
+
+        if (createdDateEnd != null && !createdDateEnd.isEmpty()) {
+            try {
+                SimpleDateFormat sdf = new SimpleDateFormat("d-MMM-yyyy", Locale.ENGLISH);
+                Date endDate = sdf.parse(createdDateEnd);
+                predicates.add(cb.lessThanOrEqualTo(root.get("createdDate"), endDate));
+            } catch (Exception e) {
+                // Skip invalid date
+            }
+        }
+
         // Subquery for DCCLineItem
         Subquery<DCCLineItem> lineItemSubquery = query.subquery(DCCLineItem.class);
         Root<DCCLineItem> lineItemRoot = lineItemSubquery.from(DCCLineItem.class);
         lineItemSubquery.select(lineItemRoot)
-                .where(cb.equal(lineItemRoot.get("dccId"), root.get("recordNo")));
+                .where(cb.equal(lineItemRoot.get("dccId"), root.get("recordNo").as(String.class)));
         predicates.add(cb.exists(lineItemSubquery));
 
         // Subquery for tb_PurchaseOrderUPL
@@ -152,6 +233,30 @@ public class DccSpecification implements Specification<DCC> {
             case "vendorname": return "vendorName";
             case "createdby": return "createdBy";
             case "createdbyname": return "createdBy";
+            case "vendoremail": return "vendorEmail";
+            default: return null;
+        }
+    }
+
+    // Map field filters to database columns
+    private String mapFieldToDbColumn(String field) {
+        if (field == null) return null;
+        switch (field.toLowerCase()) {
+            case "dccrecordno":
+            case "recordno": return "recordNo";
+            case "dccponumber": return "poNumber";
+            case "newprojectname": return "newProjectName";
+            case "dccstatus": return "status";
+            case "dccacceptancetype": return "acceptanceType";
+            case "vendorname": return "vendorName";
+            case "vendornumber": return "vendorNumber";
+            case "createdbyname":
+            case "createdby": return "createdBy";
+            case "vendorcomment": return "vendorComment";
+            case "dccid": return "dccId";
+            case "projectname": return "projectName";
+            case "dcccurrency":
+            case "currency": return "currency";
             case "vendoremail": return "vendorEmail";
             default: return null;
         }

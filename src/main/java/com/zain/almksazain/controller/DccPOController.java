@@ -795,14 +795,14 @@ public class DccPOController {
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
     public ResponseEntity<Map<String, Object>> filterDccPOCombinedView(
             @RequestBody Map<String, Object> filters,
-            @RequestParam(defaultValue = "1") int page,  // Changed default to 1
+            @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "100") int size,
             @RequestParam(defaultValue = "dccRecordNo") String sortBy,
             @RequestParam(defaultValue = "desc") String sortDir) {
         try {
             logger.info("DCC PO Filter request received with {} filters", filters.size());
 
-            // Extract filter parameters
+            // Extract basic filter parameters
             String supplierId = filters.containsKey("supplierId") ?
                     filters.get("supplierId").toString().trim() : "0";
 
@@ -818,75 +818,36 @@ public class DccPOController {
             String operator = filters.containsKey("operator") ?
                     filters.get("operator").toString().trim() : "AND";
 
-            // Additional filters for specific fields
+            // Build field filters map
             Map<String, String> fieldFilters = new HashMap<>();
+            String[] filterableFields = {
+                    "dccPoNumber", "newProjectName", "dccStatus", "dccAcceptanceType",
+                    "vendorName", "vendorNumber", "createdByName", "createdBy",
+                    "recordNo", "dccRecordNo", "approvalCount", "supplierId"
+            };
 
-            // String filters (exact match - case-insensitive)
-            if (filters.containsKey("dccPoNumber") && !filters.get("dccPoNumber").toString().trim().isEmpty()) {
-                fieldFilters.put("dccPoNumber", filters.get("dccPoNumber").toString().trim());
-            }
+            for (String field : filterableFields) {
+                if (filters.containsKey(field) && !filters.get(field).toString().trim().isEmpty()) {
+                    String value = filters.get(field).toString().trim();
 
-            if (filters.containsKey("newProjectName") && !filters.get("newProjectName").toString().trim().isEmpty()) {
-                fieldFilters.put("newProjectName", filters.get("newProjectName").toString().trim());
-            }
+                    // Skip supplierId if it's "0"
+                    if ("supplierId".equals(field) && "0".equals(value)) {
+                        continue;
+                    }
 
-            if (filters.containsKey("dccStatus") && !filters.get("dccStatus").toString().trim().isEmpty()) {
-                fieldFilters.put("dccStatus", filters.get("dccStatus").toString().trim());
-            }
-
-            if (filters.containsKey("dccAcceptanceType") && !filters.get("dccAcceptanceType").toString().trim().isEmpty()) {
-                fieldFilters.put("dccAcceptanceType", filters.get("dccAcceptanceType").toString().trim());
-            }
-
-            if (filters.containsKey("vendorName") && !filters.get("vendorName").toString().trim().isEmpty()) {
-                fieldFilters.put("vendorName", filters.get("vendorName").toString().trim());
-            }
-
-            if (filters.containsKey("vendorNumber") && !filters.get("vendorNumber").toString().trim().isEmpty()) {
-                fieldFilters.put("vendorNumber", filters.get("vendorNumber").toString().trim());
-            }
-
-            if (filters.containsKey("createdByName") && !filters.get("createdByName").toString().trim().isEmpty()) {
-                fieldFilters.put("createdByName", filters.get("createdByName").toString().trim());
-            }
-
-            if (filters.containsKey("supplierId") && !filters.get("supplierId").toString().trim().isEmpty()
-                    && !filters.get("supplierId").toString().trim().equals("0")) {
-                fieldFilters.put("supplierId", filters.get("supplierId").toString().trim());
-            }
-
-            if (filters.containsKey("createdBy") && !filters.get("createdBy").toString().trim().isEmpty()) {
-                fieldFilters.put("createdByName", filters.get("createdBy").toString().trim());
-            }
-
-            // Integer filters
-
-            // Support "recordNo" (from response) AND "dccRecordNo" (internal)
-            if (filters.containsKey("recordNo") && !filters.get("recordNo").toString().trim().isEmpty()) {
-                try {
-                    fieldFilters.put("dccRecordNo", filters.get("recordNo").toString().trim());
-                } catch (NumberFormatException e) {
-                    logger.warn("Invalid recordNo format: {}", filters.get("recordNo"));
+                    // Map recordNo to dccRecordNo for consistency
+                    if ("recordNo".equals(field)) {
+                        fieldFilters.put("dccRecordNo", value);
+                        logger.info("RecordNo filter: {}", value);
+                    } else if ("createdBy".equals(field)) {
+                        fieldFilters.put("createdByName", value);
+                    } else {
+                        fieldFilters.put(field, value);
+                    }
                 }
             }
 
-            if (filters.containsKey("dccRecordNo") && !filters.get("dccRecordNo").toString().trim().isEmpty()) {
-                try {
-                    fieldFilters.put("dccRecordNo", filters.get("dccRecordNo").toString().trim());
-                } catch (NumberFormatException e) {
-                    logger.warn("Invalid dccRecordNo format: {}", filters.get("dccRecordNo"));
-                }
-            }
-
-            if (filters.containsKey("approvalCount") && !filters.get("approvalCount").toString().trim().isEmpty()) {
-                try {
-                    fieldFilters.put("approvalCount", filters.get("approvalCount").toString().trim());
-                } catch (NumberFormatException e) {
-                    logger.warn("Invalid approvalCount format: {}", filters.get("approvalCount"));
-                }
-            }
-
-            // Date range filters
+            // Extract date range filters
             String createdDateStart = filters.containsKey("createdDateStart") ?
                     filters.get("createdDateStart").toString().trim() : "";
             String createdDateEnd = filters.containsKey("createdDateEnd") ?
@@ -896,12 +857,15 @@ public class DccPOController {
             String approvedDateEnd = filters.containsKey("approvedDateEnd") ?
                     filters.get("approvedDateEnd").toString().trim() : "";
 
-            // Validate and adjust page/size
+            // Validate page/size
             page = Math.max(page, 1);
             size = Math.max(size, 1);
 
-            // Call SYNCHRONOUS service method (no CompletableFuture)
-            DccPOFetchResult result = dccPOService.getDccPOCombinedViewSync(
+            logger.info("Calling service with fieldFilters: {}, dateRanges: [{} to {}, {} to {}]",
+                    fieldFilters, createdDateStart, createdDateEnd, approvedDateStart, approvedDateEnd);
+
+            // Call ENHANCED service method with all filters
+            DccPOFetchResult result = dccPOService.getDccPOCombinedViewSyncWithFilters(
                     supplierId,
                     pendingApprovers,
                     page,
@@ -909,136 +873,64 @@ public class DccPOController {
                     columnName,
                     searchQuery,
                     false, // not exporting
-                    operator);
+                    operator,
+                    fieldFilters,
+                    createdDateStart,
+                    createdDateEnd,
+                    approvedDateStart,
+                    approvedDateEnd);
 
             List<DccPOCombinedViewDTO> data = result.getData();
             Long totalFilteredRecords = result.getTotalFilteredRecords();
 
-            // Apply additional filters in memory
-            SimpleDateFormat sdf = new SimpleDateFormat("d-MMM-yyyy", Locale.ENGLISH);
+            logger.info("Service returned {} records, total filtered: {}", data.size(), totalFilteredRecords);
 
-            List<DccPOCombinedViewDTO> filteredData = data.stream()
-                    .filter(dto -> {
-                        // Apply field filters
-                        for (Map.Entry<String, String> entry : fieldFilters.entrySet()) {
-                            String field = entry.getKey();
-                            String value = entry.getValue().toLowerCase();
+// NEW: Apply columnName/searchQuery filter for calculated fields (approvalCount, pendingApprovers)
+            if (!columnName.isEmpty() && !searchQuery.isEmpty()) {
+                String columnLower = columnName.toLowerCase();
 
-                            switch (field) {
-                                case "dccRecordNo":
-                                    if (dto.getDccRecordNo() != null &&
-                                            !dto.getDccRecordNo().toString().equals(value)) {
-                                        return false;
-                                    }
-                                    break;
-                                case "dccPoNumber":
-                                    if (dto.getDccPoNumber() == null ||
-                                            !dto.getDccPoNumber().toLowerCase().equals(value)) {
-                                        return false;
-                                    }
-                                    break;
-                                case "newProjectName":
-                                    if (dto.getNewProjectName() == null ||
-                                            !dto.getNewProjectName().toLowerCase().equals(value)) {
-                                        return false;
-                                    }
-                                    break;
-                                case "dccStatus":
-                                    if (dto.getDccStatus() == null ||
-                                            !dto.getDccStatus().toLowerCase().equals(value)) {
-                                        return false;
-                                    }
-                                    break;
-                                case "dccAcceptanceType":
-                                    if (dto.getDccAcceptanceType() == null ||
-                                            !dto.getDccAcceptanceType().toLowerCase().equals(value)) {
-                                        return false;
-                                    }
-                                    break;
-                                case "vendorName":
-                                    if (dto.getVendorName() == null ||
-                                            !dto.getVendorName().toLowerCase().equals(value)) {
-                                        return false;
-                                    }
-                                    break;
-                                case "vendorNumber":
-                                    if (dto.getVendorNumber() == null ||
-                                            !dto.getVendorNumber().toLowerCase().equals(value)) {
-                                        return false;
-                                    }
-                                    break;
-                                case "createdByName":
-                                    if (dto.getCreatedByName() == null ||
-                                            !dto.getCreatedByName().toLowerCase().equals(value)) {
-                                        return false;
-                                    }
-                                    break;
-                                case "supplierId":
-                                    if (dto.getSupplierId() == null ||
-                                            !dto.getSupplierId().toLowerCase().equals(value)) {
-                                        return false;
-                                    }
-                                    break;
-                                case "approvalCount":
-                                    if (dto.getApprovalCount() != null &&
-                                            !dto.getApprovalCount().toString().equals(value)) {
-                                        return false;
-                                    }
-                                    break;
-                            }
-                        }
+                // Check if filtering by calculated fields that aren't in database
+                if (columnLower.equals("approvalcount") || columnLower.equals("approvalsrequired") ||
+                        columnLower.equals("pendingapprover") || columnLower.equals("pendingapprovers")) {
 
-                        // Apply date range filters
-                        try {
-                            if (!createdDateStart.isEmpty() || !createdDateEnd.isEmpty()) {
-                                if (dto.getDccCreatedDate() != null) {
-                                    Date dccDate = sdf.parse(dto.getDccCreatedDate());
-                                    if (!createdDateStart.isEmpty()) {
-                                        Date startDate = sdf.parse(createdDateStart);
-                                        if (dccDate.before(startDate)) return false;
-                                    }
-                                    if (!createdDateEnd.isEmpty()) {
-                                        Date endDate = sdf.parse(createdDateEnd);
-                                        if (dccDate.after(endDate)) return false;
-                                    }
+                    logger.info("Applying in-memory filter for calculated field: {}", columnName);
+
+                    data = data.stream()
+                            .filter(dto -> {
+                                String fieldValue = null;
+
+                                // Get the field value based on column name
+                                if (columnLower.equals("approvalcount") || columnLower.equals("approvalsrequired")) {
+                                    fieldValue = dto.getApprovalCount() != null ? dto.getApprovalCount().toString() : null;
+                                } else if (columnLower.equals("pendingapprover") || columnLower.equals("pendingapprovers")) {
+                                    fieldValue = dto.getPendingApprovers();
                                 }
-                            }
 
-                            if (!approvedDateStart.isEmpty() || !approvedDateEnd.isEmpty()) {
-                                if (dto.getDateApproved() != null) {
-                                    Date approvedDate = sdf.parse(dto.getDateApproved());
-                                    if (!approvedDateStart.isEmpty()) {
-                                        Date startDate = sdf.parse(approvedDateStart);
-                                        if (approvedDate.before(startDate)) return false;
-                                    }
-                                    if (!approvedDateEnd.isEmpty()) {
-                                        Date endDate = sdf.parse(approvedDateEnd);
-                                        if (approvedDate.after(endDate)) return false;
-                                    }
-                                }
-                            }
-                        } catch (ParseException e) {
-                            logger.warn("Error parsing dates for filtering", e);
-                        }
+                                // Apply operator-based matching
+                                if (fieldValue == null) return false;
 
-                        return true;
-                    })
-                    .collect(Collectors.toList());
+                                return matchesOperator(fieldValue, searchQuery, operator);
+                            })
+                            .collect(Collectors.toList());
 
-            // Update total count after additional filtering
-            totalFilteredRecords = (long) filteredData.size();
+                    logger.info("After calculated field filter: {} records", data.size());
+
+                    // Recalculate total for pagination
+                    totalFilteredRecords = (long) data.size();
+                }
+            }
 
             // Group by dccRecordNo
-            Map<Long, List<DccPOCombinedViewDTO>> groupedByDccRecordNo = filteredData.stream()
+            Map<Long, List<DccPOCombinedViewDTO>> groupedByDccRecordNo = data.stream()
                     .collect(Collectors.groupingBy(DccPOCombinedViewDTO::getDccRecordNo));
 
-            // Transform into parent DTOs WITHOUT line items
+            // Transform into parent DTOs
             List<DccPOParentDTO> parentDTOs = groupedByDccRecordNo.entrySet().stream()
                     .map(entry -> {
                         DccPOCombinedViewDTO firstRecord = entry.getValue().get(0);
                         DccPOParentDTO parentDTO = new DccPOParentDTO();
 
-                        // Populate ONLY parent-level fields
+                        // Populate parent-level fields
                         parentDTO.setRecordNo(firstRecord.getDccRecordNo());
                         parentDTO.setDccPoNumber(firstRecord.getDccPoNumber());
                         parentDTO.setNewProjectName(firstRecord.getNewProjectName());
@@ -1063,7 +955,6 @@ public class DccPOController {
                         parentDTO.setVendorEmail(firstRecord.getDccVendorEmail());
                         parentDTO.setDccCurrency(firstRecord.getDccCurrency());
 
-                        // DO NOT add line items for filter endpoint
                         parentDTO.setLineItems(new ArrayList<>());
 
                         return parentDTO;
@@ -1082,8 +973,8 @@ public class DccPOController {
             response.put("size", size);
             response.put("sort", sortBy + "," + sortDir);
 
-            logger.info("Successfully filtered DCC PO data. {} parent records returned (page: {}, size: {})",
-                    parentDTOs.size(), page, size);
+            logger.info("Successfully filtered DCC PO data. {} parent records returned (page: {}/{}, total: {})",
+                    parentDTOs.size(), page, (int) Math.ceil((double) totalFilteredRecords / size), totalFilteredRecords);
 
             return new ResponseEntity<>(response, HttpStatus.OK);
 
@@ -1099,7 +990,6 @@ public class DccPOController {
             );
         }
     }
-
     @PostMapping(value = "/filter-approvers", produces = MediaType.APPLICATION_JSON_VALUE)
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
     public ResponseEntity<Map<String, Object>> filterDccPOApprovers(
@@ -1822,5 +1712,23 @@ public class DccPOController {
         });
 
         return deferredResult;
+    }
+    private boolean matchesOperator(String fieldValue, String searchQuery, String operator) {
+        if (fieldValue == null || searchQuery == null) return false;
+
+        String fieldLower = fieldValue.toLowerCase();
+        String searchLower = searchQuery.toLowerCase();
+
+        switch (operator != null ? operator.toLowerCase() : "contains") {
+            case "equals":
+                return fieldLower.equals(searchLower);
+            case "startswith":
+                return fieldLower.startsWith(searchLower);
+            case "endswith":
+                return fieldLower.endsWith(searchLower);
+            case "contains":
+            default:
+                return fieldLower.contains(searchLower);
+        }
     }
 }
