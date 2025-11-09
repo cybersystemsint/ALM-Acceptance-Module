@@ -81,7 +81,8 @@ public class DccSpecification implements Specification<DCC> {
                             )
                     );
             // Select the recordNo where recordDateTime matches the maximum
-            approvalRequestSubquery.select(approvalRequestRoot.get("recordNo"))
+            // Using MAX(recordNo) to handle cases where multiple records have the same maximum recordDateTime
+            approvalRequestSubquery.select(cb.max(approvalRequestRoot.get("recordNo")))
                     .where(
                             cb.and(
                                     cb.equal(approvalRequestRoot.get("acceptanceRequestRecordNo"), root.get("recordNo")),
