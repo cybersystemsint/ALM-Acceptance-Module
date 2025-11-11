@@ -298,6 +298,59 @@ public class DccPOApproverService {
             }
 
             logger.info("Retrieved {} records for page {}, size {}", result.size(), page, size);
+
+// Post-filter for fields not in DCC entity (pendingApprovers, dateApproved)
+            if (columnName != null && searchQuery != null && !searchQuery.isEmpty()) {
+                String lowerColumnName = columnName.toLowerCase();
+
+                if ("pendingapprovers".equals(lowerColumnName)) {
+                    String op = operator != null ? operator.toLowerCase() : "contains";
+                    result = result.stream()
+                            .filter(dto -> {
+                                if (dto.getPendingApprovers() == null) return false;
+                                String pendingApprover = dto.getPendingApprovers().toLowerCase();
+                                String search = searchQuery.toLowerCase();
+
+                                switch (op) {
+                                    case "equals":
+                                        return pendingApprover.equals(search);
+                                    case "startswith":
+                                        return pendingApprover.startsWith(search);
+                                    case "endswith":
+                                        return pendingApprover.endsWith(search);
+                                    case "contains":
+                                    default:
+                                        return pendingApprover.contains(search);
+                                }
+                            })
+                            .collect(Collectors.toList());
+                    totalFilteredRecords = (long) result.size();
+                    logger.info("Post-filtered by pendingApprovers: {} results", result.size());
+                }
+                else if ("dateapproved".equals(lowerColumnName)) {
+                    String op = operator != null ? operator.toLowerCase() : "equals";
+                    result = result.stream()
+                            .filter(dto -> {
+                                if (dto.getDateApproved() == null) return false;
+                                String dateApproved = dto.getDateApproved();
+
+                                switch (op) {
+                                    case "equals":
+                                        return dateApproved.equals(searchQuery);
+                                    case "startswith":
+                                        return dateApproved.startsWith(searchQuery);
+                                    case "endswith":
+                                        return dateApproved.endsWith(searchQuery);
+                                    case "contains":
+                                    default:
+                                        return dateApproved.contains(searchQuery);
+                                }
+                            })
+                            .collect(Collectors.toList());
+                    totalFilteredRecords = (long) result.size();
+                    logger.info("Post-filtered by dateApproved: {} results", result.size());
+                }
+            }
             return new DccPOFetchResult(result, totalFilteredRecords, totalUnfilteredRecords);
         } catch (Exception ex) {
             logger.error("Error in fetchDccPOCombinedView for supplierId: {}, pendingApprovers: {}, page: {}, size: {}, columnName: {}, searchQuery: {}",
