@@ -1,9 +1,6 @@
 package com.zain.almksazain.controller;
 
 import java.text.SimpleDateFormat;
-import java.time.LocalDate;
-import java.time.format.DateTimeFormatter;
-import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -1456,6 +1453,7 @@ private String convertToSqlDate(String input) {
 
             // Add the line item to the POlineItems list
             ((List<Map<String, Object>>) paginatedGroupedResults.get(poNumber).get("lineItems")).add(poLineItem);
+
         });
         // Prepare the response
         Map<String, Object> response = new HashMap<>();
@@ -2170,7 +2168,7 @@ private String convertToSqlDate(String input) {
 
             // Prepare response
             Map<String, Object> response = new HashMap<>();
-            response.put("reports", result);
+            response.put("reports", result); // Match frontend's expected key
             response.put("currentPage", page);
             response.put("totalItems", totalRecords);
             response.put("totalPages", (int) Math.ceil((double) totalRecords / size));
@@ -2188,7 +2186,7 @@ private String convertToSqlDate(String input) {
         }
     }
 
-    @PostMapping("/filterby")
+        @PostMapping("/filterby")
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
     public ResponseEntity<Map<String, Object>> filterPurchaseOrders(
             @RequestBody List<Map<String, Object>> filterList,  // Changed: Array of {columnName, operator, value}
@@ -3661,7 +3659,8 @@ private String convertToSqlDate(String input) {
         }
     }
 
-@PostMapping("/filterCapitalizationReports")
+    @PostMapping("/filterCapitalizationReports")
+    @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
     public ResponseEntity<Map<String, Object>> filterCapitalizationReports(
             @RequestBody Map<String, String> filters,
             @RequestParam(defaultValue = "0") int page,
@@ -3669,10 +3668,9 @@ private String convertToSqlDate(String input) {
             @RequestParam(defaultValue = "requestId") String sortBy,
             @RequestParam(defaultValue = "asc") String sortDir) {
         try {
-            // Ensure GROUP BY mode
             jdbcTemplate.execute("SET SESSION sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''))");
 
-            // Whitelist and map searchable columns to SQL expressions
+            // Whitelist and map searchable columns to SQL
             Map<String, String> searchableColumns = new HashMap<>();
             searchableColumns.put("requestId", "DCC.recordNo");
             searchableColumns.put("poNumber", "DCC.poNumber");
@@ -3697,135 +3695,75 @@ private String convertToSqlDate(String input) {
             searchableColumns.put("receiveddate", "rec.approvedDate");
             searchableColumns.put("recordNo", "DCC.recordNo");
 
-            // Numeric columns: exact match / IN behavior
+            // Define numeric columns for exact matching
             Set<String> numericColumns = new HashSet<>(Arrays.asList(
-                    "requestId", "poLineNumber", "uplLineNumber", "recordNo", "quantity"
+                    "requestId", "poLineNumber", "uplLineNumber", "recordNo"
             ));
 
-            // Build WHERE clause from provided filters
-            StringBuilder whereClause = new StringBuilder();
+            // Initialize WHERE clause and parameters
+            String whereClause = "";
             List<Object> params = new ArrayList<>();
 
-            if (filters != null) {
-                for (Map.Entry<String, String> entry : filters.entrySet()) {
-                    String columnKey = entry.getKey();
-                    if (columnKey == null) continue;
-                    String rawValue = entry.getValue();
-                    if (rawValue == null) continue;
-                    rawValue = rawValue.trim();
-                    if (rawValue.isEmpty()) continue;
+            // PO Number filter
+            if (filters.containsKey("poNumber") && !filters.get("poNumber").isEmpty()) {
+                whereClause += " AND DCC.poNumber = ?";
+                params.add(filters.get("poNumber"));
+            }
 
-                    // Skip date range keys here; handled after the loop
-                    if ("receivedDateStart".equalsIgnoreCase(columnKey) ||
-                        "receivedDateEnd".equalsIgnoreCase(columnKey) ||
-                        "receivedDateFrom".equalsIgnoreCase(columnKey) ||
-                        "receivedDateTo".equalsIgnoreCase(columnKey) ||
-                        "isdStart".equalsIgnoreCase(columnKey) ||
-                        "isdEnd".equalsIgnoreCase(columnKey) ||
-                        "isdFrom".equalsIgnoreCase(columnKey) ||
-                        "isdTo".equalsIgnoreCase(columnKey)) {
-                        continue;
-                    }
-
-                    // Only process whitelisted columns
-                    if (!searchableColumns.containsKey(columnKey)) {
-                        // ignore unknown keys (prevents SQL injection attempts)
-                        continue;
-                    }
-
-                    String sqlCol = searchableColumns.get(columnKey);
-
-                    // Multi-value support: comma separated tokens
-                    if (rawValue.contains(",")) {
-                        String[] tokens = Arrays.stream(rawValue.split(","))
-                                .map(String::trim)
-                                .filter(s -> !s.isEmpty())
-                                .toArray(String[]::new);
-                        if (tokens.length == 0) continue;
-
-                        if (numericColumns.contains(columnKey)) {
-                            // numeric IN (?,?,?)
-                            whereClause.append(" AND ").append(sqlCol).append(" IN (")
-                                    .append(String.join(",", Collections.nCopies(tokens.length, "?"))).append(") ");
-                            for (String t : tokens) params.add(t);
-                        } else {
-                            // For strings: grouped OR of LIKEs to allow partial matches on any token
-                            whereClause.append(" AND (");
-                            for (int i = 0; i < tokens.length; i++) {
-                                if (i > 0) whereClause.append(" OR ");
-                                whereClause.append("LOWER(").append(sqlCol).append(") LIKE LOWER(?)");
-                                params.add("%" + tokens[i] + "%");
-                            }
-                            whereClause.append(") ");
+            // Dynamic filtering for other columns
+            for (Map.Entry<String, String> entry : filters.entrySet()) {
+                String columnName = entry.getKey();
+                String searchQuery = entry.getValue();
+                if (!searchQuery.isEmpty() && searchableColumns.containsKey(columnName) && !columnName.equals("poNumber")) {
+                    String sqlCol = searchableColumns.get(columnName);
+                    if (numericColumns.contains(columnName)) {
+                        // For numeric columns, use exact matching
+                        try {
+                            Number value = columnName.equals("quantity") || columnName.equals("faBookingAmount") ? Double.parseDouble(searchQuery) : Integer.parseInt(searchQuery);
+                            whereClause += " AND " + sqlCol + " = ?";
+                            params.add(value);
+                        } catch (NumberFormatException e) {
+                            loggger.error("Invalid numeric format for " + columnName + ": " + searchQuery, e);
                         }
                     } else {
-                        // single value
-                        if (numericColumns.contains(columnKey)) {
-                            whereClause.append(" AND ").append(sqlCol).append(" = ? ");
-                            params.add(rawValue);
-                        } else {
-                            whereClause.append(" AND LOWER(").append(sqlCol).append(") LIKE LOWER(?) ");
-                            params.add("%" + rawValue + "%");
-                        }
+                        // For text columns, use LIKE with case-insensitive search
+                        whereClause += " AND LOWER(" + sqlCol + ") LIKE LOWER(?)";
+                        params.add("%" + searchQuery + "%");
                     }
                 }
             }
 
             // Date range filtering for receiveddate (rec.approvedDate)
-            String receivedDateStart = "";
-            String receivedDateEnd = "";
-
-            if (filters != null) {
-                // support multiple naming conventions
-                if (filters.containsKey("receivedDateStart")) receivedDateStart = filters.get("receivedDateStart");
-                if (filters.containsKey("receivedDateEnd")) receivedDateEnd = filters.get("receivedDateEnd");
-                if ((receivedDateStart == null || receivedDateStart.isEmpty()) && filters.containsKey("receivedDateFrom"))
-                    receivedDateStart = filters.get("receivedDateFrom");
-                if ((receivedDateEnd == null || receivedDateEnd.isEmpty()) && filters.containsKey("receivedDateTo"))
-                    receivedDateEnd = filters.get("receivedDateTo");
-            }
-            receivedDateStart = convertToSqlDate(receivedDateStart);
-            receivedDateEnd = convertToSqlDate(receivedDateEnd);
-
+            String receivedDateStart = filters.containsKey("receivedDateStart") ? convertToSqlDate(filters.get("receivedDateStart")) : "";
+            String receivedDateEnd = filters.containsKey("receivedDateEnd") ? convertToSqlDate(filters.get("receivedDateEnd")) : "";
             if (!receivedDateStart.isEmpty() && !receivedDateEnd.isEmpty()) {
-                whereClause.append(" AND DATE(rec.approvedDate) BETWEEN ? AND ? ");
+                whereClause += " AND DATE(rec.approvedDate) BETWEEN ? AND ?";
                 params.add(receivedDateStart);
                 params.add(receivedDateEnd);
             } else if (!receivedDateStart.isEmpty()) {
-                whereClause.append(" AND DATE(rec.approvedDate) >= ? ");
+                whereClause += " AND DATE(rec.approvedDate) >= ?";
                 params.add(receivedDateStart);
             } else if (!receivedDateEnd.isEmpty()) {
-                whereClause.append(" AND DATE(rec.approvedDate) <= ? ");
+                whereClause += " AND DATE(rec.approvedDate) <= ?";
                 params.add(receivedDateEnd);
             }
 
             // Date range filtering for isd (LN2.dateInService)
-            String isdStart = "";
-            String isdEnd = "";
-            if (filters != null) {
-                if (filters.containsKey("isdStart")) isdStart = filters.get("isdStart");
-                if (filters.containsKey("isdEnd")) isdEnd = filters.get("isdEnd");
-                if ((isdStart == null || isdStart.isEmpty()) && filters.containsKey("isdFrom"))
-                    isdStart = filters.get("isdFrom");
-                if ((isdEnd == null || isdEnd.isEmpty()) && filters.containsKey("isdTo"))
-                    isdEnd = filters.get("isdTo");
-            }
-            isdStart = convertToSqlDate(isdStart);
-            isdEnd = convertToSqlDate(isdEnd);
-
+            String isdStart = filters.containsKey("isdStart") ? convertToSqlDate(filters.get("isdStart")) : "";
+            String isdEnd = filters.containsKey("isdEnd") ? convertToSqlDate(filters.get("isdEnd")) : "";
             if (!isdStart.isEmpty() && !isdEnd.isEmpty()) {
-                whereClause.append(" AND DATE(LN2.dateInService) BETWEEN ? AND ? ");
+                whereClause += " AND DATE(LN2.dateInService) BETWEEN ? AND ?";
                 params.add(isdStart);
                 params.add(isdEnd);
             } else if (!isdStart.isEmpty()) {
-                whereClause.append(" AND DATE(LN2.dateInService) >= ? ");
+                whereClause += " AND DATE(LN2.dateInService) >= ?";
                 params.add(isdStart);
             } else if (!isdEnd.isEmpty()) {
-                whereClause.append(" AND DATE(LN2.dateInService) <= ? ");
+                whereClause += " AND DATE(LN2.dateInService) <= ?";
                 params.add(isdEnd);
             }
 
-            // Base SQL (same as export)
+            // Join tb_AcceptanceRequest_Receipt as rec, get latest approvedDate per DCC.recordNo
             String baseSql = " FROM tb_DCC DCC " +
                     "JOIN tb_PurchaseOrder HD ON DCC.poNumber = HD.poNumber " +
                     // Get the AR with status=approved and received=1 for this DCC
@@ -3853,15 +3791,13 @@ private String convertToSqlDate(String input) {
                     "  THEN (LN2.uplLineNumber = upl.uplLine AND upl.poLineNumber = LN2.lineNumber AND upl.poNumber = DCC.poNumber) " +
                     "  ELSE (HD.lineNumber = LN2.lineNumber AND HD.poNumber = DCC.poNumber) END)) " +
                     "AND DCC.status = 'approved-received' " +
-                    whereClause.toString();
+                    whereClause;
 
             String groupBy = " GROUP BY LN2.recordNo ";
-
-            // Count query
             String countSql = "SELECT COUNT(*) FROM (SELECT 1 " + baseSql + groupBy + ") t";
             int totalRecords = jdbcTemplate.queryForObject(countSql, params.toArray(), Integer.class);
 
-            // Pagination params
+            // Pagination
             String paginationSql = " LIMIT ? OFFSET ?";
             List<Object> queryParams = new ArrayList<>(params);
             queryParams.add(size);
@@ -3869,12 +3805,12 @@ private String convertToSqlDate(String input) {
 
             // Build sorting
             String orderBy = "";
-            if (sortBy != null && !sortBy.trim().isEmpty()) {
+            if (!sortBy.isEmpty()) {
                 String sqlSortCol = searchableColumns.getOrDefault(sortBy, sortBy);
-                orderBy = " ORDER BY " + sqlSortCol + (sortDir != null && sortDir.equalsIgnoreCase("asc") ? " ASC" : " DESC");
+                orderBy = " ORDER BY " + sqlSortCol + (sortDir.equalsIgnoreCase("asc") ? " ASC" : " DESC");
             }
 
-            // Main select (keeps the same output shape as the original method)
+            // Main query
             String sql = "SELECT " +
                     "DCC.recordNo AS requestId, " +
                     "DCC.poNumber AS poNumber, " +
@@ -3900,11 +3836,11 @@ private String convertToSqlDate(String input) {
 
             List<Map<String, Object>> result = jdbcTemplate.queryForList(sql, queryParams.toArray());
 
-            // Add incremental record number (sequence for client display)
+            // Add incremental record number
             AtomicInteger counter = new AtomicInteger(1);
             result.forEach(row -> row.put("recordNo", counter.getAndIncrement()));
 
-            // Prepare response map
+            // Prepare response
             Map<String, Object> response = new HashMap<>();
             response.put("reports", result);
             response.put("currentPage", page);
@@ -3915,9 +3851,8 @@ private String convertToSqlDate(String input) {
             response.put("size", size);
             response.put("sort", sortBy + "," + sortDir);
 
-            loggger.info("Capitalization Report Filter Query: {}", sql);
+            loggger.info("Capitalization Report Filter Query: " + sql);
             return new ResponseEntity<>(response, HttpStatus.OK);
-
         } catch (Exception e) {
             loggger.error("Error filtering capitalization reports", e);
             return new ResponseEntity<>(Collections.singletonMap("message", "Error filtering capitalization reports: " + e.getMessage()),
@@ -3925,5 +3860,4 @@ private String convertToSqlDate(String input) {
         }
     }
 
-   
 }
