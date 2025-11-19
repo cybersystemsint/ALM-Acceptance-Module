@@ -30,6 +30,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.gson.Gson;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonSyntaxException;
@@ -40,6 +41,7 @@ import com.zain.almksazain.repo.dccpoviewrepo;
 import com.zain.almksazain.repo.poviewrepo;
 import com.zain.almksazain.repo.tbChargeAccountRepo;
 import com.zain.almksazain.repo.uplrepo;
+import com.zain.almksazain.specs.QueryFilterBuilder;
 import com.zain.almzainksa.helper.helper;
 
 @RestController
@@ -605,39 +607,91 @@ private String convertToSqlDate(String input) {
 
 
 
-    ///GET ALL CREATED CHARGE ACCOUNTS
-    @PostMapping(value = "/reports/getAllItemCodeSubstitutes", produces = "application/json")
+    ///GET ALL CREATED CHARGE ACCOUNTS  
+     @PostMapping(value = "/reports/getAllItemCodeSubstitutes", produces = "application/json")
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
     public Map<String, Object> getAllItemCodeSubstitutes(@RequestBody String req) {
-        JsonObject obj = new JsonParser().parse(req).getAsJsonObject();
-        Integer recordNo = obj.get("recordNo").getAsInt();
-        String columnName = obj.has("columnName") ? obj.get("columnName").getAsString() : "";
-        String searchQuery = obj.has("searchQuery") ? obj.get("searchQuery").getAsString() : "";
+        JsonObject obj = JsonParser.parseString(req).getAsJsonObject();
 
-        int page = obj.has("page") ? obj.get("page").getAsInt() : 1;
-        int size = obj.has("size") ? obj.get("size").getAsInt() : 20000;
+        Integer recordNo = obj.has("recordNo") && !obj.get("recordNo").isJsonNull() ? obj.get("recordNo").getAsInt() : 0;
+        String columnName = obj.has("columnName") && !obj.get("columnName").isJsonNull() ? obj.get("columnName").getAsString() : "";
+        String searchQuery = obj.has("searchQuery") && !obj.get("searchQuery").isJsonNull() ? obj.get("searchQuery").getAsString() : "";
+        String searchOperator = obj.has("searchOperator") && !obj.get("searchOperator").isJsonNull()
+                ? obj.get("searchOperator").getAsString() : null;
+
+        int page = obj.has("page") && !obj.get("page").isJsonNull() ? obj.get("page").getAsInt() : 1;
+        int size = obj.has("size") && !obj.get("size").isJsonNull() ? obj.get("size").getAsInt() : 100;
 
         page = Math.max(page, 0);
         size = Math.max(size, 0);
 
-        String paginationSql = "";
+        Map<String, String> allowedColumns = new HashMap<>();
+        allowedColumns.put("recordno", "recordNo");
+        allowedColumns.put("record_no", "recordNo");
+        allowedColumns.put("recorddatetime", "recordDateTime");
+        allowedColumns.put("record_date_time", "recordDateTime");
+        allowedColumns.put("itemcode", "itemCode");
+        allowedColumns.put("relateditemcode", "relatedItemCode");
+        allowedColumns.put("reciprocalflag", "reciprocalFlag");
+        allowedColumns.put("createdby", "createdBy");
+        allowedColumns.put("createddatetime", "createdDatetime");
+        allowedColumns.put("created_datetime", "createdDatetime");
+        allowedColumns.put("updatedby", "updatedBy");
 
-        List<Object> params = new ArrayList<>();
         String whereClause = " WHERE 1=1";
+        List<Object> params = new ArrayList<>();
 
-        if (recordNo != 0) {
+        if (recordNo != null && recordNo != 0) {
             whereClause += " AND recordNo = ?";
             params.add(recordNo);
         }
 
+        // single column search
         if (!columnName.isEmpty() && !searchQuery.isEmpty()) {
-            whereClause += " AND " + columnName + " LIKE ?";
-            params.add("%" + searchQuery + "%");
+            String colKey = columnName.trim().toLowerCase();
+            String mapped = allowedColumns.get(colKey);
+            if (mapped != null) {
+                QueryFilterBuilder.OperatorAndValues ov = new QueryFilterBuilder.OperatorAndValues();
+                ov.operator = (searchOperator != null && !searchOperator.isBlank()) ? searchOperator.trim().toLowerCase()
+                        : null;
+                ov.values = Collections.singletonList(searchQuery);
+
+                String fragment = QueryFilterBuilder.buildPredicateFragment(mapped, ov, params);
+                if (fragment != null && !fragment.isEmpty()) {
+                    whereClause += " AND (" + fragment + ")";
+                }
+            }
         }
 
-        String countScript = "SELECT COUNT(*) FROM tb_ItemCodeSubstitute" + whereClause;
-        int totalRecords = jdbcTemplate.queryForObject(countScript, Integer.class, params.toArray());
+        // filterBy multi-filters
+        if (obj.has("filterBy") && obj.get("filterBy").isJsonObject()) {
+            JsonObject filterBy = obj.getAsJsonObject("filterBy");
+            for (Map.Entry<String, JsonElement> entry : filterBy.entrySet()) {
+                String rawKey = entry.getKey();
+                if (rawKey == null) continue;
+                String key = rawKey.trim().toLowerCase();
+                String mapped = allowedColumns.get(key);
+                if (mapped == null) continue;
 
+                QueryFilterBuilder.OperatorAndValues ov = QueryFilterBuilder.normalizeOperatorAndValuesFromJson(entry.getValue());
+                if (ov.values == null || ov.values.isEmpty()) continue;
+
+                String fragment = QueryFilterBuilder.buildPredicateFragment(mapped, ov, params);
+                if (fragment != null && !fragment.isEmpty()) whereClause += " AND (" + fragment + ")";
+            }
+        }
+
+        // COUNT
+        String countScript = "SELECT COUNT(*) FROM tb_ItemCodeSubstitute" + whereClause;
+        int totalRecords = 0;
+        if (params.isEmpty()) {
+            totalRecords = jdbcTemplate.queryForObject(countScript, Integer.class);
+        } else {
+            totalRecords = jdbcTemplate.queryForObject(countScript, Integer.class, params.toArray());
+        }
+
+        // Pagination SQL
+        String paginationSql = "";
         if (page == 0 && size == 0) {
             paginationSql = "";
         } else if (page == 1 && size == 20000) {
@@ -646,9 +700,7 @@ private String convertToSqlDate(String input) {
             page = Math.max(page, 1);
             size = Math.max(size, 1);
             int offset = (page - 1) * size;
-
             paginationSql = " LIMIT " + size + " OFFSET " + offset;
-
         } else {
             page = Math.max(page, 1);
             size = Math.max(size, 1);
@@ -660,19 +712,25 @@ private String convertToSqlDate(String input) {
                 + "createdBy, createdDatetime, updatedBy, updatedDateTime FROM tb_ItemCodeSubstitute"
                 + whereClause + paginationSql;
 
-        List<Map<String, Object>> result = jdbcTemplate.queryForList(itemCodes, params.toArray());
+        List<Map<String, Object>> result;
+        if (params.isEmpty()) {
+            result = jdbcTemplate.queryForList(itemCodes);
+        } else {
+            result = jdbcTemplate.queryForList(itemCodes, params.toArray());
+        }
 
         Map<String, Object> response = new HashMap<>();
         response.put("data", result);
         response.put("totalRecords", totalRecords);
         response.put("currentPage", page);
         response.put("pageSize", size);
-        response.put("totalPages", (int) Math.ceil((double) totalRecords / size));
+        response.put("totalPages", size > 0 ? (int) Math.ceil((double) totalRecords / size) : 0);
 
         return response;
     }
+  
 
-    ///GET ALL CREATED CHARGE ACCOUNTS
+///GET ALL CREATED CHARGE ACCOUNTS
     @PostMapping(value = "/reports/getAllChargeAccounts", produces = "application/json")
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
     public List<Map<String, Object>> getAllChargeAccounts(@RequestBody String req) {
