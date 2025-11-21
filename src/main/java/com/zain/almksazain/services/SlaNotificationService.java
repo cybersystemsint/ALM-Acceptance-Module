@@ -1,41 +1,43 @@
+
 package com.zain.almksazain.services;
 
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.beans.factory.annotation.Autowired;
 
 import com.zain.almksazain.model.User;
 import com.zain.almksazain.repo.UserRepository;
-
-import java.nio.file.Path;
-import java.util.*;
-import java.util.stream.Collectors;
+import com.zain.almksazain.model.departmentsdata;
+import com.zain.almksazain.repo.deptsrepo;
 
 @Service
 public class SlaNotificationService {
-
     private static final Logger logger = LoggerFactory.getLogger(SlaNotificationService.class);
 
     @Autowired private DccPoCombinedService dccPoCombinedService;
     @Autowired private EmailService emailService;
     @Autowired private UserRepository userRepository;
+    @Autowired private deptsrepo deptsRepo;
 
-    // Stage 1: daily at 08:00 AM - reminder to pending approvers where userAgingInDays > 5
-    @Scheduled(cron = "0 13 14 * * *" )
+    @Scheduled(cron = "0 13 14 * * *")
     public void runStage1Reminders() {
         runStage1RemindersWithFilters(Collections.emptyMap());
     }
 
-    // Exposed public method to trigger stage 1 manually and pass filters.
-    // filters will be forwarded to getAgingReportWithMultipleFilters as the filter map.
+
     public void runStage1RemindersWithFilters(Map<String, Object> filters) {
         logger.info("SLA Stage 1 (manual) job started with filters={}", filters);
         try {
-            // Convert Map<String, Object> to Map<String, String>
-            Map<String, String> stringFilters = filters == null ? Collections.emptyMap() : 
+            Map<String, String> stringFilters = filters == null ? Collections.emptyMap() :
                 filters.entrySet().stream()
                     .collect(Collectors.toMap(
                         Map.Entry::getKey,
@@ -45,145 +47,264 @@ public class SlaNotificationService {
             @SuppressWarnings("unchecked")
             List<Map<String, Object>> data = (List<Map<String, Object>>) response.getOrDefault("data", Collections.emptyList());
 
-            // Filter rows where user aging >= 5 days (changed from > 5)
             List<Map<String, Object>> stage1Rows = data.stream()
                     .filter(row -> numericDays(row.get("userAgingInDays")) >= 5)
                     .collect(Collectors.toList());
 
-            // Group by pending approver full name (fall back to "Unassigned")
+            logger.debug("Stage1 - total data rows returned={}, stage1 rows after filter={}", data.size(), stage1Rows.size());
+
+            // Group by username (unique). Use "Unassigned" when username is missing.
             Map<String, List<Map<String, Object>>> byApprover = stage1Rows.stream()
-                    .collect(Collectors.groupingBy(row -> safeString(row.get("pendingApprovers"), "Unassigned")));
+                    .collect(Collectors.groupingBy(row -> safeString(row.get("pendingApproverUsername"), "Unassigned")));
 
             for (Map.Entry<String, List<Map<String, Object>>> entry : byApprover.entrySet()) {
-                String approverFullName = entry.getKey();
+                String approverUsername = entry.getKey();
                 List<Map<String, Object>> rows = entry.getValue();
 
-                // Resolve approver email using row-level hints (username) if available
                 Optional<String> approverEmailOpt = resolveApproverEmail(rows);
+                String firstRecordNo = rows.isEmpty() ? "n/a" : String.valueOf(rows.get(0).get("recordNo"));
 
                 if (approverEmailOpt.isEmpty()) {
-                    logger.warn("Stage1 - Approver email not found for approver='{}' -> skipping {} rows", approverFullName, rows.size());
+                    logger.warn("Stage1 - Approver email not found for username='{}' -> skipping {} rows (sample recordNo={})",
+                            approverUsername, rows.size(), firstRecordNo);
                     continue;
                 }
-
                 String approverEmail = approverEmailOpt.get();
 
-                // Build HTML email body using frontend-styled columns
                 String rowsPreview = buildFrontendStyledRowsTable(rows);
-                String body = constructSlaReminderHtml(approverFullName, rowsPreview, 1);
 
-                String subject = String.format("Reminder: Pending approval requests (User aging > 5 days) - %d request(s)", rows.size());
-                emailService.sendEmail(approverEmail, subject, body,null);
+                String approverDisplay = rows.stream()
+                        .map(r -> safeString(r.get("pendingApprovers"), ""))
+                        .filter(s -> !s.isBlank() && !"Unassigned".equalsIgnoreCase(s))
+                        .findFirst()
+                        .orElse( approverUsername == null || approverUsername.equals("Unassigned") ? null : approverUsername );
 
-                logger.info("Stage1 reminder sent to {} ({} requests)", approverFullName, rows.size());
+                String body = constructSlaReminderHtml(approverDisplay, rowsPreview, 1);
+
+                String samplePo = rows.stream().map(r -> safeString(r.get("poNumber"), "")).filter(s -> !s.isEmpty()).findFirst().orElse("");
+                String sampleReq = rows.stream().map(r -> safeString(r.get("dccId"), "")).filter(s -> !s.isEmpty()).findFirst().orElse("");
+                int sampleAgingDays = rows.stream().map(r -> numericDays(r.get("userAgingInDays"))).filter(d -> d > 0).findFirst().orElse(0);
+
+                String subject = buildStage1Subject(rows.size(), firstRecordNo, samplePo, sampleReq, sampleAgingDays);
+
+                // --- extract department, username and set role = "approver" ---
+                String department = rows.stream()
+                        .map(r -> safeString(r.get("departmentName"), ""))
+                        .filter(s -> !s.isBlank())
+                        .findFirst().orElse(null);
+
+                // Prefer pendingApproverUsername; if missing use pendingApprovers (the report may have username there)
+                String userName = rows.stream()
+                        .map(r -> safeString(r.get("pendingApproverUsername"), ""))
+                        .filter(s -> !s.isBlank() && !"Unassigned".equalsIgnoreCase(s))
+                        .findFirst()
+                        .orElseGet(() -> rows.stream()
+                                .map(r -> safeString(r.get("pendingApprovers"), ""))
+                                .filter(s -> !s.isBlank() && !"Unassigned".equalsIgnoreCase(s))
+                                .findFirst()
+                                .orElse(null)
+                        );
+
+                String role = "approver";
+
+                logger.info("About to send Stage1 reminder: username='{}' display='{}' email='{}' requests={} subject={} dept={} user={} role={}",
+                        approverUsername, approverDisplay, approverEmail, rows.size(), subject, department, userName, role);
+                logger.debug("Stage1 email bodyPreview='{}'", rowsPreview.length() > 200 ? rowsPreview.substring(0,200) + "..." : rowsPreview);
+
+                emailService.sendEmail(approverEmail, subject, body, null, department, userName, role);
+                logger.info("Stage1 reminder scheduled/sent to {} ({} requests)", approverEmail, rows.size());
             }
-
         } catch (Exception e) {
             logger.error("Error running SLA Stage 1 job", e);
         }
     }
 
-
-    // Exposed public method to trigger stage 2 manually and pass filters.
+ 
     public void runStage2EscalationsWithFilters(Map<String, Object> filters) {
-        logger.info("SLA Stage 2 (manual) job started with filters={}", filters);
+        logger.info("SLA Stage 2 (escalation) job started with filters={}", filters);
         try {
-            // Convert Map<String, Object> to Map<String, String>
-            Map<String, String> stringFilters = filters == null ? Collections.emptyMap() : 
+            Map<String, String> stringFilters = filters == null ? Collections.emptyMap() :
                 filters.entrySet().stream()
                     .collect(Collectors.toMap(
                         Map.Entry::getKey,
                         entry -> entry.getValue() == null ? "" : entry.getValue().toString()
                     ));
-            Map<String, Object> response = dccPoCombinedService.getAgingReportWithMultipleFilters(null, stringFilters, 1, 10000);
+            Map<String, Object> response = dccPoCombinedService.getAgingReportWithMultipleFilters(null, stringFilters, 1, 1000);
             @SuppressWarnings("unchecked")
             List<Map<String, Object>> data = (List<Map<String, Object>>) response.getOrDefault("data", Collections.emptyList());
 
-            // Filter rows where user aging > 10 days
             List<Map<String, Object>> stage2Rows = data.stream()
-                    .filter(row -> numericDays(row.get("userAgingInDays")) > 10)
+                    .filter(row -> numericDays(row.get("userAgingInDays")) >= 10)
                     .collect(Collectors.toList());
 
-            // Group rows by departmentId derived from pending approver (we resolve user to get department)
-            Map<Long, List<Map<String, Object>>> rowsByDepartment = new HashMap<>();
+            logger.debug("Stage2 - total data rows returned={}, stage2 rows after filter={}", data.size(), stage2Rows.size());
 
-            for (Map<String, Object> row : stage2Rows) {
-                String pendingApproverFull = safeString(row.get("pendingApprovers"), null);
-                if (pendingApproverFull == null) {
-                    logger.warn("Stage2 - no pending approver in row recordNo={}", row.get("recordNo"));
-                    continue;
-                }
+            Map<String, List<Map<String, Object>>> byDepartment = stage2Rows.stream()
+                    .collect(Collectors.groupingBy(row -> safeString(row.get("departmentName"), "Unassigned")));
 
-                Optional<User> pendingUserOpt = findUserByRow(row, pendingApproverFull);
-                if (pendingUserOpt.isEmpty()) {
-                    logger.warn("Stage2 - cannot resolve pending approver '{}' to user object", pendingApproverFull);
+            for (Map.Entry<String, List<Map<String, Object>>> entry : byDepartment.entrySet()) {
+                String departmentName = entry.getKey();
+                List<Map<String, Object>> rows = entry.getValue();
+
+                String firstRecordNo = rows.isEmpty() ? "n/a" : String.valueOf(rows.get(0).get("recordNo"));
+
+                // Resolve manager user (prefer explicit managerUsername fields, then department lookup -> user position)
+                Optional<User> managerUserOpt = resolveManagerUser(rows, departmentName);
+
+                if (managerUserOpt.isEmpty()) {
+                    logger.warn("Stage2 - Manager user not found for department='{}' -> skipping {} rows (sample recordNo={})",
+                            departmentName, rows.size(), firstRecordNo);
                     continue;
                 }
-                User pendingUser = pendingUserOpt.get();
-                Integer deptId = pendingUser.getDepartmentId();
-                if (deptId == null) {
-                    logger.warn("Stage2 - pending approver '{}' has no department -> skipping escalation", pendingApproverFull);
+                User managerUser = managerUserOpt.get();
+
+                if (managerUser.getEmailAddress() == null || managerUser.getEmailAddress().isBlank()) {
+                    logger.warn("Stage2 - Manager email missing for user='{}' dept='{}' -> skipping", managerUser.getUsername(), departmentName);
                     continue;
                 }
-                long depLong = deptId.longValue();
-                rowsByDepartment.computeIfAbsent(depLong, k -> new ArrayList<>()).add(row);
+                String managerEmail = managerUser.getEmailAddress();
+
+                String rowsPreview = buildFrontendStyledRowsTable(rows);
+
+                // Use manager full name (prefer fullName, fall back to username)
+                String managerDisplayName = managerUser.getFullName() != null && !managerUser.getFullName().isBlank()
+                        ? managerUser.getFullName() : managerUser.getUsername();
+
+                String body = constructSlaEscalationHtml(managerDisplayName, rows.size(), rowsPreview); // include manager name, count and note
+
+                String subject = buildStage2Subject(rows.size());
+
+                String userName = managerUser.getUsername();
+                String role = "manager";
+                String department = departmentName != null && !departmentName.isBlank() ? departmentName : null;
+
+                logger.info("About to send Stage2 escalation: department='{}' manager='{}' email='{}' requests={} subject={} dept={} user={} role={}",
+                        departmentName, managerDisplayName, managerEmail, rows.size(), subject, department, userName, role);
+                logger.debug("Stage2 email bodyPreview='{}'", rowsPreview.length() > 200 ? rowsPreview.substring(0,200) + "..." : rowsPreview);
+
+                emailService.sendEmail(managerEmail, subject, body, null, department, userName, role);
+                logger.info("Stage2 escalation scheduled/sent to {} (dept={}, {} requests)", managerEmail, departmentName, rows.size());
             }
-
-            // For each department create escalation email to managers + team
-            for (Map.Entry<Long, List<Map<String, Object>>> depEntry : rowsByDepartment.entrySet()) {
-                Long depId = depEntry.getKey();
-                List<Map<String, Object>> depRows = depEntry.getValue();
-
-                // Find users in the department
-                List<User> deptUsers = userRepository.findAll().stream()
-                        .filter(u -> u.getDepartmentId() != null && u.getDepartmentId().longValue() == depId)
-                        .collect(Collectors.toList());
-
-                // Identify managers by userPosition contains "manager" (case-insensitive)
-                List<User> managers = deptUsers.stream()
-                        .filter(u -> u.getUserPosition() != null && u.getUserPosition().toLowerCase().contains("manager"))
-                        .collect(Collectors.toList());
-
-                // Build recipient list: managers first, then approvers in dept (canApprove == true)
-                Set<String> recipientEmails = new LinkedHashSet<>();
-                if (!managers.isEmpty()) {
-                    managers.stream().map(User::getEmailAddress).filter(Objects::nonNull).forEach(recipientEmails::add);
-                    deptUsers.stream()
-                            .filter(u -> Boolean.TRUE.equals(u.getCanApprove()))
-                            .map(User::getEmailAddress)
-                            .filter(Objects::nonNull)
-                            .forEach(recipientEmails::add);
-                } else {
-                    // fallback: all department emails
-                    deptUsers.stream().map(User::getEmailAddress).filter(Objects::nonNull).forEach(recipientEmails::add);
-                }
-
-                if (recipientEmails.isEmpty()) {
-                    logger.warn("Stage2 - no recipients found for department {}", depId);
-                    continue;
-                }
-
-                // Attach full aging report for this department
-
-                // Build HTML email body using frontend-styled columns
-                String rowsPreview = buildFrontendStyledRowsTable(depRows);
-                String body = constructSlaEscalationHtml(depId, rowsPreview);
-
-                String subject = String.format("Escalation: Pending acceptance approvals (User aging > 10 days) - Dept %d - %d request(s)", depId, depRows.size());
-
-                // join recipients into single to (emailService accepts comma-separated to)
-                String toCsv = recipientEmails.stream().collect(Collectors.joining(","));
-                emailService.sendEmail(toCsv, subject, body, null);
-
-                logger.info("Stage2 escalation sent to dept {} recipientsCount={} requests={}", depId, recipientEmails.size(), depRows.size());
-            }
-
         } catch (Exception e) {
             logger.error("Error running SLA Stage 2 job", e);
         }
     }
 
-    // Helper: get numeric days safely from the data row value
+    private Optional<String> resolveApproverEmail(List<Map<String, Object>> rows) {
+        if (rows == null || rows.isEmpty()) return Optional.empty();
+        for (Map<String, Object> row : rows) {
+            // First try explicit username field
+            Object usernameObj = row.get("pendingApproverUsername");
+            String usernameCandidate = null;
+            if (usernameObj != null && !usernameObj.toString().isBlank() && !"Unassigned".equalsIgnoreCase(usernameObj.toString())) {
+                usernameCandidate = usernameObj.toString();
+            } else {
+                // If pendingApproverUsername is missing, try pendingApprovers as a username candidate
+                Object pendingApproversObj = row.get("pendingApprovers");
+                if (pendingApproversObj != null && !pendingApproversObj.toString().isBlank() && !"Unassigned".equalsIgnoreCase(pendingApproversObj.toString())) {
+                    usernameCandidate = pendingApproversObj.toString();
+                }
+            }
+
+            if (usernameCandidate != null) {
+                try {
+                    Optional<User> u = userRepository.findByUsername(usernameCandidate);
+                    if (u != null && u.isPresent() && u.get().getEmailAddress() != null) {
+                        return Optional.of(u.get().getEmailAddress());
+                    }
+                } catch (Throwable ignored) {}
+            }
+        }
+        // If username-based resolution failed, try resolving by full name (existing fallback)
+        String fullName = rows.stream()
+                .map(r -> safeString(r.get("pendingApprovers"), ""))
+                .filter(s -> s != null && !s.trim().isEmpty() && !"Unassigned".equalsIgnoreCase(s))
+                .findFirst()
+                .orElse(null);
+        if (fullName == null) return Optional.empty();
+        Optional<User> byRow = findUserByFullName(fullName);
+        return byRow.map(User::getEmailAddress).filter(Objects::nonNull);
+    }
+
+
+    private Optional<User> resolveManagerUser(List<Map<String, Object>> rows, String departmentName) {
+        if (rows == null || rows.isEmpty()) return Optional.empty();
+
+        for (Map<String, Object> row : rows) {
+            Object managerUsernameObj = row.get("departmentManagerUsername");
+            if (managerUsernameObj == null) managerUsernameObj = row.get("managerUsername");
+            if (managerUsernameObj != null) {
+                String mUser = managerUsernameObj.toString();
+                try {
+                    Optional<User> mu = userRepository.findByUsername(mUser);
+                    if (mu != null && mu.isPresent()) {
+                        return mu;
+                    }
+                } catch (Throwable ignored) {}
+            }
+            // try explicit email field as last resort for this row, by matching to a user by email
+            Object managerEmailObj = row.get("departmentManagerEmail");
+            if (managerEmailObj != null && managerEmailObj.toString().contains("@")) {
+                try {
+                    Optional<User> uByEmail = userRepository.findFirstByEmailAddress(managerEmailObj.toString());
+                    if (uByEmail != null && uByEmail.isPresent()) return uByEmail;
+                } catch (Throwable ignored) {}
+            }
+        }
+
+        // 2) Try department lookup -> find a user with manager-like userPosition in that department
+        if (departmentName != null && !departmentName.isBlank()) {
+            try {
+                departmentsdata dept = deptsRepo.findByDeptName(departmentName);
+                if (dept != null) {
+                    long deptRecordNo = dept.getRecordNo();
+                    // find a user in this department whose userPosition contains "manager" (case-insensitive)
+                    Optional<User> managerCandidate = userRepository.findAll().stream()
+                            .filter(u -> u.getDepartmentId() != null && u.getDepartmentId().longValue() == deptRecordNo)
+                            .filter(u -> u.getUserPosition() != null && u.getUserPosition().toLowerCase().contains("manager"))
+                            .findFirst();
+                    if (managerCandidate.isPresent()) return managerCandidate;
+                }
+            } catch (Throwable ignored) {}
+        }
+
+        // 3) fallback: try to pick any approver contact for the department
+        Optional<String> approverEmail = resolveApproverEmail(rows);
+        if (approverEmail.isPresent()) {
+            try {
+                Optional<User> byEmail = userRepository.findFirstByEmailAddress(approverEmail.get());
+                if (byEmail != null && byEmail.isPresent()) return byEmail;
+            } catch (Throwable ignored) {}
+        }
+
+        return Optional.empty();
+    }
+
+    private Optional<User> findUserByFullName(String fullName) {
+        if (fullName == null) return Optional.empty();
+        try {
+            Optional<User> byRepo = userRepository.findFirstByFullName(fullName);
+            if (byRepo != null && byRepo.isPresent()) return byRepo;
+        } catch (Throwable ignored) { }
+        return userRepository.findAll().stream()
+                .filter(u -> u.getFullName() != null && u.getFullName().equalsIgnoreCase(fullName))
+                .findFirst();
+    }
+
+    // ---------------------------
+    // Email HTML builders
+    // ---------------------------
+private String buildStage1Subject(int count, String recordNo, String poNumber, String requestId, int agingDays) {
+    return String.format("SLA Reminder: Action Required on %d request(s)", count);
+}
+
+    private String buildStage2Subject(int count) {
+        // follow same theme as stage1: include request count
+        StringBuilder s = new StringBuilder();
+        s.append("SLA Escalation: Management Intervention Required - ").append(count).append(" request(s)");
+        return s.toString();
+    }
+
     private int numericDays(Object val) {
         if (val == null) return 0;
         if (val instanceof Number) return ((Number) val).intValue();
@@ -204,225 +325,138 @@ public class SlaNotificationService {
     }
 
     private String sanitizeFilename(String s) {
-        return s == null ? "report" : s.replaceAll("[^a-zA-Z0-9\\-_\\.]", "_");
-    }
-
-    /**
-     * Resolve approver email from a list of rows for that approver.
-     * - If rows contain "pendingApproverUsername", prefer lookup by username
-     * - Otherwise attempt to resolve by pendingApprovers (full name)
-     */
-    private Optional<String> resolveApproverEmail(List<Map<String, Object>> rows) {
-        if (rows == null || rows.isEmpty()) return Optional.empty();
-
-        // Try to find a username hint in any row
-        for (Map<String, Object> row : rows) {
-            Object usernameObj = row.get("pendingApproverUsername");
-            if (usernameObj != null) {
-                String username = usernameObj.toString();
-                try {
-                    Optional<User> u = userRepository.findByUsername(username);
-                    if (u != null && u.isPresent() && u.get().getEmailAddress() != null) {
-                        return Optional.of(u.get().getEmailAddress());
-                    }
-                } catch (Throwable ignored) {}
-            }
-        }
-
-        // Fallback: try by full name (pendingApprovers) - pick the first non-null
-        String fullName = rows.stream()
-                .map(r -> safeString(r.get("pendingApprovers"), ""))
-                .filter(s -> s != null && !s.trim().isEmpty() && !"Unassigned".equalsIgnoreCase(s))
-                .findFirst()
-                .orElse(null);
-
-        if (fullName == null) return Optional.empty();
-
-        Optional<User> byRow = findUserByFullName(fullName);
-        return byRow.map(User::getEmailAddress).filter(Objects::nonNull);
-    }
-
-    /**
-     * Find a user using row metadata: check pendingApproverUsername first then full name.
-     */
-    private Optional<User> findUserByRow(Map<String, Object> row, String pendingApproverFull) {
-        if (row == null) return Optional.empty();
-
-        Object usernameObj = row.get("pendingApproverUsername");
-        if (usernameObj != null && !usernameObj.toString().trim().isEmpty()) {
-            try {
-                Optional<User> byUsername = userRepository.findByUsername(usernameObj.toString());
-                if (byUsername != null && byUsername.isPresent()) return byUsername;
-            } catch (Throwable ignored) {}
-        }
-        // fallback to full name lookup
-        return findUserByFullName(pendingApproverFull);
-    }
-
-    /**
-     * Find user by full name. Tries repository method then falls back to scanning all users.
-     */
-    private Optional<User> findUserByFullName(String fullName) {
-        if (fullName == null) return Optional.empty();
-        try {
-            // if repository exposes findFirstByFullName, use it
-            Optional<User> byRepo = userRepository.findFirstByFullName(fullName);
-            if (byRepo != null && byRepo.isPresent()) return byRepo;
-        } catch (Throwable ignored) { /* method may not exist in repo */ }
-
-        // fallback scan
-        return userRepository.findAll().stream()
-                .filter(u -> u.getFullName() != null && u.getFullName().equalsIgnoreCase(fullName))
-                .findFirst();
+        return s == null ? "report" : s.replaceAll("[^a-zA-Z0-9\\-\\*\\.]", "_");
     }
 
     // ---------------------------
-    // Email HTML builders
+    // HTML builders 
     // ---------------------------
-
     private String constructSlaReminderHtml(String approverFullName, String rowsPreviewHtml, int stage) {
         String approverDisplay = approverFullName == null ? "Approver" : approverFullName;
-        String salutation = String.format("<p>Dear %s,</p>", escapeHtml(approverDisplay));
+        String salutation = "<p style=\"margin:0 0 10px 0;\">Dear " + escapeHtml(approverDisplay) + ",</p>";
         String requestCount = rowsPreviewHtml == null ? "0" : String.valueOf(countTableRows(rowsPreviewHtml));
-        return String.format("""
-            <html>
-             <head>
-              <meta charset="utf-8"/>
-              <style>
-                body{font-family: 'Segoe UI', Arial, sans-serif; color:#333; margin:0; padding:0;}
-                .container{max-width:1050px; margin:18px auto; padding:14px;}
-                .header{display:flex; align-items:center; gap:12px; margin-bottom:8px;}
-                .title{font-size:16px; color:#2b5311; font-weight:700;}
-                .summary{margin:8px 0 14px 0; font-size:13px; color:#222;}
-                .summary ul{padding-left:18px; margin:6px 0;}
-                .summary li{margin:6px 0;}
-                .note{font-size:12px; color:#555; margin:8px 0 12px;}
-                table{width:100%; border-collapse:collapse; margin-top:12px; font-size:12px;}
-                th, td{border:1px solid #dfeede; padding:7px 8px; vertical-align:top;}
-                thead th{background:#74B72E; color:#ffffff; font-weight:700;}
-                tbody tr:nth-child(even) td{background:#fbfff9;}
-                .small{font-size:11px; color:#666;}
-                .footer{margin-top:12px; font-size:11px; color:#9c1b1b;}
-                hr{border:none; border-top:1px solid #e6e6e6; margin:14px 0;}
-              </style>
-             </head>
-             <body>
-              <div class="container">
-                <div class="header">
-                  <div>
-                    <div class="title">Notification: Pending Acceptance Approval Requests Reminder</div>
-                    <div class="small">This is an automated notification from the Acceptance system.</div>
-                  </div>
-                </div>
+        StringBuilder sb = new StringBuilder(8192);
 
-                %s
+        sb.append("<!doctype html><html><head><meta charset=\"utf-8\"/>")
+          .append("<meta name=\"viewport\" content=\"width=device-width,initial-scale:1\"/>")
+          .append("</head>");
 
-                <!-- Request summary (fill values from the first row or pass separately if available) -->
-                <div class="summary">
-                  <ul>
-                    <li><strong>Request(s):</strong> %s</li>
-                    <li><strong>Approver:</strong> %s</li>
-                    <li><strong>Note:</strong> These requests have exceeded (user aging &gt; 5 days).</li>
-                  </ul>
-                </div>
+        sb.append("<body style=\"margin:0;padding:0;background:#ffffff;color:#333;font-family:Arial,Helvetica,sans-serif;\">");
+        sb.append("<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" width=\"100%\">")
+          .append("<tr><td align=\"right\" style=\"padding:0;\">");
+        sb.append("<table role=\"presentation\" align=\"right\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" "
+                + "style=\"width:auto;background:#ffffff;margin:18px 0 18px auto;padding:14px;border-collapse:collapse;\">");
 
-                <div class="note">Please review and action the requests listed below. A full aging report is attached.</div>
+        sb.append("<tr><td style=\"padding:10px 0 6px 0;font-size:13px;color:#222;\">")
+          .append(salutation)
+          .append("</td></tr>");
 
-                <!-- Rows table (HTML fragment passed in) -->
-                %s
+        sb.append("<tr><td style=\"padding:0 0 6px 0;font-size:13px;color:#222;\">")
+          .append("<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" width=\"100%\" style=\"border-collapse:collapse;\">")
+          .append("<tr><td style=\"vertical-align:top;padding:0 8px 0 0;width:160px;font-weight:700\">Request(s):</td><td style=\"padding:0 0 6px 0;\">").append(escapeHtml(requestCount)).append("</td></tr>")
+          .append("<tr><td style=\"vertical-align:top;padding:0 8px 0 0;font-weight:700\">Approver:</td><td style=\"padding:0 0 6px 0;\">").append(escapeHtml(approverDisplay)).append("</td></tr>")
+          .append("<tr><td style=\"vertical-align:top;padding:0 8px 0 0;font-weight:700\">Note:</td><td style=\"padding:0 0 6px 0;\">These requests have exceeded (user aging &gt; 5 days).</td></tr>")
+          .append("</table>")
+          .append("</td></tr>");
 
-                <hr/>
+        sb.append("<tr><td style=\"padding:8px 0 12px 0;font-size:12px;color:#555;\">Please review and action the requests listed below. A full aging report is attached.</td></tr>");
 
-                <div class="footer">Warning: This is an automated email. Please do not reply or forward.</div>
-              </div>
-             </body>
-            </html>
-        """, salutation, requestCount, approverDisplay, rowsPreviewHtml == null ? "" : rowsPreviewHtml);
+        if (rowsPreviewHtml != null && !rowsPreviewHtml.isEmpty()) {
+            sb.append("<tr><td style=\"padding:6px 0\"><div style=\"overflow:auto;\">")
+              .append(rowsPreviewHtml.replaceFirst("<table", "<table dir=\"ltr\""))
+              .append("</div></td></tr>");
+        }
+
+        sb.append("<tr><td style=\"padding-top:12px;border-top:1px solid #e6e6e6;font-size:11px;color:#9c1b1b;\">Warning: This is an automated email. Please do not reply or forward.</td></tr>");
+
+        sb.append("</table>");
+        sb.append("</td></tr></table>");
+        sb.append("</body></html>");
+        return sb.toString();
     }
 
-    // Escalation email for managers
-    private String constructSlaEscalationHtml(Long departmentId, String rowsPreviewHtml) {
-        String depLabel = departmentId == null ? "Department" : "Department " + departmentId;
-        String salutation = String.format("<p>Dear %s Team,</p>", escapeHtml(depLabel));
-        return String.format("""
-            <html>
-             <head>
-              <meta charset="utf-8"/>
-              <style>
-                body{font-family: 'Segoe UI', Arial, sans-serif; color:#333; margin:0; padding:0;}
-                .container{max-width:1200px; margin:18px auto; padding:14px;}
-                .header{display:flex; align-items:center; gap:12px; margin-bottom:8px;}
-                .title{font-size:16px; color:#9b2b1b; font-weight:700;}
-                .note{font-size:12px; color:#555; margin:8px 0 12px;}
-                table{width:100%; border-collapse:collapse; margin-top:12px; font-size:12px;}
-                th, td{border:1px solid #e6efe8; padding:7px 8px; vertical-align:top;}
-                thead th{background:#74B72E; color:#ffffff; font-weight:700;}
-                tbody tr:nth-child(even) td{background:#fbfff9;}
-                .footer{margin-top:12px; font-size:11px; color:#9c1b1b;}
-                hr{border:none; border-top:1px solid #e6e6e6; margin:14px 0;}
-              </style>
-             </head>
-             <body>
-              <div class="container">
-                <div class="header">
-                  <div>
-                    <div class="title">Notification: Pending Acceptance Approvals - %s</div>
-                    <div class="small">Requests shown below have exceeded (user aging &gt; 10 days).</div>
-                  </div>
-                </div>
 
-                %s
+private String constructSlaEscalationHtml(String managerFullName, int requestCount, String rowsPreviewHtml) {
+    String managerDisplay = managerFullName == null ? "Manager" : managerFullName;
+    String salutation = "<p style=\"margin:0 0 10px 0;\">Dear " + escapeHtml(managerDisplay) + ",</p>";
+    StringBuilder sb = new StringBuilder(4096);
 
-                <div class="note">Please coordinate with your approvers for immediate action. A full aging report is attached to this email.</div>
+    sb.append("<!doctype html><html><head><meta charset=\"utf-8\"/>")
+      .append("<meta name=\"viewport\" content=\"width=device-width,initial-scale:1\"/></head>")
+      .append("<body style=\"margin:0;padding:0;background:#ffffff;color:#333;font-family:Arial,Helvetica,sans-serif;\">")
+      .append("<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" width=\"100%\">")
+      .append("<tr><td align=\"right\" style=\"padding:0;\">")
+      .append("<table role=\"presentation\" align=\"right\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" "
+              + "style=\"width:auto;margin:18px 0 18px auto;padding:14px;border-collapse:collapse;\">");
 
-                %s
+    // 1) SALUTATION: now appended after the header
+    sb.append("<tr><td style=\"padding:10px 0 6px 0;font-size:13px;color:#222;\">")
+      .append(salutation)
+      .append("</td></tr>");
 
-                <hr/>
+    // 2) HEADER: Request count and Note (appears first)
+    sb.append("<tr><td style=\"padding:0 0 6px 0;font-size:13px;color:#222;\">")
+      .append("<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" width=\"100%\" style=\"border-collapse:collapse;\">")
+      .append("<tr><td style=\"vertical-align:top;padding:0 8px 0 0;width:160px;font-weight:700\">Request(s):</td>")
+      .append("<td style=\"padding:0 0 6px 0;\">").append(escapeHtml(String.valueOf(requestCount))).append("</td></tr>")
+      .append("<tr><td style=\"vertical-align:top;padding:0 8px 0 0;font-weight:700\">Note:</td>")
+      .append("<td style=\"padding:0 0 6px 0;\">Requests shown below have exceeded (user aging &gt; 10 days).</td></tr>")
+      .append("</table></td></tr>");
 
-                <div class="footer">Warning: This is an automated email. Please do not reply or forward.</div>
-              </div>
-             </body>
-            </html>
-        """, depLabel, salutation, rowsPreviewHtml == null ? "" : rowsPreviewHtml);
+
+    // 3) Intro / instructions
+    sb.append("<tr><td style=\"padding:0 0 12px 0;font-size:12px;color:#555;\">Please coordinate with your approvers for immediate action. A full aging report is attached to this email.</td></tr>");
+
+    // 4) Rows (table preview)
+    if (rowsPreviewHtml != null && !rowsPreviewHtml.isEmpty()) {
+        sb.append("<tr><td style=\"padding:6px 0\"><div style=\"overflow:auto;\">")
+          .append(rowsPreviewHtml.replaceFirst("<table", "<table dir=\"ltr\""))
+          .append("</div></td></tr>");
     }
 
-    /**
-     * Improved table builder — same columns as before but tuned to screenshot:
-     * - green header (#74B72E)
-     * - tighter padding and consistent borders
-     * Accepts the grouped rows list and returns the full <table> HTML.
-     */
+    // 5) Footer warning
+    sb.append("<tr><td style=\"padding-top:12px;border-top:1px solid #e6e6e6;font-size:11px;color:#9c1b1b;\">Warning: This is an automated email. Please do not reply or forward.</td></tr>")
+      .append("</table></td></tr></table></body></html>");
+
+    return sb.toString();
+}
+
     private String buildFrontendStyledRowsTable(List<Map<String, Object>> rows) {
         StringBuilder sb = new StringBuilder();
-        sb.append("<table style=\"width:100%; border-collapse:collapse; font-size:12px;\">")
-          .append("<thead><tr>")
-          .append("<th style=\"border:1px solid #dfeede;padding:6px;text-align:left\">#</th>")
-          .append("<th style=\"border:1px solid #dfeede;padding:6px;text-align:left\">Request No</th>")
-          .append("<th style=\"border:1px solid #dfeede;padding:6px;text-align:left\">PO Number</th>")
-          .append("<th style=\"border:1px solid #dfeede;padding:6px;text-align:left\">Project Name</th>")
-          .append("<th style=\"border:1px solid #dfeede;padding:6px;text-align:left\">Acceptance Type</th>")
-          .append("<th style=\"border:1px solid #dfeede;padding:6px;text-align:left\">Status</th>")
-          .append("<th style=\"border:1px solid #dfeede;padding:6px;text-align:left\">Created Date</th>")
-          .append("<th style=\"border:1px solid #dfeede;padding:6px;text-align:left\">Approval Date</th>")
-          .append("<th style=\"border:1px solid #dfeede;padding:6px;text-align:right\">Request Amount (SAR)</th>")
-          .append("<th style=\"border:1px solid #dfeede;padding:6px;text-align:left\">Location</th>")
-          .append("<th style=\"border:1px solid #dfeede;padding:6px;text-align:left\">Scope of Work</th>")
-          .append("<th style=\"border:1px solid #dfeede;padding:6px;text-align:left\">In Service Date</th>")
-          .append("<th style=\"border:1px solid #dfeede;padding:6px;text-align:left\">Vendor</th>")
-          .append("<th style=\"border:1px solid #dfeede;padding:6px;text-align:left\">Requested By</th>")
-          .append("<th style=\"border:1px solid #dfeede;padding:6px;text-align:center\">Remaining Approval Count</th>")
-          .append("<th style=\"border:1px solid #dfeede;padding:6px;text-align:left\">Pending Approver</th>")
-          .append("<th style=\"border:1px solid #dfeede;padding:6px;text-align:left\">Department</th>")
-          .append("<th style=\"border:1px solid #dfeede;padding:6px;text-align:left\">User Aging</th>")
-          .append("<th style=\"border:1px solid #dfeede;padding:6px;text-align:center\">User Aging (days)</th>")
-          .append("<th style=\"border:1px solid #dfeede;padding:6px;text-align:left\">Total Aging</th>")
-          .append("<th style=\"border:1px solid #dfeede;padding:6px;text-align:center\">Total Aging (days)</th>")
-          .append("</tr></thead><tbody>");
+
+        sb.append("<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" "
+                + "style=\"border-collapse:collapse;table-layout:auto;font-size:12px;word-break:break-word;width:auto;\">");
+
+        sb.append("<thead><tr>");
+        String thBase = "style=\"background:#74B72E;color:#ffffff;font-weight:700;padding:8px;border:1px solid #dfeede;text-align:left;white-space:nowrap;min-width:80px;\"";
+        sb.append("<th ").append(thBase).append(">#</th>");
+        sb.append("<th ").append(thBase).append(">Request No</th>");
+        sb.append("<th ").append(thBase).append(">PO Number</th>");
+        sb.append("<th ").append(thBase).append(">Project Name</th>");
+        sb.append("<th ").append(thBase).append(">Acceptance Type</th>");
+        sb.append("<th ").append(thBase).append(">Status</th>");
+        sb.append("<th ").append(thBase).append(">Created Date</th>");
+        sb.append("<th ").append(thBase).append(">Approval Date</th>");
+        sb.append("<th ").append(thBase).append(" style=\"text-align:right;\">Request Amount (SAR)</th>");
+        sb.append("<th ").append(thBase).append(">Location</th>");
+        sb.append("<th ").append(thBase).append(">Scope of Work</th>");
+        sb.append("<th ").append(thBase).append(">In Service Date</th>");
+        sb.append("<th ").append(thBase).append(">Vendor</th>");
+        sb.append("<th ").append(thBase).append(">Requested By</th>");
+        sb.append("<th ").append(thBase).append(">Remaining Approval Count</th>");
+        sb.append("<th ").append(thBase).append(">Pending Approver</th>");
+        sb.append("<th ").append(thBase).append(">Department</th>");
+        sb.append("<th ").append(thBase).append(">User Aging</th>");
+        sb.append("<th ").append(thBase).append(">User Aging (days)</th>");
+        sb.append("<th ").append(thBase).append(">Total Aging</th>");
+        sb.append("<th ").append(thBase).append(">Total Aging (days)</th>");
+        sb.append("</tr></thead><tbody>");
 
         int idx = 1;
         for (Map<String, Object> row : rows) {
-            sb.append("<tr>")
-              .append("<td style=\"border:1px solid #eef6ea;padding:6px;vertical-align:top\">").append(idx++).append("</td>")
+            String rowBg = (idx % 2 == 0) ? "background:#fbfff9;" : "background:#ffffff;";
+            sb.append("<tr style=\"").append(rowBg).append("\">")
+              .append("<td style=\"border:1px solid #eef6ea;padding:6px;vertical-align:top;word-break:break-word;overflow-wrap:break-word;min-width:40px;\">").append(idx++).append("</td>")
               .append(cell(row.get("dccId")))
               .append(cell(row.get("poNumber")))
               .append(cell(row.get("projectName")))
@@ -445,29 +479,32 @@ public class SlaNotificationService {
               .append(cellCenter(row.get("totalAgingInDays")))
               .append("</tr>");
         }
-
         sb.append("</tbody></table>");
         return sb.toString();
     }
 
-    // small helpers for consistent td output
     private String cell(Object v) {
-        return "<td style=\"border:1px solid #eef6ea;padding:6px;vertical-align:top\">" + escapeHtml(safeString(v, "")) + "</td>";
+        return "<td style=\"border:1px solid #eef6ea;padding:6px;vertical-align:top;word-break:break-word;overflow-wrap:break-word;min-width:100px;\">"
+                + escapeHtml(safeString(v, "")) + "</td>";
     }
     private String cellRight(Object v) {
-        return "<td style=\"border:1px solid #eef6ea;padding:6px;text-align:right;vertical-align:top\">" + escapeHtml(safeString(v, "")) + "</td>";
+        return "<td style=\"border:1px solid #eef6ea;padding:6px;text-align:right;vertical-align:top;word-break:break-word;overflow-wrap:break-word;min-width:100px;\">"
+                + escapeHtml(safeString(v, "")) + "</td>";
     }
     private String cellCenter(Object v) {
-        return "<td style=\"border:1px solid #eef6ea;padding:6px;text-align:center;vertical-align:top\">" + escapeHtml(safeString(v, "")) + "</td>";
+        return "<td style=\"border:1px solid #eef6ea;padding:6px;text-align:center;vertical-align:top;word-break:break-word;overflow-wrap:break-word;min-width:80px;\">"
+                + escapeHtml(safeString(v, "")) + "</td>";
     }
 
-    // primitive HTML escape; replace with a proper util if available
     private String escapeHtml(String s) {
         if (s == null) return "";
-        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
+        return s.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;")
+                .replace("'", "&#39;");
     }
 
-    // counts <tr> in the fragment for display in summary; naive but works for our generated fragments
     private int countTableRows(String tableFragment) {
         if (tableFragment == null) return 0;
         int count = 0;
@@ -477,7 +514,6 @@ public class SlaNotificationService {
             count++;
             idx += 3;
         }
-        // subtract header row
         return Math.max(0, count - 1);
     }
 }
