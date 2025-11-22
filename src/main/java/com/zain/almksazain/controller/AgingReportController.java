@@ -1,5 +1,6 @@
 package com.zain.almksazain.controller;
 
+import java.util.Collection;
 import java.util.Map;
 import java.util.stream.Collectors;
 
@@ -8,7 +9,6 @@ import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.CrossOrigin;
-import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -36,30 +36,53 @@ public class AgingReportController {
         return agingReportService.getGroupedAgingReport(request);
     }
 
-    @PostMapping(value = "/reports/v2/agingReport", produces = "application/json")
+   @PostMapping(value = "/reports/v2/agingReport", produces = "application/json")
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
-        public Map<String, Object> getAgingReports(@RequestBody String req) {
+    public ResponseEntity<?> getAgingReports(@RequestBody String req) {
         logger.info("Received request for /api/reports/agingReport: {}", req);
-        JsonObject obj = JsonParser.parseString(req).getAsJsonObject();
-        String supplierId = obj.get("supplierId").getAsString();
-        String columnName = obj.has("columnName") ? obj.get("columnName").getAsString() : "";
-        String searchQuery = obj.has("searchQuery") ? obj.get("searchQuery").getAsString() : "";
-        int page = obj.has("page") ? obj.get("page").getAsInt() : 1;
-        int size = obj.has("size") ? obj.get("size").getAsInt() : 100;
 
-        logger.debug("Parsed params - supplierId: {}, columnName: {}, searchQuery: {}, page: {}, size: {}", 
-            supplierId, columnName, searchQuery, page, size);
+        JsonObject obj;
+        try {
+            obj = JsonParser.parseString(req).getAsJsonObject();
+        } catch (Exception e) {
+            logger.warn("Invalid JSON request body", e);
+            return ResponseEntity.badRequest().body(Map.of("error", "Invalid JSON"));
+        }
+
+        // Safe extraction of fields (guards against missing keys / null values)
+        String supplierId = (obj.has("supplierId") && !obj.get("supplierId").isJsonNull())
+                ? obj.get("supplierId").getAsString() : null;
+        String columnName = (obj.has("columnName") && !obj.get("columnName").isJsonNull())
+                ? obj.get("columnName").getAsString() : "";
+        String searchQuery = (obj.has("searchQuery") && !obj.get("searchQuery").isJsonNull())
+                ? obj.get("searchQuery").getAsString() : "";
+        int page = (obj.has("page") && !obj.get("page").isJsonNull()) ? obj.get("page").getAsInt() : 0;
+        int size = (obj.has("size") && !obj.get("size").isJsonNull()) ? obj.get("size").getAsInt() : 100;
+
+        logger.debug("Parsed params - supplierId: {}, columnName: {}, searchQuery: {}, page: {}, size: {}",
+                supplierId, columnName, searchQuery, page, size);
 
         Map<String, Object> response = dccPoCombinedService.getAgingReport(supplierId, columnName, searchQuery, page, size);
 
-        logger.info("Returning aging report response with {} records (page {}/{})", 
-            response.get("data") != null ? ((Iterable<?>) response.get("data")).spliterator().getExactSizeIfKnown() : 0,
-            response.get("currentPage"), response.get("totalPages"));
+        // Compute data size safely (response.get("data") might be null or not a Collection)
+        int dataCount = 0;
+        Object dataObj = response.get("data");
+        if (dataObj instanceof Collection) {
+            dataCount = ((Collection<?>) dataObj).size();
+        } else if (dataObj instanceof Iterable) {
+            // fallback for iterable: attempt to iterate for count (not ideal for very large results)
+            int cnt = 0;
+            for (Object ignored : (Iterable<?>) dataObj) cnt++;
+            dataCount = cnt;
+        }
 
-        return response;
+        logger.info("Returning aging report response with {} records (page {}/{})",
+                dataCount,
+                response.get("currentPage"),
+                response.get("totalPages"));
+
+        return ResponseEntity.ok(response);
     }
-
-
     
     // New multiple filter endpoint
 @PostMapping("/reports/v2/agingReport/filter")
