@@ -106,19 +106,6 @@ public class DccPoCombinedService {
 
         final String onlyStatus = "inprocess";
         
-        // if (hasFilter) {
-        //     Pageable unpaged = Pageable.unpaged();
-        //     pagedDcc = (supplierId != null && !"0".equals(supplierId))
-        //             ? dccRepository.findAllBySupplierId(supplierId, unpaged)
-        //             : dccRepository.findAll(unpaged);
-        //     dccList = pagedDcc.getContent();
-        // } else {
-        //     Pageable pageable = PageRequest.of(page - 1, size, Sort.by(Sort.Direction.DESC, "recordNo"));
-        //     pagedDcc = (supplierId != null && !"0".equals(supplierId))
-        //             ? dccRepository.findAllBySupplierId(supplierId, pageable)
-        //             : dccRepository.findAll(pageable);
-        //     dccList = pagedDcc.getContent();
-        // }
             if (hasFilter) {
         Pageable unpaged = Pageable.unpaged();
         pagedDcc = (supplierId != null && !"0".equals(supplierId))

@@ -367,8 +367,8 @@ String inScopeOfWork = lineItemsForDcc.stream()
                 case "vendornumber":
                 case "createddate":
                 case "pendingapprovers":
-                case "projectname":          // <-- new supported group-level column
-                case "inscopeofwork": // <-- new supported group-level column
+                case "projectname":         
+                case "inscopeofwork": 
                     // For these fields, filter at the DTO level inside each group, then update group totals
                     result = result.stream()
                             .map(group -> {

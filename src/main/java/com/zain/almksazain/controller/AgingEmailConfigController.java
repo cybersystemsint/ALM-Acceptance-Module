@@ -1,7 +1,9 @@
 package com.zain.almksazain.controller;
 
 import com.zain.almksazain.model.AgingEmailConfig;
+import com.zain.almksazain.model.departmentsdata;
 import com.zain.almksazain.repo.AgingEmailConfigRepository;
+import com.zain.almksazain.repo.deptsrepo;
 import com.zain.almksazain.services.AgingEmailSchedulerService;
 import com.zain.almksazain.specs.AgingEmailConfigSpecifications;
 import com.zain.almksazain.utlities.CronUtils;
@@ -25,6 +27,7 @@ public class AgingEmailConfigController {
 
     @Autowired private AgingEmailConfigRepository configRepo;
     @Autowired private AgingEmailSchedulerService schedulerService;
+    @Autowired private deptsrepo deptsRepo;
 
     @PostMapping("/aging-email-configs")
     public ResponseEntity<?> fetch(@RequestBody FilterRequestDto req) {
@@ -73,6 +76,43 @@ public class AgingEmailConfigController {
         ZoneId zone = CronUtils.normalizeZone(tzInput);
         LocalDateTime now = LocalDateTime.now(zone);
 
+        // validate departments if provided and not "all"
+        List<String> reqDepts = null;
+        if (req.getDepartments() != null && !req.getDepartments().isEmpty()) {
+            reqDepts = req.getDepartments();
+        } else if (req.getDepartment() != null && !req.getDepartment().isBlank()) {
+            // single legacy value provided
+            reqDepts = List.of(req.getDepartment());
+        }
+
+        if (reqDepts != null) {
+            // if any value is "all" -> treat as ALL
+            for (String d : reqDepts) {
+                if (d == null) continue;
+                if ("all".equalsIgnoreCase(d.trim())) {
+                    reqDepts = List.of("ALL");
+                    break;
+                }
+            }
+            if (!(reqDepts.size() == 1 && "ALL".equalsIgnoreCase(reqDepts.get(0)))) {
+                // validate each named department
+                for (String d : reqDepts) {
+                    if (d == null || d.isBlank()) {
+                        return ResponseEntity.badRequest().body("Invalid department entry (blank)");
+                    }
+                    departmentsdata dept = deptsRepo.findByDeptName(d);
+                    if (dept == null) {
+                        return ResponseEntity.badRequest().body("Invalid department: " + d);
+                    }
+                }
+            }
+        }
+
+        // validate userAging if provided
+        if (req.getUserAging() != null && req.getUserAging() < 0) {
+            return ResponseEntity.badRequest().body("userAging must be >= 0 when provided");
+        }
+
         AgingEmailConfig cfg = new AgingEmailConfig();
         cfg.setJobName(req.getJobName());
         cfg.setCronExpression(cron);
@@ -81,6 +121,17 @@ public class AgingEmailConfigController {
         cfg.setDescription(req.getDescription());
         cfg.setCreatedAt(now);
         cfg.setTargetType(targetType);
+
+        // store departments (null -> all)
+        if (reqDepts == null || reqDepts.isEmpty()) {
+            cfg.setDepartment(null);
+        } else if (reqDepts.size() == 1 && "ALL".equalsIgnoreCase(reqDepts.get(0))) {
+            cfg.setDepartment("ALL");
+        } else {
+            cfg.setDepartments(reqDepts);
+        }
+
+        cfg.setUserAging(req.getUserAging()); // may be null => service defaults
 
         if (principal != null && principal.getName() != null && !principal.getName().isBlank()) {
             cfg.setCreatedBy(principal.getName());
@@ -150,6 +201,46 @@ public class AgingEmailConfigController {
         if (req.getEnabled() != null) existing.setEnabled(req.getEnabled());
         if (req.getDescription() != null) existing.setDescription(req.getDescription());
         if (req.getUpdatedBy() != null) existing.setUpdatedBy(req.getUpdatedBy());
+
+        // department update + validation
+        if (req.getDepartments() != null || req.getDepartment() != null) {
+            List<String> reqDepts = null;
+            if (req.getDepartments() != null) reqDepts = req.getDepartments();
+            else if (req.getDepartment() != null && !req.getDepartment().isBlank()) reqDepts = List.of(req.getDepartment());
+
+            if (reqDepts == null || reqDepts.isEmpty()) {
+                existing.setDepartment(null);
+            } else {
+                // check for explicit ALL
+                for (String d : reqDepts) {
+                    if (d != null && "all".equalsIgnoreCase(d.trim())) {
+                        existing.setDepartment("ALL");
+                        reqDepts = List.of("ALL");
+                        break;
+                    }
+                }
+                if (!(reqDepts.size() == 1 && "ALL".equalsIgnoreCase(reqDepts.get(0)))) {
+                    for (String d : reqDepts) {
+                        if (d == null || d.isBlank()) {
+                            return ResponseEntity.badRequest().body("Invalid department entry (blank)");
+                        }
+                        departmentsdata dept = deptsRepo.findByDeptName(d);
+                        if (dept == null) {
+                            return ResponseEntity.badRequest().body("Invalid department: " + d);
+                        }
+                    }
+                    existing.setDepartments(reqDepts);
+                }
+            }
+        }
+
+        // userAging update + validation
+        if (req.getUserAging() != null) {
+            if (req.getUserAging() < 0) {
+                return ResponseEntity.badRequest().body("userAging must be >= 0 when provided");
+            }
+            existing.setUserAging(req.getUserAging());
+        }
 
         existing.setUpdatedAt(java.time.LocalDateTime.now());
 

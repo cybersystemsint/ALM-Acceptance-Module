@@ -1,8 +1,18 @@
 package com.zain.almksazain.services;
 
-import com.zain.almksazain.model.AgingEmailConfig;
-import com.zain.almksazain.repo.AgingEmailConfigRepository;
-import com.zain.almksazain.utlities.CronUtils;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledFuture;
+
+import javax.annotation.PostConstruct;
+import javax.transaction.Transactional;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -13,13 +23,9 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.scheduling.support.CronTrigger;
 import org.springframework.stereotype.Service;
 
-import javax.annotation.PostConstruct;
-import javax.transaction.Transactional;
-import java.time.LocalDateTime;
-import java.time.ZoneId;
-import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ScheduledFuture;
+import com.zain.almksazain.model.AgingEmailConfig;
+import com.zain.almksazain.repo.AgingEmailConfigRepository;
+import com.zain.almksazain.utlities.CronUtils;
 
 @Service
 public class AgingEmailSchedulerService implements DisposableBean {
@@ -92,12 +98,28 @@ public class AgingEmailSchedulerService implements DisposableBean {
                 String rawTarget = cfg.getTargetType();
                 String targetType = Optional.ofNullable(rawTarget).map(String::trim).map(String::toLowerCase).orElse("approver");
 
-                logger.info("Executing scheduled config id={} jobName='{}' targetType='{}'", cfg.getId(), cfg.getJobName(), targetType);
+                logger.info("Executing scheduled config id={} jobName='{}' targetType='{}' department='{}' userAging='{}'",
+                        cfg.getId(), cfg.getJobName(), targetType, cfg.getDepartment(), cfg.getUserAging());
+                Map<String, Object> filters = new HashMap<>();
+                if (cfg.getDepartment() != null && !cfg.getDepartment().isBlank() && !"ALL".equalsIgnoreCase(cfg.getDepartment().trim())) {
+                    // pass the full departments list (may be single or multiple) so downstream can handle it
+                    List<String> depts = cfg.getDepartmentsList();
+                    if (depts != null && !depts.isEmpty()) {
+                        filters.put("department", depts);
+                        // also provide departmentName for compatibility (first entry)
+                        filters.put("departmentName", depts.get(0));
+                    }
+                }
+                if (cfg.getUserAging() != null) {
+                    filters.put("userAging", cfg.getUserAging());
+                    // provide alias minUserAging too (in case other code expects it)
+                    filters.put("minUserAging", cfg.getUserAging());
+                }
 
                 if ("approver".equals(targetType)) {
-                    slaNotificationService.runStage1RemindersWithFilters(Collections.emptyMap());
+                    slaNotificationService.runStage1RemindersWithFilters(filters);
                 } else if ("manager".equals(targetType)) {
-                    slaNotificationService.runStage2EscalationsWithFilters(Collections.emptyMap());
+                    slaNotificationService.runStage2EscalationsWithFilters(filters);
                 } else {
                     // fallback: unknown targetType
                     logger.warn("Unknown targetType='{}' for config id={}. No action taken.", rawTarget, cfg.getId());
@@ -171,10 +193,24 @@ public class AgingEmailSchedulerService implements DisposableBean {
                 String rawTarget = cfg.getTargetType();
                 String targetType = Optional.ofNullable(rawTarget).map(String::trim).map(String::toLowerCase).orElse("approver");
 
+                // Build filters for manual run as well
+                Map<String, Object> filters = new HashMap<>();
+                if (cfg.getDepartment() != null && !cfg.getDepartment().isBlank() && !"ALL".equalsIgnoreCase(cfg.getDepartment().trim())) {
+                    List<String> depts = cfg.getDepartmentsList();
+                    if (depts != null && !depts.isEmpty()) {
+                        filters.put("department", depts);
+                        filters.put("departmentName", depts.get(0));
+                    }
+                }
+                if (cfg.getUserAging() != null) {
+                    filters.put("userAging", cfg.getUserAging());
+                    filters.put("minUserAging", cfg.getUserAging());
+                }
+
                 if ("approver".equals(targetType)) {
-                    slaNotificationService.runStage1RemindersWithFilters(Collections.emptyMap());
+                    slaNotificationService.runStage1RemindersWithFilters(filters);
                 } else if ("manager".equals(targetType)) {
-                    slaNotificationService.runStage2EscalationsWithFilters(Collections.emptyMap());
+                    slaNotificationService.runStage2EscalationsWithFilters(filters);
                 } else {
                     logger.warn("Unknown targetType='{}' for manual run id={}", rawTarget, cfg.getId());
                 }

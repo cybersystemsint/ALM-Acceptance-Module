@@ -45,15 +45,24 @@ public class EmailService {
 
     @Async
     public void sendEmail(String to, String subject, String message, List<String> attachments) {
-        sendEmail(to, subject, message, attachments, null, null, null);
+        sendEmail(to, subject, message, attachments, null, null, null, null);
     }
 
     @Async
     public void sendEmail(String to, String subject, String message, List<String> attachments,
                           String department, String userName, String role) {
+        sendEmail(to, subject, message, attachments, department, userName, role, null);
+    }
+
+    /**
+     * New overload that accepts an optional requestCount. Backwards compatible overloads call into this method.
+     */
+    @Async
+    public void sendEmail(String to, String subject, String message, List<String> attachments,
+                          String department, String userName, String role, Integer requestCount) {
         String emailHash = generateEmailHash(to, subject, message, department, userName, role);
-        logger.debug("Computed emailHash={} for to={} subject={} dept={} user={} role={}",
-                emailHash, to, subject, department, userName, role);
+        logger.debug("Computed emailHash={} for to={} subject={} dept={} user={} role={} requestCount={}",
+                emailHash, to, subject, department, userName, role, requestCount);
 
         if (JSON_EMAIL_ENDPOINT == null || JSON_EMAIL_ENDPOINT.isBlank()) {
             logger.warn("JSON_EMAIL_ENDPOINT is not configured (value is null/blank)");
@@ -68,8 +77,8 @@ public class EmailService {
 
         // Prevent duplicate emails within 2-minute window
         if (recentEmailHashes.contains(emailHash)) {
-            logger.warn("DUPLICATE_EMAIL_PREVENTED: to={}, subject={}, dept={}, user={}, role={}",
-                    to, subject, department, userName, role);
+            logger.warn("DUPLICATE_EMAIL_PREVENTED: to={}, subject={}, dept={}, user={}, role={}, requestCount={}",
+                    to, subject, department, userName, role, requestCount);
             return;
         }
 
@@ -79,9 +88,9 @@ public class EmailService {
             String emailId = generateEmailId();
 
             if (attachments != null && !attachments.isEmpty()) {
-                sendMultipartEmail(to, subject, message, attachments, emailId, department, userName, role);
+                sendMultipartEmail(to, subject, message, attachments, emailId, department, userName, role, requestCount);
             } else {
-                sendJsonEmail(to, subject, message, emailId, department, userName, role);
+                sendJsonEmail(to, subject, message, emailId, department, userName, role, requestCount);
             }
 
         } catch (Exception e) {
@@ -105,7 +114,7 @@ public class EmailService {
     }
 
     private void sendMultipartEmail(String to, String subject, String message, List<String> filePaths,
-                                    String emailId, String department, String userName, String role) {
+                                    String emailId, String department, String userName, String role, Integer requestCount) {
         try {
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.MULTIPART_FORM_DATA);
@@ -119,6 +128,7 @@ public class EmailService {
             if (department != null) requestBody.add("department", department);
             if (userName != null) requestBody.add("userName", userName);
             if (role != null) requestBody.add("role", role);
+            if (requestCount != null) requestBody.add("requestCount", String.valueOf(requestCount));
 
             // Validate and attach files
             for (String filePath : filePaths) {
@@ -142,7 +152,7 @@ public class EmailService {
     }
 
     private void sendJsonEmail(String to, String subject, String message, String emailId,
-                               String department, String userName, String role) {
+                               String department, String userName, String role, Integer requestCount) {
         try {
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
@@ -156,10 +166,11 @@ public class EmailService {
             if (department != null) requestBody.put("department", department);
             if (userName != null) requestBody.put("userName", userName);
             if (role != null) requestBody.put("role", role);
+            if (requestCount != null) requestBody.put("requestCount", String.valueOf(requestCount));
 
             logger.info("Sending email to endpoint: {}", JSON_EMAIL_ENDPOINT);
-            logger.debug("Email payload: to={}, subject={}, message={}, department={}, userName={}, role={}",
-                    to, subject, message, department, userName, role);
+            logger.debug("Email payload: to={}, subject={}, message={}, department={}, userName={}, role={}, requestCount={}",
+                    to, subject, message, department, userName, role, requestCount);
 
             HttpEntity<Map<String, String>> requestEntity = new HttpEntity<>(requestBody, headers);
             ResponseEntity<String> response = restTemplate.postForEntity(JSON_EMAIL_ENDPOINT, requestEntity, String.class);
