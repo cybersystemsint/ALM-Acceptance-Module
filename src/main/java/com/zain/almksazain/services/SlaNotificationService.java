@@ -19,6 +19,7 @@ import org.springframework.stereotype.Service;
 
 import com.zain.almksazain.model.User;
 import com.zain.almksazain.model.departmentsdata;
+import com.zain.almksazain.repo.RoleRepository;
 import com.zain.almksazain.repo.UserRepository;
 import com.zain.almksazain.repo.deptsrepo;
 
@@ -30,6 +31,7 @@ public class SlaNotificationService {
     @Autowired private EmailService emailService;
     @Autowired private UserRepository userRepository;
     @Autowired private deptsrepo deptsRepo;
+    @Autowired private RoleRepository roleRepository;
 
     @Scheduled(cron = "0 0 5 * * *")
     public void runStage1Reminders() {
@@ -115,10 +117,11 @@ public class SlaNotificationService {
                         .max(Integer::compareTo)
                         .orElse(0);
 
+                // Use effectiveThreshold (configured/cron threshold) for subject and note
                 String subject = buildStage1Subject(rows.size(), firstRecordNo,
                         rows.stream().map(r -> safeString(r.get("poNumber"), "")).filter(s -> !s.isEmpty()).findFirst().orElse(""),
                         rows.stream().map(r -> safeString(r.get("dccId"), "")).filter(s -> !s.isEmpty()).findFirst().orElse(""),
-                        sampleAging
+                        effectiveThreshold
                 );
 
                 // presentation department (first available original-case value)
@@ -270,8 +273,6 @@ public class SlaNotificationService {
                     }
                 }
 
-                String body = constructSlaEscalationHtml(managerDisplayName, rows.size(), rowsPreview, departmentName, approverCounts);
-
                 int sampleAging = rows.stream()
                         .map(r -> {
                             Object av = r.get("userAgingInDays") != null ? r.get("userAgingInDays") : r.get("userAging");
@@ -281,7 +282,10 @@ public class SlaNotificationService {
                         .max(Integer::compareTo)
                         .orElse(0);
 
-                String subject = buildStage2Subject(rows.size(), sampleAging);
+                // Use effectiveThreshold (configured/cron threshold) for subject and note
+                String body = constructSlaEscalationHtml(managerDisplayName, rows.size(), rowsPreview, departmentName, approverCounts, effectiveThreshold);
+
+                String subject = buildStage2Subject(rows.size(), effectiveThreshold);
 
                 String userName = managerUser.getUsername();
                 String role = "manager";
@@ -393,59 +397,64 @@ public class SlaNotificationService {
     }
 
     // ---------------------------
-    // Manager resolution (strict)
+    // Manager resolution 
     // ---------------------------
-    /**
-     * Resolve manager for the department/rows. Prioritizes explicit managerUsername/managerEmail fields on rows,
-     * then tries department -> find user with manager-like userPosition in that department
-     * (unchanged in this version). Does NOT fallback to approver email to avoid cross-department picks.
-     */
-    private Optional<User> resolveManagerUser(List<Map<String, Object>> rows, String departmentName) {
-        if (rows == null || rows.isEmpty()) return Optional.empty();
+private Optional<User> resolveManagerUser(List<Map<String, Object>> rows, String departmentName) {
+    if (rows == null || rows.isEmpty()) return Optional.empty();
 
-        // 1) Try explicit manager username or managerUsername field on rows
-        for (Map<String, Object> row : rows) {
-            Object managerUsernameObj = row.get("departmentManagerUsername");
-            if (managerUsernameObj == null) managerUsernameObj = row.get("managerUsername");
-            if (managerUsernameObj != null) {
-                String mUser = managerUsernameObj.toString();
-                try {
-                    Optional<User> mu = userRepository.findByUsername(mUser);
-                    if (mu != null && mu.isPresent()) {
-                        return mu;
-                    }
-                } catch (Throwable ignored) {}
-            }
-            // try explicit email field as last resort for this row
-            Object managerEmailObj = row.get("departmentManagerEmail");
-            if (managerEmailObj != null && managerEmailObj.toString().contains("@")) {
-                try {
-                    Optional<User> uByEmail = userRepository.findFirstByEmailAddress(managerEmailObj.toString());
-                    if (uByEmail != null && uByEmail.isPresent()) return uByEmail;
-                } catch (Throwable ignored) {}
-            }
-        }
-
-        // 2) Department lookup -> find a user with manager-like userPosition in that department
-        if (departmentName != null && !departmentName.isBlank()) {
+    for (Map<String, Object> row : rows) {
+        Object managerUsernameObj = row.get("departmentManagerUsername");
+        if (managerUsernameObj == null) managerUsernameObj = row.get("managerUsername");
+        if (managerUsernameObj != null) {
+            String mUser = managerUsernameObj.toString();
             try {
-                // try direct lookup using provided departmentName first
-                departmentsdata dept = findDeptByNameIgnoreCase(departmentName);
-                if (dept != null) {
-                    long deptRecordNo = dept.getRecordNo();
-                    Optional<User> managerCandidate = userRepository.findAll().stream()
-                            .filter(u -> u.getDepartmentId() != null && u.getDepartmentId().longValue() == deptRecordNo)
-                            .filter(u -> u.getUserPosition() != null && u.getUserPosition().toLowerCase().contains("manager"))
-                            .findFirst();
-                    if (managerCandidate.isPresent()) return managerCandidate;
+                Optional<User> mu = userRepository.findByUsername(mUser);
+                if (mu != null && mu.isPresent()) {
+                    return mu;
                 }
             } catch (Throwable ignored) {}
         }
+        Object managerEmailObj = row.get("departmentManagerEmail");
+        if (managerEmailObj != null && managerEmailObj.toString().contains("@")) {
+            try {
+                Optional<User> uByEmail = userRepository.findFirstByEmailAddress(managerEmailObj.toString());
+                if (uByEmail != null && uByEmail.isPresent()) return uByEmail;
+            } catch (Throwable ignored) {}
+        }
+    }
+    if (departmentName != null && !departmentName.isBlank()) {
+        try {
+            
+            departmentsdata dept = findDeptByNameIgnoreCase(departmentName);
+            if (dept != null) {
+                long deptRecordNo = dept.getRecordNo();
 
-        // No fallback to approver-based resolution (prevents cross-department manager selection)
-        return Optional.empty();
+                List<User> usersInDept = userRepository.findAll().stream()
+                        .filter(u -> u.getDepartmentId() != null && u.getDepartmentId().longValue() == deptRecordNo)
+                        .collect(Collectors.toList());
+
+                for (User candidate : usersInDept) {
+                    Integer rId = candidate.getRoleId();
+                    if (rId == null) continue;
+                    try {
+                        // lookup Role by id
+                        Optional<com.zain.almksazain.model.Role> roleOpt = roleRepository.findById(rId);
+                        if (roleOpt.isPresent()) {
+                            String roleName = roleOpt.get().getRoleName();
+                            if (roleName != null && roleName.toLowerCase().contains("manager")) {
+                                return Optional.of(candidate);
+                            }
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
     }
 
+    // No fallback to approver-based resolution (prevents cross-department manager selection)
+    return Optional.empty();
+}
     private Optional<User> findUserByFullName(String fullName) {
         if (fullName == null) return Optional.empty();
         try {
@@ -460,9 +469,9 @@ public class SlaNotificationService {
     // ---------------------------
     // Email/HTML helpers
     // ---------------------------
-private String buildStage1Subject(int count, String recordNo, String poNumber, String requestId, int agingDays) {
+    private String buildStage1Subject(int count, String recordNo, String poNumber, String requestId, int agingDays) {
     try {
-        return String.format("SLA Reminder: Action Required on %d request(s) (user aging=%d days)",
+        return String.format("SLA Reminder: Action Required on %d Request(s) Exceeding Aging Threshold %d Days",
                 Math.max(0, count),
                 Math.max(0, agingDays));
     } catch (Exception e) {
@@ -470,15 +479,15 @@ private String buildStage1Subject(int count, String recordNo, String poNumber, S
     }
 }
 
-    private String buildStage2Subject(int count, int agingDays) {
-        try {
-            return String.format("SLA Escalation: %d request(s) require Management Intervention (user aging=%d days)",
-                    Math.max(0, count),
-                    Math.max(0, agingDays));
-        } catch (Exception e) {
-            return "SLA Escalation: Management Intervention Required";
-        }
+private String buildStage2Subject(int count, int agingDays) {
+    try {
+        return String.format("SLA Escalation: Management Intervention Required on %d Request(s) Exceeding Aging Threshold %d Days",
+                Math.max(0, count),
+                Math.max(0, agingDays));
+    } catch (Exception e) {
+        return "SLA Escalation: Management Intervention Required";
     }
+}
 
     private int numericDays(Object val) {
         if (val == null) return 0;
@@ -516,7 +525,7 @@ private String buildStage1Subject(int count, String recordNo, String poNumber, S
         return o == null ? defaultVal : o.toString();
     }
 
-    private String constructSlaReminderHtml(String approverFullName, String rowsPreviewHtml, int stage, String department, int threshold) {
+    private String constructSlaReminderHtml(String approverFullName, String rowsPreviewHtml, int stage, String department, int agingDays) {
         String approverDisplay = approverFullName == null ? "Approver" : approverFullName;
         String salutation = "<p style=\"margin:0 0 10px 0;\">Dear " + escapeHtml(approverDisplay) + ",</p>";
         String requestCount = rowsPreviewHtml == null ? "0" : String.valueOf(countTableRows(rowsPreviewHtml));
@@ -543,7 +552,7 @@ private String buildStage1Subject(int count, String recordNo, String poNumber, S
         if (department != null && !department.isBlank()) {
             sb.append("<tr><td style=\"vertical-align:top;padding:0 8px 0 0;font-weight:700\">Department:</td><td style=\"padding:0 0 6px 0;\">").append(escapeHtml(department)).append("</td></tr>");
         }
-        sb.append("<tr><td style=\"vertical-align:top;padding:0 8px 0 0;font-weight:700\">Note:</td><td style=\"padding:0 0 6px 0;\">These requests have exceeded (user aging &ge; ").append(escapeHtml(String.valueOf(Math.max(0, threshold)))).append(" days).</td></tr>")
+        sb.append("<tr><td style=\"vertical-align:top;padding:0 8px 0 0;font-weight:700\">Note:</td><td style=\"padding:0 0 6px 0;\">These requests have exceeded (user aging &ge; ").append(escapeHtml(String.valueOf(Math.max(0, agingDays)))).append(" days).</td></tr>")
           .append("</table>")
           .append("</td></tr>");
 
@@ -563,7 +572,7 @@ private String buildStage1Subject(int count, String recordNo, String poNumber, S
         return sb.toString();
     }
 
-    private String constructSlaEscalationHtml(String managerFullName, int requestCount, String rowsPreviewHtml, String department, Map<String, Integer> approverCounts) {
+    private String constructSlaEscalationHtml(String managerFullName, int requestCount, String rowsPreviewHtml, String department, Map<String, Integer> approverCounts, int agingDays) {
         String managerDisplay = managerFullName == null ? "Manager" : managerFullName;
         String salutation = "<p style=\"margin:0 0 10px 0;\">Dear " + escapeHtml(managerDisplay) + ",</p>";
         StringBuilder sb = new StringBuilder(4096);
@@ -589,7 +598,7 @@ private String buildStage1Subject(int count, String recordNo, String poNumber, S
               .append("<td style=\"padding:0 0 6px 0;\">").append(escapeHtml(department)).append("</td></tr>");
         }
         sb.append("<tr><td style=\"vertical-align:top;padding:0 8px 0 0;font-weight:700\">Note:</td>")
-          .append("<td style=\"padding:0 0 6px 0;\">Requests shown below have exceeded (user aging &gt; 10 days).</td></tr>")
+          .append("<td style=\"padding:0 0 6px 0;\">Requests shown below have exceeded (user aging &ge; ").append(escapeHtml(String.valueOf(Math.max(0, agingDays)))).append(" days).</td></tr>")
           .append("</table></td></tr>");
 
         sb.append("<tr><td style=\"padding:0 0 12px 0;font-size:12px;color:#555;\">Please coordinate with your approvers for immediate action. A full aging report is attached to this email.</td></tr>");
