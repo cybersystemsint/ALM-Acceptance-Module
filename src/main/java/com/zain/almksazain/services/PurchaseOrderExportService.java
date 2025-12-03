@@ -51,12 +51,13 @@ public class PurchaseOrderExportService {
                 "unitPriceInSAR", "linePriceInPoCurrency", "linePriceInSAR", "newLinePriceInPoCurrency",
                 "newLinePriceInSAR", "amountReceived", "amountDue", "amountDueNew", "amountBilled",
                 "poLineDescription", "organizationName", "organizationCode", "subinventoryCode",
-                "receiptRouting", "authorizationStatus", "poClosureStatus", "departmentName",
+                "receiptRouting", "authorizationStatus", "authorisationStatus", "poClosureStatus", "departmentName",
                 "poLineType", "costCenter", "chargeAccount", "serialControl", "vendorSerialNumberYn",
                 "itemType", "itemCategoryInventory", "inventoryCategoryDescription", "itemCategoryFa",
                 "faCategoryDescription", "itemCategoryPurchasing", "purchasingCategoryDescription",
                 "vendorName", "vendorNumber", "approvedDate", "createdDate", // keep camel-case variants too
-                "typeLookupCode", "currencyCode", "descopedLinePriceInPoCurrency", "newLinePriceInPoCurrency", "prNum" 
+                "typeLookupCode", "currencyCode", "descopedLinePriceInPoCurrency", "newLinePriceInPoCurrency", "prNum",
+                "descopedQty", "descoped_qty"
         );
 
         // Build SELECT clause dynamically based on table metadata
@@ -90,6 +91,7 @@ public class PurchaseOrderExportService {
                 selectClause = available.stream().map(c -> "PO." + c).collect(Collectors.joining(", "));
             }
 
+            
             // Build ORDER BY clause safely: require poNumber; include lineNumber if present
             String orderBy = "";
             if (hasPoNumber) {
@@ -189,7 +191,7 @@ public class PurchaseOrderExportService {
                     "unitPriceInSAR",           // UNIT_PRICE_IN_SAR
                     "linePriceInPoCurrency",    // LINE_PRICE_IN_PO_CURRENCY
                     "linePriceInSAR",           // LINE_PRICE_IN_SAR
-                    "descopedLinePriceInPoCurrency", // New LINE_PRICE_IN_PO_CURRENCY
+                    "descopedLinePriceInPoCurrency", // New LINE_PRICE_IN_PO_CURRENCY  <-- note: we will override this later to use newLinePriceInPoCurrency if needed
                     "newLinePriceInPoCurrency", // NEW_LINE_PRICE_IN_SAR
                     "amountReceived",           // AMOUNT_RECEIVED
                     "amountDue",                // AMOUNT_DUE
@@ -282,21 +284,26 @@ public class PurchaseOrderExportService {
                                 poHeader.put("poNumber", poNumber);
                                 poHeader.put("projectName", safeGetString(rs, "projectName", rsColsLower));
                                 poHeader.put("recordNo", safeGetString(rs, "recordNo", rsColsLower));
-                                 poHeader.put("prNum", safeGetString(rs, "prNum", rsColsLower));
+                                poHeader.put("prNum", safeGetString(rs, "prNum", rsColsLower));
                                 poHeader.put("releaseNum", safeGetString(rs, "releaseNum", rsColsLower));
                                 poHeader.put("typeLookupCode", safeGetString(rs, "typeLookupCode", rsColsLower));
                                 poHeader.put("vendorName", safeGetString(rs, "vendorName", rsColsLower));
                                 poHeader.put("vendorNumber", safeGetString(rs, "vendorNumber", rsColsLower));
                                 poHeader.put("currencyCode", safeGetString(rs, "currencyCode", rsColsLower));
+                                // createdDate may be named differently in DB (createdDate / creation_date)
                                 poHeader.put("createdDate", rsColsLower.contains("createddate") || rsColsLower.contains("creation_date") ? rs.getTimestamp("createdDate") : null);
                                 poHeader.put("approvedDate", rsColsLower.contains("approveddate") ? rs.getTimestamp("approvedDate") : null);
+
+                                // authorizationStatus might come as 'authorizationStatus' or 'authorisationStatus'
+                                String authorization = getFirstAvailableString(rs, rsColsLower, "authorizationStatus", "authorisationStatus", "authorization_status", "authorisation_status");
+                                poHeader.put("authorizationStatus", authorization);
 
                                 // store a few other possible PO-level columns if present
                                 poHeader.put("organizationName", safeGetString(rs, "organizationName", rsColsLower));
                                 poHeader.put("organizationCode", safeGetString(rs, "organizationCode", rsColsLower));
                                 poHeader.put("subinventoryCode", safeGetString(rs, "subinventoryCode", rsColsLower));
                                 poHeader.put("receiptRouting", safeGetString(rs, "receiptRouting", rsColsLower));
-                                poHeader.put("authorizationStatus", safeGetString(rs, "authorizationStatus", rsColsLower));
+                                // map both spellings into the canonical key used in headers
                                 poHeader.put("poClosureStatus", safeGetString(rs, "poClosureStatus", rsColsLower));
                                 poHeader.put("departmentName", safeGetString(rs, "departmentName", rsColsLower));
                             }
@@ -307,7 +314,13 @@ public class PurchaseOrderExportService {
                             line.put("itemPartNumber", safeGetString(rs, "itemPartNumber", rsColsLower));
                             line.put("poLineDescription", safeGetString(rs, "poLineDescription", rsColsLower));
                             line.put("poOrderQuantity", safeGetObject(rs, "poOrderQuantity", rsColsLower));
-                            line.put("descopeQty", safeGetObject(rs, "descopeQty", rsColsLower));
+                            // Descope Qty: attempt multiple possible DB names (descopeQty, descopedQty, descoped_qty, descopedqty)
+                            Object descope = getFirstAvailableObject(rs, rsColsLower, "descopeQty", "descopedQty", "descoped_qty", "descope_qty", "descopedqty");
+                            // ensure a numeric 0.0 if null so export won't leave an empty cell
+                            if (descope == null) {
+                                descope = 0.0;
+                            }
+                            line.put("descopeQty", descope);
                             line.put("poQtyNew", safeGetObject(rs, "poQtyNew", rsColsLower));
                             line.put("quantityReceived", safeGetObject(rs, "quantityReceived", rsColsLower));
                             line.put("amountReceived", safeGetObject(rs, "amountReceived", rsColsLower));
@@ -321,8 +334,9 @@ public class PurchaseOrderExportService {
                             line.put("unitPriceInSAR", safeGetObject(rs, "unitPriceInSAR", rsColsLower));
                             line.put("linePriceInPoCurrency", safeGetObject(rs, "linePriceInPoCurrency", rsColsLower));
                             line.put("linePriceInSAR", safeGetObject(rs, "linePriceInSAR", rsColsLower));
-                            line.put("descopedLinePriceInPoCurrency", safeGetObject(rs, "descopedLinePriceInPoCurrency", rsColsLower));
-                            line.put("newLinePriceInPoCurrency", safeGetObject(rs, "newLinePriceInPoCurrency", rsColsLower));
+                            // descopedLinePriceInPoCurrency / newLinePriceInPoCurrency might come with different names in DB
+                            line.put("descopedLinePriceInPoCurrency", getFirstAvailableObject(rs, rsColsLower, "descopedLinePriceInPoCurrency", "descoped_line_price_in_po_currency", "descoped_line_price"));
+                            line.put("newLinePriceInPoCurrency", getFirstAvailableObject(rs, rsColsLower, "newLinePriceInPoCurrency", "new_line_price_in_po_currency", "newLinePriceInSAR", "new_line_price_in_sar"));
                             line.put("pnSubAllow", safeGetString(rs, "pnSubAllow", rsColsLower));
                             line.put("countryOfOrigin", safeGetString(rs, "countryOfOrigin", rsColsLower));
                             line.put("typeLookupCode", safeGetString(rs, "typeLookupCode", rsColsLower));
@@ -377,6 +391,76 @@ public class PurchaseOrderExportService {
                     value = line.get(key);
                 }
 
+                // Special handling for some columns requested:
+                // 1) lineCancelFlag: convert booleans / Y/N / true/false to "yes"/"no"
+                if ("lineCancelFlag".equalsIgnoreCase(key)) {
+                    String s = value == null ? "" : String.valueOf(value);
+                    String normalized;
+                    if (s.equalsIgnoreCase("true") || s.equalsIgnoreCase("t") || s.equalsIgnoreCase("1") || s.equalsIgnoreCase("y") || s.equalsIgnoreCase("yes") || s.equalsIgnoreCase("y")) {
+                        normalized = "yes";
+                    } else if (s.equalsIgnoreCase("false") || s.equalsIgnoreCase("f") || s.equalsIgnoreCase("0") || s.equalsIgnoreCase("n") || s.equalsIgnoreCase("no")) {
+                        normalized = "no";
+                    } else {
+                        // in case GET_NESTED returns "Y"/"N"
+                        if (s.equalsIgnoreCase("y") || s.equalsIgnoreCase("Y")) normalized = "yes";
+                        else if (s.equalsIgnoreCase("n") || s.equalsIgnoreCase("N")) normalized = "no";
+                        else normalized = s; // keep whatever it is (could be empty)
+                    }
+                    r.createCell(c++).setCellValue(normalized);
+                    continue;
+                }
+
+                // 1b) Ensure Descope Qty is written as numeric 0.0 when null/empty
+                if ("descopeQty".equalsIgnoreCase(key)) {
+                    // value may be null or non-numeric; we want numeric 0.0 default
+                    if (value == null || "".equals(String.valueOf(value))) {
+                        r.createCell(c++).setCellValue(0.0);
+                    } else if (value instanceof Number) {
+                        r.createCell(c++).setCellValue(((Number) value).doubleValue());
+                    } else {
+                        Double maybe = tryParseDouble(String.valueOf(value));
+                        if (maybe != null) r.createCell(c++).setCellValue(maybe);
+                        else r.createCell(c++).setCellValue(0.0); // fallback
+                    }
+                    continue;
+                }
+
+                // 2) "New LINE_PRICE_IN_PO_CURRENCY" header should match values of NEW_LINE_PRICE_IN_SAR (user request)
+                // find header text for this column index
+                String headerText = headerLabels.get(i);
+                if ("New LINE_PRICE_IN_PO_CURRENCY".equalsIgnoreCase(headerText)) {
+                    // attempt to get the value from the field corresponding to NEW_LINE_PRICE_IN_SAR
+                    String altKey = null;
+                    // fieldKeys index for NEW_LINE_PRICE_IN_SAR is expected to be the next one (but safer: find index)
+                    int altIndex = -1;
+                    for (int k = 0; k < headerLabels.size(); k++) {
+                        if ("NEW_LINE_PRICE_IN_SAR".equalsIgnoreCase(headerLabels.get(k))) {
+                            altIndex = k;
+                            break;
+                        }
+                    }
+                    if (altIndex >= 0) altKey = fieldKeys.get(altIndex);
+                    Object altVal = null;
+                    if (poHeader != null && altKey != null && poHeader.containsKey(altKey) && poHeader.get(altKey) != null) {
+                        altVal = poHeader.get(altKey);
+                    } else if (altKey != null && line != null && line.containsKey(altKey)) {
+                        altVal = line.get(altKey);
+                    }
+                    // fallback to existing value if alt missing
+                    if (altVal != null) {
+                        // write altVal as numeric if possible
+                        if (altVal instanceof Number) {
+                            r.createCell(c++).setCellValue(((Number) altVal).doubleValue());
+                        } else {
+                            Double maybe = tryParseDouble(String.valueOf(altVal));
+                            if (maybe != null) r.createCell(c++).setCellValue(maybe);
+                            else r.createCell(c++).setCellValue(String.valueOf(altVal));
+                        }
+                        continue;
+                    }
+                    // else continue to normal handling below (will write original 'value')
+                }
+
                 // handle dates specially (approvedDate / createdDate)
                 if ("approvedDate".equalsIgnoreCase(key) || "createdDate".equalsIgnoreCase(key) || "creationDate".equalsIgnoreCase(key)) {
                     Timestamp ts = null;
@@ -423,7 +507,7 @@ public class PurchaseOrderExportService {
             if (!rsColsLower.contains(col.toLowerCase(Locale.ROOT))) {
                 // try snake_case
                 String snake = toSnake(col);
-                if (rsColsLower.contains(snake.toLowerCase(Locale.ROOT))) {
+                if (snake != null && rsColsLower.contains(snake.toLowerCase(Locale.ROOT))) {
                     return rs.getObject(snake);
                 }
                 // try upper snake
@@ -445,7 +529,7 @@ public class PurchaseOrderExportService {
             // try a few common variants (snake_case / upper case)
             try {
                 String snake = toSnake(col);
-                if (rsColsLower.contains(snake.toLowerCase(Locale.ROOT))) {
+                if (snake != null && rsColsLower.contains(snake.toLowerCase(Locale.ROOT))) {
                     Object oo = rs.getObject(snake);
                     return oo == null ? "" : String.valueOf(oo);
                 }
@@ -462,7 +546,39 @@ public class PurchaseOrderExportService {
         return String.valueOf(o);
     }
 
-    // helpers
+    // Try multiple candidate column names (returns first non-null value)
+    private static Object getFirstAvailableObject(ResultSet rs, Set<String> rsColsLower, String... candidates) {
+        if (candidates == null) return null;
+        for (String cand : candidates) {
+            if (cand == null) continue;
+            try {
+                if (rsColsLower.contains(cand.toLowerCase(Locale.ROOT))) {
+                    Object o = rs.getObject(cand);
+                    if (o != null) return o;
+                }
+                // try snake/upper variants as well
+                String snake = toSnake(cand);
+                if (snake != null && rsColsLower.contains(snake.toLowerCase(Locale.ROOT))) {
+                    Object o = rs.getObject(snake);
+                    if (o != null) return o;
+                }
+                String upper = cand.toUpperCase(Locale.ROOT);
+                if (rsColsLower.contains(upper.toLowerCase(Locale.ROOT))) {
+                    Object o = rs.getObject(upper);
+                    if (o != null) return o;
+                }
+            } catch (SQLException e) {
+                // ignore and continue
+            }
+        }
+        return null;
+    }
+
+    private static String getFirstAvailableString(ResultSet rs, Set<String> rsColsLower, String... candidates) {
+        Object o = getFirstAvailableObject(rs, rsColsLower, candidates);
+        return o == null ? "" : String.valueOf(o);
+    }
+
     private static Double tryParseDouble(String s) {
         if (s == null) return null;
         try {
