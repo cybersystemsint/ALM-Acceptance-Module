@@ -138,7 +138,14 @@ public class AgingEmailConfigController {
         } else {
             cfg.setCreatedBy(req.getCreatedBy());
         }
+         if (req.getCc() != null) cfg.setCc(req.getCc());
+        if (req.getBcc() != null) cfg.setBcc(req.getBcc());
 
+        if (principal != null && principal.getName() != null && !principal.getName().isBlank()) {
+            cfg.setCreatedBy(principal.getName());
+        } else {
+            cfg.setCreatedBy(req.getCreatedBy());
+        }
         AgingEmailConfig saved = configRepo.save(cfg);
 
         if (saved.isEnabled()) {
@@ -241,7 +248,12 @@ public class AgingEmailConfigController {
             }
             existing.setUserAging(req.getUserAging());
         }
-
+          if (req.getCc() != null) {
+            existing.setCc(req.getCc());
+        }
+        if (req.getBcc() != null) {
+            existing.setBcc(req.getBcc());
+        }
         existing.setUpdatedAt(java.time.LocalDateTime.now());
 
         AgingEmailConfig saved = configRepo.save(existing);

@@ -63,7 +63,8 @@ public class AgingEmailConfig {
 
     @Column(name = "user_aging")
     private Integer userAging;
-
+    private String cc;
+    private String bcc;
 
     public Long getId() {
         return id;
@@ -186,7 +187,78 @@ public class AgingEmailConfig {
     public void setUserAging(Integer userAging) {
         this.userAging = userAging;
     }
+ public String getCc() {
+        return cc;
+    }
 
+    public void setCc(String cc) {
+        this.cc = (cc == null || cc.isBlank()) ? null : cc;
+    }
+
+    public String getBcc() {
+        return bcc;
+    }
+
+    public void setBcc(String bcc) {
+        this.bcc = (bcc == null || bcc.isBlank()) ? null : bcc;
+    }
+
+    // Helpers to set from List and get as List (supports JSON array or comma-separated legacy)
+    public void setCcFromList(List<String> list) {
+        if (list == null || list.isEmpty()) {
+            this.cc = null;
+            return;
+        }
+        try {
+            ObjectMapper om = new ObjectMapper();
+            this.cc = om.writeValueAsString(list);
+        } catch (Exception e) {
+            this.cc = String.join(",", list);
+        }
+    }
+
+    public void setBccFromList(List<String> list) {
+        if (list == null || list.isEmpty()) {
+            this.bcc = null;
+            return;
+        }
+        try {
+            ObjectMapper om = new ObjectMapper();
+            this.bcc = om.writeValueAsString(list);
+        } catch (Exception e) {
+            this.bcc = String.join(",", list);
+        }
+    }
+
+    public List<String> getCcList() {
+        return parseStoredList(this.cc);
+    }
+
+    public List<String> getBccList() {
+        return parseStoredList(this.bcc);
+    }
+
+    private List<String> parseStoredList(String raw) {
+        if (raw == null) return Collections.emptyList();
+        String s = raw.trim();
+        if (s.isEmpty()) return Collections.emptyList();
+        // JSON array?
+        if (s.startsWith("[")) {
+            try {
+                ObjectMapper om = new ObjectMapper();
+                List<String> list = om.readValue(s, new TypeReference<List<String>>() {});
+                if (list == null) return Collections.emptyList();
+                return list;
+            } catch (Exception ignored) { }
+        }
+        // comma separated legacy
+        String[] parts = s.split("\\s*,\\s*");
+        List<String> res = new ArrayList<>(parts.length);
+        for (String p : parts) {
+            if (p != null && !p.isBlank()) res.add(p.trim());
+        }
+        return res;
+    }
     public void setDepartments(List<String> depts) {
         if (depts == null || depts.isEmpty()) {
             this.department = null;

@@ -12,6 +12,8 @@ public class AgingEmailConfigRequest {
     private String createdBy;
     private String updatedBy;
     private String targetType;
+    private String cc;
+    private String bcc;
 
     // New: accept either a single department (legacy) or an array of departments
     private String department;
@@ -57,4 +59,9 @@ public class AgingEmailConfigRequest {
 
     public Integer getUserAging() { return userAging; }
     public void setUserAging(Integer userAging) { this.userAging = userAging; }
+
+    public String getCc() { return cc; }
+    public void setCc(String cc) { this.cc = cc; }      
+    public String getBcc() { return bcc; }
+    public void setBcc(String bcc) { this.bcc = bcc; }
 }

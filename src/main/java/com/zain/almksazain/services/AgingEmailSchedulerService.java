@@ -116,6 +116,14 @@ public class AgingEmailSchedulerService implements DisposableBean {
                     filters.put("minUserAging", cfg.getUserAging());
                 }
 
+                // include optional cc/bcc from config (stored as CSV or JSON string)
+                if (cfg.getCc() != null && !cfg.getCc().isBlank()) {
+                    filters.put("cc", cfg.getCc());
+                }
+                if (cfg.getBcc() != null && !cfg.getBcc().isBlank()) {
+                    filters.put("bcc", cfg.getBcc());
+                }
+
                 if ("approver".equals(targetType)) {
                     slaNotificationService.runStage1RemindersWithFilters(filters);
                 } else if ("manager".equals(targetType)) {
@@ -205,6 +213,13 @@ public class AgingEmailSchedulerService implements DisposableBean {
                 if (cfg.getUserAging() != null) {
                     filters.put("userAging", cfg.getUserAging());
                     filters.put("minUserAging", cfg.getUserAging());
+                }
+
+                if (cfg.getCc() != null && !cfg.getCc().isBlank()) {
+                    filters.put("cc", cfg.getCc());
+                }
+                if (cfg.getBcc() != null && !cfg.getBcc().isBlank()) {
+                    filters.put("bcc", cfg.getBcc());
                 }
 
                 if ("approver".equals(targetType)) {

@@ -2,7 +2,12 @@ package com.zain.almksazain.model;
 
 import java.time.LocalDateTime;
 
-import javax.persistence.*;
+import javax.persistence.Column;
+import javax.persistence.Entity;
+import javax.persistence.GeneratedValue;
+import javax.persistence.GenerationType;
+import javax.persistence.Id;
+import javax.persistence.Table;
 
 @Entity
 @Table(name = "tb_SystemUsers")
@@ -22,6 +27,8 @@ public class User {
     private String userPosition;
     private String phoneNumber;
     private String emailAddress;
+    private String lineManager;
+    private String escalationManager;
     private String passChange;
     private LocalDateTime lastPasswordChangeDate;
     private String fullName;
@@ -165,6 +172,22 @@ public class User {
     }
     public void setDepartmentId(Integer departmentId) {
         this.departmentId = departmentId;
+    }
+
+    public String getLineManager() {
+        return lineManager;
+    }
+
+    public void setLineManager(String lineManager) {
+        this.lineManager = lineManager;
+    }
+
+    public String getEscalationManager() {
+        return escalationManager;
+    }
+
+    public void setEscalationManager(String escalationManager) {
+        this.escalationManager = escalationManager;
     }
 
     
