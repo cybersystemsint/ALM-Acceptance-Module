@@ -1,10 +1,16 @@
 package com.zain.almksazain.dto;
+
+import java.util.Map;
+
+
 public class AgingReportRequestDTO {
     private String supplierId;
     private String columnName;
     private String searchQuery;
     private Integer page;
     private Integer size;
+    private String searchOperator;
+    private Map<String, FilterRequestDto.FilterDto> filterBy;
 
     // Getters and Setters
 
@@ -46,5 +52,21 @@ public class AgingReportRequestDTO {
 
     public void setSize(Integer size) {
         this.size = size;
+    }
+
+    public String getSearchOperator() {
+        return searchOperator;
+    }
+
+    public void setSearchOperator(String searchOperator) {
+        this.searchOperator = searchOperator;
+    }
+
+    public Map<String, FilterRequestDto.FilterDto> getFilterBy() {
+        return filterBy;
+    }
+
+    public void setFilterBy(Map<String, FilterRequestDto.FilterDto> filterBy) {
+        this.filterBy = filterBy;
     }
 }

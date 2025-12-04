@@ -106,19 +106,6 @@ public class DccPoCombinedService {
 
         final String onlyStatus = "inprocess";
         
-        // if (hasFilter) {
-        //     Pageable unpaged = Pageable.unpaged();
-        //     pagedDcc = (supplierId != null && !"0".equals(supplierId))
-        //             ? dccRepository.findAllBySupplierId(supplierId, unpaged)
-        //             : dccRepository.findAll(unpaged);
-        //     dccList = pagedDcc.getContent();
-        // } else {
-        //     Pageable pageable = PageRequest.of(page - 1, size, Sort.by(Sort.Direction.DESC, "recordNo"));
-        //     pagedDcc = (supplierId != null && !"0".equals(supplierId))
-        //             ? dccRepository.findAllBySupplierId(supplierId, pageable)
-        //             : dccRepository.findAll(pageable);
-        //     dccList = pagedDcc.getContent();
-        // }
             if (hasFilter) {
         Pageable unpaged = Pageable.unpaged();
         pagedDcc = (supplierId != null && !"0".equals(supplierId))
@@ -767,8 +754,7 @@ public Map<String, Object> getAgingReportWithMultipleFilters(
         // Debug: Check first row to see available data
         if (!groupedResults.isEmpty()) {
             System.out.println("Sample row keys: " + groupedResults.get(0).keySet());
-            // Uncomment for detailed debugging
-            // debugRow(groupedResults.get(0));
+
         }
         
         List<Map<String, Object>> filtered = groupedResults.stream()
@@ -781,17 +767,17 @@ public Map<String, Object> getAgingReportWithMultipleFilters(
                             return true;
                         }
                         
-                        System.out.println("Checking filter: " + columnName + " = '" + searchQuery + "'");
+                        // System.out.println("Checking filter: " + columnName + " = '" + searchQuery + "'");
                         
                         boolean matches = matchesFilter(row, columnName, searchQuery);
-                        System.out.println("Row matches filter " + columnName + ": " + matches);
+                        // System.out.println("Row matches filter " + columnName + ": " + matches);
                         return matches;
                     });
                     return matchesAll;
                 })
                 .collect(Collectors.toList());
         
-        System.out.println("After filtering: " + filtered.size() + " results");
+        // System.out.println("After filtering: " + filtered.size() + " results");
         
         int totalRecords = filtered.size();
         int totalPages = totalRecords == 0 ? 0 : (int) Math.ceil((double) totalRecords / size);
@@ -830,7 +816,7 @@ private boolean matchesFilter(Map<String, Object> row, String columnName, String
             : columnName;
     
     Object value = row.get(targetKey);
-    System.out.println("Target key: '" + targetKey + "', found: " + (value != null));
+    // System.out.println("Target key: '" + targetKey + "', found: " + (value != null));
     
     if (value == null) {
         System.out.println("Value is null for key: " + targetKey);

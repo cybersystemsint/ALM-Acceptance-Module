@@ -10,6 +10,7 @@ import java.time.temporal.ChronoField;
 import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -21,6 +22,9 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import javax.persistence.criteria.CriteriaBuilder;
+import javax.persistence.criteria.Expression;
+import javax.persistence.criteria.Path;
 import javax.persistence.criteria.Predicate;
 
 import org.apache.logging.log4j.LogManager;
@@ -37,14 +41,15 @@ import com.zain.almksazain.dto.AgingReportDTO;
 import com.zain.almksazain.dto.AgingReportGroupDTO;
 import com.zain.almksazain.dto.AgingReportPagedResponseDTO;
 import com.zain.almksazain.dto.AgingReportRequestDTO;
+import com.zain.almksazain.dto.FilterRequestDto;
 import com.zain.almksazain.model.DCC;
 import com.zain.almksazain.model.DCCLineItem;
 import com.zain.almksazain.model.User;
 import com.zain.almksazain.model.departmentsdata;
 import com.zain.almksazain.model.tbCategoryApprovalRequests;
 import com.zain.almksazain.model.tbCategoryApprovals;
-import com.zain.almksazain.model.tb_PurchaseOrderUPL;
 import com.zain.almksazain.model.tbPurchaseOrder;
+import com.zain.almksazain.model.tb_PurchaseOrderUPL;
 import com.zain.almksazain.repo.DCCRepository;
 import com.zain.almksazain.repo.DccLineRepo;
 import com.zain.almksazain.repo.TbCategoryApprovalRequestsRepository;
@@ -362,8 +367,8 @@ String inScopeOfWork = lineItemsForDcc.stream()
                 case "vendornumber":
                 case "createddate":
                 case "pendingapprovers":
-                case "projectname":          // <-- new supported group-level column
-                case "inscopeofwork": // <-- new supported group-level column
+                case "projectname":         
+                case "inscopeofwork": 
                     // For these fields, filter at the DTO level inside each group, then update group totals
                     result = result.stream()
                             .map(group -> {
@@ -464,22 +469,29 @@ String inScopeOfWork = lineItemsForDcc.stream()
                 .flatMap(group -> group.getApprovers().stream())
                 .flatMap(appr -> appr.getDtos().stream())
                 .collect(Collectors.toList());
-        
-                // --- Sync pagination / totals with the filtered result (finalFlatReport) ---
-        if (req.getColumnName() != null && req.getSearchQuery() != null && !req.getSearchQuery().isEmpty()) {
-            // Use number of remaining DTOs as totalRecords (requests after all filtering)
-            totalRecords = finalFlatReport.size();
-        
-            // If the original request did not supply valid pagination, keep "unpaged" semantics:
-            if (reqSize == null || reqSize <= 0 || reqPage == null || reqPage < 0) {
-                page = 0;
-                size = totalRecords > 0 ? (int) totalRecords : 0;
+
+        totalRecords = finalFlatReport.size();
+
+        if (reqSize == null || reqSize <= 0 || reqPage == null || reqPage < 0) {
+            page = 0;
+            size = totalRecords > 0 ? (int) totalRecords : 0;
+        } else {
+            page = reqPage;
+            size = reqSize;
+        }
+        List<AgingReportGroupDTO> pagedResult;
+        if (size <= 0) {
+            pagedResult = Collections.emptyList();
+        } else {
+            int fromIndex = page * size;
+            if (fromIndex >= result.size()) {
+                pagedResult = Collections.emptyList();
             } else {
-                // preserve the requested page/size
-                page = reqPage;
-                size = reqSize;
+                int toIndex = Math.min(fromIndex + size, result.size());
+                pagedResult = result.subList(fromIndex, toIndex);
             }
         }
+
         BigDecimal totalValue = finalFlatReport.stream()
                 .map(AgingReportDTO::getTotalUnitPrice)
                 .filter(Objects::nonNull)
@@ -507,12 +519,12 @@ String inScopeOfWork = lineItemsForDcc.stream()
         }
 
         AgingReportPagedResponseDTO resp = new AgingReportPagedResponseDTO();
-        resp.setData(result);
+        resp.setData(pagedResult);
         resp.setTotalValue(totalValue != null ? totalValue.longValue() : 0);
         resp.setTotalPendingApprovers(totalPendingApprovers);
         resp.setTotalPendingRequests(totalPendingRequests);
         resp.setDailyCounts(dailyCounts);
-        resp.setTotalRecords(totalRecords);
+        resp.setTotalRecords(totalRecords); 
         resp.setPage(page);
         resp.setSize(size);
         return resp;
@@ -652,13 +664,14 @@ String inScopeOfWork = lineItemsForDcc.stream()
         }
     }
 
-    // (Helper method for DB-level filtering)
+
+ // (Helper method for DB-level filtering) - REPLACED to support multifilter via req.getFilterBy()
     private Specification<DCC> getDccSpecification(AgingReportRequestDTO req) {
         return (root, query, cb) -> {
             Predicate statusPred = cb.equal(cb.lower(root.get("status")), "inprocess");
-            Predicate filterPred = cb.conjunction();
+            List<Predicate> filterPredicates = new ArrayList<>();
 
-            // DB-level filtering for DCC columns
+            // Existing single-column quick search (keeps previous behavior)
             if (req.getColumnName() != null && req.getSearchQuery() != null
                     && !req.getColumnName().isEmpty() && !req.getSearchQuery().isEmpty()) {
                 String column = req.getColumnName().trim().toLowerCase();
@@ -666,65 +679,442 @@ String inScopeOfWork = lineItemsForDcc.stream()
 
                 try {
                     if ("ponumber".equals(column)) {
-                        filterPred = cb.like(cb.lower(root.get("poNumber")), "%" + searchVal.toLowerCase() + "%");
+                        filterPredicates.add(cb.like(cb.lower(root.get("poNumber")), "%" + searchVal.toLowerCase() + "%"));
                     } else if ("vendorname".equals(column)) {
-                        filterPred = cb.like(cb.lower(root.get("vendorName")), "%" + searchVal.toLowerCase() + "%");
+                        filterPredicates.add(cb.like(cb.lower(root.get("vendorName")), "%" + searchVal.toLowerCase() + "%"));
                     } else if ("createdby".equals(column)) {
-                        filterPred = cb.like(cb.lower(root.get("createdBy")), "%" + searchVal.toLowerCase() + "%");
+                        filterPredicates.add(cb.like(cb.lower(root.get("createdBy")), "%" + searchVal.toLowerCase() + "%"));
                     } else if ("vendornumber".equals(column)) {
-                        filterPred = cb.like(cb.lower(root.get("vendorNumber")), "%" + searchVal.toLowerCase() + "%");
+                        filterPredicates.add(cb.like(cb.lower(root.get("vendorNumber")), "%" + searchVal.toLowerCase() + "%"));
+                    } else if ("recordno".equals(column)) {
+                        // allow numeric quick-search when user searches recordNo
+                        try {
+                            Long id = Long.parseLong(searchVal);
+                            filterPredicates.add(cb.equal(root.get("recordNo"), id));
+                        } catch (NumberFormatException ignored) {
+                        }
+                    } else {
+                        // unknown quick-search column -> ignore
                     }
                 } catch (Exception e) {
-                    filterPred = cb.disjunction();
+                    filterPredicates.add(cb.disjunction());
                 }
             }
+
+            // NEW: apply multifilters from request.filterBy (if present)
+            try {
+                Map<String, FilterRequestDto.FilterDto> filters = req.getFilterBy();
+                if (filters != null && !filters.isEmpty()) {
+                    for (Map.Entry<String, FilterRequestDto.FilterDto> entry : filters.entrySet()) {
+                        String rawKey = entry.getKey();
+                        FilterRequestDto.FilterDto fr = entry.getValue();
+                        if (fr == null) continue;
+
+                        String field = mapDccFieldName(rawKey);
+                        if (field == null || field.isEmpty()) continue;
+
+                        Path<?> path;
+                        try {
+                            path = root.get(field);
+                        } catch (IllegalArgumentException ex) {
+                            // unknown property -> skip
+                            continue;
+                        }
+
+                        String op = fr.getOperator();
+                        if (op == null || op.isBlank()) {
+                            // if request provides a global searchOperator (on top-level), use it; otherwise default to contains
+                            op = req.getSearchOperator() == null || req.getSearchOperator().isBlank() ? "contains" : req.getSearchOperator();
+                        }
+                        op = op.trim().toLowerCase();
+
+                        Object val = fr.getValue();
+
+                        Predicate p = buildPredicateForFilter(cb, path, op, val);
+                        if (p != null) filterPredicates.add(p);
+                    }
+                }
+            } catch (Exception ex) {
+                // avoid failing the whole query if a filter is malformed; skip problematic filters
+            }
+
+            Predicate filterPred = filterPredicates.isEmpty() ? cb.conjunction() : cb.and(filterPredicates.toArray(new Predicate[0]));
             return cb.and(statusPred, filterPred);
         };
     }
 
-    /**
-     * Filters the flat report list in-memory for criteria not handled at DB-level.
-     * Supports: pendingApprovers, department, and also poNumber, vendorName, createdBy, supplierId, vendorNumber, createdDate,
-     * and newly added: projectname (uses purchaseOrderMap), inscopeofworkpackage (uses lineItemsByDccId)
-     */
+    // Map friendly or incoming filter keys to actual DCC entity field names
+    private String mapDccFieldName(String key) {
+        if (key == null) return null;
+        switch (key.trim().toLowerCase()) {
+            case "ponumber":
+                return "poNumber";
+            case "vendorname":
+                return "vendorName";
+            case "createdby":
+                return "createdBy";
+            case "vendornumber":
+                return "vendorNumber";
+            case "recordno":
+                return "recordNo";
+            case "supplierid":
+                return "supplierId";
+            case "createddate":
+                return "createdDate";
+            case "status":
+                return "status";
+            // add more mappings as needed
+            default:
+                // if key ends with Name, drop suffix (e.g., departmentName -> departmentName? adjust as needed)
+                if (key.endsWith("Name")) return key.substring(0, key.length());
+                return key;
+        }
+    }
+
+    // Build a predicate for a single filter entry
+    private Predicate buildPredicateForFilter(CriteriaBuilder cb, Path<?> path, String op, Object val) {
+        if (op == null) op = "contains";
+
+        // treat numeric fields specially
+        Class<?> javaType = path.getJavaType();
+        boolean isNumeric = Number.class.isAssignableFrom(javaType)
+                || javaType == long.class || javaType == int.class || javaType == double.class || javaType == float.class;
+
+        switch (op) {
+            case "equals":
+            case "eq":
+                if (isNumeric) {
+                    Predicate p = numericEquals(cb, path, val);
+                    return p == null ? null : p;
+                } else {
+                    try {
+                        return cb.equal(cb.lower(path.as(String.class)), String.valueOf(val).toLowerCase());
+                    } catch (IllegalArgumentException e) {
+                        return cb.equal(path, val);
+                    }
+                }
+            case "contains":
+                if (val == null) return null;
+                try {
+                    return cb.like(cb.lower(path.as(String.class)), "%" + String.valueOf(val).toLowerCase() + "%");
+                } catch (IllegalArgumentException e) {
+                    // fallback to equality for non-string types
+                    return cb.equal(path, val);
+                }
+            case "startswith":
+            case "starts with":
+                if (val == null) return null;
+                try {
+                    return cb.like(cb.lower(path.as(String.class)), String.valueOf(val).toLowerCase() + "%");
+                } catch (IllegalArgumentException e) {
+                    return cb.equal(path, val);
+                }
+            case "endswith":
+            case "ends with":
+                if (val == null) return null;
+                try {
+                    return cb.like(cb.lower(path.as(String.class)), "%" + String.valueOf(val).toLowerCase());
+                } catch (IllegalArgumentException e) {
+                    return cb.equal(path, val);
+                }
+            case "isempty":
+            case "empty":
+                try {
+                    Expression<String> s = path.as(String.class);
+                    return cb.or(cb.isNull(path), cb.equal(cb.trim(s), ""));
+                } catch (IllegalArgumentException e) {
+                    return cb.isNull(path);
+                }
+            case "isnotempty":
+            case "is not empty":
+                try {
+                    Expression<String> s = path.as(String.class);
+                    return cb.and(cb.isNotNull(path), cb.notEqual(cb.trim(s), ""));
+                } catch (IllegalArgumentException e) {
+                    return cb.isNotNull(path);
+                }
+            case "in":
+            case "isanyof":
+            case "is any of":
+                if (val == null) return null;
+                if (isNumeric) {
+                    CriteriaBuilder.In<Object> inN = cb.in(path);
+                    addNumericValuesToIn(inN, val);
+                    return inN;
+                } else {
+                    CriteriaBuilder.In<Object> in = cb.in(path);
+                    if (val instanceof Collection) {
+                        for (Object o : (Collection<?>) val) in.value(o);
+                    } else {
+                        String s = val.toString();
+                        String[] parts = s.split(",");
+                        for (String p : parts) in.value(p.trim());
+                    }
+                    return in;
+                }
+            default:
+                // default to contains
+                if (val == null) return null;
+                try {
+                    return cb.like(cb.lower(path.as(String.class)), "%" + String.valueOf(val).toLowerCase() + "%");
+                } catch (IllegalArgumentException e) {
+                    return cb.equal(path, val);
+                }
+        }
+    }
+
+    private Predicate numericEquals(CriteriaBuilder cb, Path<?> path, Object val) {
+        if (val == null) return null;
+        if (val instanceof Number) return cb.equal(path, val);
+        try {
+            Long parsed = Long.parseLong(val.toString());
+            return cb.equal(path, parsed);
+        } catch (NumberFormatException ex) {
+            return null; // invalid numeric -> no predicate
+        }
+    }
+
+    private void addNumericValuesToIn(CriteriaBuilder.In<Object> in, Object val) {
+        if (val == null) return;
+        if (val instanceof Collection) {
+            for (Object o : (Collection<?>) val) {
+                if (o == null) continue;
+                if (o instanceof Number) in.value(o);
+                else {
+                    try { in.value(Long.parseLong(o.toString())); } catch (NumberFormatException ignored) {}
+                }
+            }
+        } else {
+            String s = val.toString();
+            String[] parts = s.split(",");
+            for (String p : parts) {
+                String t = p.trim();
+                if (t.isEmpty()) continue;
+                try { in.value(Long.parseLong(t)); } catch (NumberFormatException ignored) {}
+            }
+        }
+    }
+// Replace the existing filterFlatReport(...) method in this file with the implementation below.
+// Add the helper method matchesDtoAgainstFilter(...) in the same class as shown.
+
     private List<AgingReportDTO> filterFlatReport(List<AgingReportDTO> list, AgingReportRequestDTO req,
                                                  Map<String, List<DCCLineItem>> lineItemsByDccId,
                                                  Map<String, tbPurchaseOrder> purchaseOrderMap) {
-        if (req.getColumnName() == null || req.getSearchQuery() == null || req.getSearchQuery().isEmpty())
-            return list;
-        String column = req.getColumnName().trim().toLowerCase();
-        String searchVal = req.getSearchQuery().trim().toLowerCase();
+        // If no filters (neither filterBy nor quick-search) return original list
+        boolean hasFilterBy = req.getFilterBy() != null && !req.getFilterBy().isEmpty();
+        boolean hasQuickSearch = req.getColumnName() != null && req.getSearchQuery() != null && !req.getSearchQuery().isEmpty();
 
-        return list.stream().filter(dto -> {
-            switch (column) {
-                case "pendingapprovers":
-                    return dto.getPendingApprovers() != null && Arrays.stream(dto.getPendingApprovers().split(","))
-                            .anyMatch(name -> name.trim().toLowerCase().contains(searchVal));
-                case "department":
-                    return dto.getDepartmentName() != null && Arrays.stream(dto.getDepartmentName().split(","))
-                            .anyMatch(name -> name.trim().toLowerCase().contains(searchVal));
-                case "ponumber":
-                    return dto.getPoNumber() != null && dto.getPoNumber().toLowerCase().contains(searchVal);
-                case "vendorname":
-                    return dto.getVendorName() != null && dto.getVendorName().toLowerCase().contains(searchVal);
-                case "createdby":
-                    return dto.getCreatedBy() != null && dto.getCreatedBy().toLowerCase().contains(searchVal);
-                case "vendornumber":
-                    return dto.getVendorNumber() != null && dto.getVendorNumber().toLowerCase().contains(searchVal);
-                case "projectname":
-                    if (dto.getPoNumber() == null) return false;
-                    tbPurchaseOrder po = purchaseOrderMap.get(dto.getPoNumber());
-                    if (po == null) return false;
-                    String effective = po.getProjectName();
-                    return effective != null && effective.toLowerCase().contains(searchVal);
-                case "inscopeofwork":
-                    List<DCCLineItem> lines = lineItemsByDccId.getOrDefault(String.valueOf(dto.getRecordNo()), Collections.emptyList());
-                    return lines.stream().anyMatch(li -> li.getScopeOfWork() != null &&
-                            li.getScopeOfWork().toLowerCase().contains(searchVal));
-                default:
-                    return true;
+        if (!hasFilterBy && !hasQuickSearch) return list;
+
+        // Start from original list
+        List<AgingReportDTO> result = new ArrayList<>(list);
+
+        // 1) Apply multifilter map (AND across entries)
+        if (hasFilterBy) {
+            Map<String, FilterRequestDto.FilterDto> filters = req.getFilterBy();
+            for (Map.Entry<String, FilterRequestDto.FilterDto> entry : filters.entrySet()) {
+                String rawKey = entry.getKey();
+                FilterRequestDto.FilterDto fr = entry.getValue();
+                if (fr == null) continue;
+                String op = fr.getOperator();
+                if (op == null || op.isBlank()) {
+                    // Use request-level default operator if provided, otherwise "contains"
+                    op = (req.getSearchOperator() != null && !req.getSearchOperator().isBlank()) ? req.getSearchOperator() : "contains";
+                }
+                final String operator = op.trim().toLowerCase();
+                final Object value = fr.getValue();
+                // Filter the result list to keep only DTOs that match this single filter
+                result = result.stream()
+                        .filter(dto -> matchesDtoAgainstFilter(dto, rawKey, operator, value, lineItemsByDccId, purchaseOrderMap))
+                        .collect(Collectors.toList());
+                // short-circuit if nothing left
+                if (result.isEmpty()) return result;
             }
-        }).collect(Collectors.toList());
+        }
+
+        // 2) Apply existing single-column quick-search (if provided)
+        if (hasQuickSearch) {
+            String column = req.getColumnName().trim().toLowerCase();
+            String searchVal = req.getSearchQuery().trim().toLowerCase();
+
+            result = result.stream().filter(dto -> {
+                switch (column) {
+                    case "pendingapprovers":
+                        return dto.getPendingApprovers() != null && Arrays.stream(dto.getPendingApprovers().split(","))
+                                .anyMatch(name -> name.trim().toLowerCase().contains(searchVal));
+                    case "department":
+                        return dto.getDepartmentName() != null && Arrays.stream(dto.getDepartmentName().split(","))
+                                .anyMatch(name -> name.trim().toLowerCase().contains(searchVal));
+                    case "ponumber":
+                        return dto.getPoNumber() != null && dto.getPoNumber().toLowerCase().contains(searchVal);
+                    case "vendorname":
+                        return dto.getVendorName() != null && dto.getVendorName().toLowerCase().contains(searchVal);
+                    case "createdby":
+                        return dto.getCreatedBy() != null && dto.getCreatedBy().toLowerCase().contains(searchVal);
+                    case "vendornumber":
+                        return dto.getVendorNumber() != null && dto.getVendorNumber().toLowerCase().contains(searchVal);
+                    case "projectname":
+                        if (dto.getPoNumber() == null) return false;
+                        tbPurchaseOrder po = purchaseOrderMap.get(dto.getPoNumber());
+                        if (po == null) return false;
+                        String effective = po.getProjectName();
+                        return effective != null && effective.toLowerCase().contains(searchVal);
+                    case "inscopeofwork":
+                        List<DCCLineItem> lines = lineItemsByDccId.getOrDefault(String.valueOf(dto.getRecordNo()), Collections.emptyList());
+                        return lines.stream().anyMatch(li -> li.getScopeOfWork() != null &&
+                                li.getScopeOfWork().toLowerCase().contains(searchVal));
+                    case "recordno":
+                        try {
+                            return dto.getRecordNo() == Integer.parseInt(req.getSearchQuery().trim());
+                        } catch (Exception e) {
+                            return false;
+                        }
+                    default:
+                        // unknown quick-search column -> keep
+                        return true;
+                }
+            }).collect(Collectors.toList());
+        }
+
+        return result;
     }
+
+  // --- Replace the previous matchesDtoAgainstFilter(...) implementation with this one ---
+
+    /**
+     * Returns true when the given DTO matches the provided filter (single filter entry).
+     * Supports operators: contains, equals, startsWith, endsWith, isempty, isnotempty, isanyof/in
+     */
+    private boolean matchesDtoAgainstFilter(AgingReportDTO dto,
+                                            String rawKey,
+                                            String operator,
+                                            Object value,
+                                            Map<String, List<DCCLineItem>> lineItemsByDccId,
+                                            Map<String, tbPurchaseOrder> purchaseOrderMap) {
+        // do not reassign method parameter; create a final local variable so it is effectively final
+        final String op = (operator == null || operator.isBlank()) ? "contains" : operator.trim().toLowerCase();
+        String key = rawKey == null ? "" : rawKey.trim().toLowerCase();
+
+        switch (key) {
+             case "name":
+            case "pendingapprovers": {
+                String field = dto.getPendingApprovers();
+                return matchStringOperator(field, op, value);
+            }
+            case "department":
+            case "departmentname": {
+                String field = dto.getDepartmentName();
+                if (field == null) return false;
+                if ("equals".equals(op) || "eq".equals(op)) {
+                    return Arrays.stream(field.split(","))
+                            .map(String::trim)
+                            .anyMatch(s -> s.equalsIgnoreCase(String.valueOf(value)));
+                } else {
+                    return Arrays.stream(field.split(","))
+                            .map(String::trim)
+                            .anyMatch(s -> matchStringOperator(s, op, value));
+                }
+            }
+            case "ponumber": {
+                return matchStringOperator(dto.getPoNumber(), op, value);
+            }
+            case "vendorname": {
+                return matchStringOperator(dto.getVendorName(), op, value);
+            }
+            case "createdby": {
+                return matchStringOperator(dto.getCreatedBy(), op, value);
+            }
+            case "vendornumber": {
+                return matchStringOperator(dto.getVendorNumber(), op, value);
+            }
+            case "projectname": {
+                if (dto.getPoNumber() == null) return false;
+                tbPurchaseOrder po = purchaseOrderMap.get(dto.getPoNumber());
+                if (po == null || po.getProjectName() == null) return false;
+                return matchStringOperator(po.getProjectName(), op, value);
+            }
+            case "inscopeofwork": {
+                List<DCCLineItem> lines = lineItemsByDccId.getOrDefault(String.valueOf(dto.getRecordNo()), Collections.emptyList());
+                if (lines.isEmpty()) return false;
+                for (DCCLineItem li : lines) {
+                    if (matchStringOperator(li.getScopeOfWork(), op, value)) return true;
+                }
+                return false;
+            }
+            case "recordno": {
+                if (value == null) return false;
+                try {
+                    if ("isanyof".equals(op) || "in".equals(op) || "is any of".equals(op)) {
+                        List<String> parts = value instanceof Collection
+                                ? ((Collection<?>) value).stream().map(Object::toString).collect(Collectors.toList())
+                                : Arrays.asList(value.toString().split(","));
+                        for (String p : parts) {
+                            String t = p.trim();
+                            if (t.isEmpty()) continue;
+                            try {
+                                if (dto.getRecordNo() == Long.parseLong(t)) return true;
+                            } catch (NumberFormatException ignored) {}
+                        }
+                        return false;
+                    } else {
+                        long num = Long.parseLong(value.toString());
+                        return dto.getRecordNo() == num;
+                    }
+                } catch (Exception e) {
+                    return false;
+                }
+            }
+            default:
+                // unknown filter key -> conservatively return true (do not filter out)
+                return true;
+        }
+    }
+
+    // helper for string-based operators (unchanged)
+    private boolean matchStringOperator(String field, String operator, Object value) {
+        String val = value == null ? null : value.toString();
+        if ("isempty".equals(operator) || "empty".equals(operator)) {
+            return field == null || field.trim().isEmpty();
+        }
+        if ("isnotempty".equals(operator) || "is not empty".equals(operator)) {
+            return field != null && !field.trim().isEmpty();
+        }
+        if ("isanyof".equals(operator) || "in".equals(operator) || "is any of".equals(operator)) {
+            if (field == null) return false;
+            Collection<String> parts;
+            if (value instanceof Collection) {
+                parts = ((Collection<?>) value).stream().map(Object::toString).collect(Collectors.toList());
+            } else {
+                parts = Arrays.stream(val.split(",")).map(String::trim).filter(s -> !s.isEmpty()).collect(Collectors.toList());
+            }
+            String lower = field.toLowerCase();
+            for (String p : parts) {
+                if (p == null) continue;
+                if (lower.equals(p.toLowerCase()) || lower.contains(p.toLowerCase())) return true;
+            }
+            return false;
+        }
+        // other ops: contains, equals, startsWith, endsWith
+        if (field == null || val == null) return false;
+        String fieldLower = field.toLowerCase();
+        String qLower = val.toLowerCase();
+        switch (operator) {
+            case "contains":
+                return fieldLower.contains(qLower);
+            case "equals":
+            case "eq":
+                return fieldLower.equals(qLower);
+            case "startswith":
+            case "starts with":
+                return fieldLower.startsWith(qLower);
+            case "endswith":
+            case "ends with":
+                return fieldLower.endsWith(qLower);
+            default:
+                // default to contains
+                return fieldLower.contains(qLower);
+        }
+    }
+    
 
 }
