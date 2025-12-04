@@ -3788,7 +3788,11 @@ private String convertToSqlDate(String input) {
             searchableColumns.put("description", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineDescription ELSE HD.poLineDescription END)");
             searchableColumns.put("quantity", "LN2.deliveredQty");
             searchableColumns.put("partNumber", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (CASE WHEN LENGTH(LN2.actualItemCode) > 0 THEN LN2.actualItemCode ELSE upl.uplLineItemCode END) ELSE HD.itemPartNumber END)");
-            searchableColumns.put("itemSerializedStatus", "(CASE WHEN HD.serialControl = 'NO CONTROL' THEN 'NO' ELSE 'YES' END)");
+            searchableColumns.put("itemSerializedStatus",
+                "(CASE " +
+                        "WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('YES','Y','TRUE','1') THEN 'YES' " +
+                        "WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('NO','N','FALSE','0') THEN 'NO' " +
+                        "ELSE NULL END)");
             searchableColumns.put("serialNumber", "LN2.serialNumber");
             searchableColumns.put("uplItemCategoryCodeDescription", "upl.zainItemCategoryDescription");
             searchableColumns.put("faBookingAmount", "(upl.uplLineUnitPrice * LN2.deliveredQty)");
@@ -3927,7 +3931,10 @@ private String convertToSqlDate(String input) {
                     "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineDescription ELSE HD.poLineDescription END) AS description, " +
                     "LN2.deliveredQty AS quantity, " +
                     "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (CASE WHEN LENGTH(LN2.actualItemCode) > 0 THEN LN2.actualItemCode ELSE upl.uplLineItemCode END) ELSE HD.itemPartNumber END) AS partNumber, " +
-                    "(CASE WHEN HD.serialControl = 'NO CONTROL' THEN 'NO' ELSE 'YES' END) AS itemSerializedStatus, " +
+                    " (CASE " +
+                     "WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('YES','Y','TRUE','1') THEN 'YES' " +
+                     "WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('NO','N','FALSE','0') THEN 'NO' " +
+                     "ELSE NULL END) AS itemSerializedStatus, " +
                     "LN2.serialNumber AS serialNumber, " +
                     "upl.zainItemCategoryDescription AS uplItemCategoryCodeDescription, " +
                     "(upl.uplLineUnitPrice * LN2.deliveredQty) AS faBookingAmount, " +
