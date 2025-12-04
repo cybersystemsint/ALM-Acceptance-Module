@@ -32,7 +32,6 @@ import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.xssf.streaming.SXSSFWorkbook;
 import org.springframework.stereotype.Service;
 
-
 @Service
 public class PurchaseOrderExportService {
 
@@ -41,6 +40,15 @@ public class PurchaseOrderExportService {
 
     // cache of table columns (lower-case) per table name to avoid repeated metadata calls
     private static final ConcurrentHashMap<String, Set<String>> tableColumnsCache = new ConcurrentHashMap<>();
+
+    // synonyms for common DB column name variants
+    private static final Map<String, String[]> FIELD_SYNONYMS = new HashMap<>();
+    static {
+        FIELD_SYNONYMS.put("createdDate", new String[] { "creation_date", "created_date", "creationdate", "createddate" });
+        FIELD_SYNONYMS.put("approvedDate", new String[] { "approved_date", "approval_date", "approveddate" });
+        FIELD_SYNONYMS.put("prNum", new String[] { "pr_num", "prnum" });
+        // add additional synonyms as needed
+    }
 
     public PurchaseOrderExportService(DataSource dataSource) {
         this.dataSource = dataSource;
@@ -325,14 +333,17 @@ public class PurchaseOrderExportService {
                                 // createdDate / creation_date detection (best-effort)
                                 if (rsColsLower.contains("createddate") || rsColsLower.contains("creation_date")) {
                                     try {
-                                        poHeader.put("createdDate", rs.getTimestamp("createdDate"));
+                                        // try both label forms
+                                        if (rsColsLower.contains("createddate")) poHeader.put("createdDate", rs.getTimestamp("createddate"));
+                                        else poHeader.put("createdDate", rs.getTimestamp("creation_date"));
                                     } catch (Exception ex) {
                                         // ignore
                                     }
                                 }
-                                if (rsColsLower.contains("approveddate")) {
+                                if (rsColsLower.contains("approveddate") || rsColsLower.contains("approved_date")) {
                                     try {
-                                        poHeader.put("approvedDate", rs.getTimestamp("approvedDate"));
+                                        if (rsColsLower.contains("approveddate")) poHeader.put("approvedDate", rs.getTimestamp("approveddate"));
+                                        else poHeader.put("approvedDate", rs.getTimestamp("approved_date"));
                                     } catch (Exception ex) {
                                         // ignore
                                     }
@@ -600,6 +611,58 @@ public class PurchaseOrderExportService {
             return Double.parseDouble(s);
         } catch (Exception e) {
             return null;
+        }
+    }
+
+    // Find column index for a given field key using common variants; returns index (1-based) or -1
+    private static int findIndexForKey(String key, Map<String, Integer> colLabelToIndex) {
+        if (key == null) return -1;
+        String lower = key.toLowerCase(Locale.ROOT);
+        if (colLabelToIndex.containsKey(lower)) return colLabelToIndex.get(lower);
+        String snake = toSnake(key);
+        if (snake != null) {
+            String snakeLower = snake.toLowerCase(Locale.ROOT);
+            if (colLabelToIndex.containsKey(snakeLower)) return colLabelToIndex.get(snakeLower);
+        }
+        String upper = key.toUpperCase(Locale.ROOT);
+        String upperLower = upper.toLowerCase(Locale.ROOT);
+        if (colLabelToIndex.containsKey(upperLower)) return colLabelToIndex.get(upperLower);
+
+        // additional common variants
+        String alt1 = key.replaceAll("([A-Z])", "_$1").toLowerCase(Locale.ROOT); // e.g. poNumber -> po_number
+        if (colLabelToIndex.containsKey(alt1)) return colLabelToIndex.get(alt1);
+
+        // not found
+        return -1;
+    }
+
+    /**
+     * Find index for a field key but also try configured synonyms (e.g. createdDate -> creation_date)
+     */
+    private static int findIndexForKeyWithSynonyms(String key, Map<String, Integer> colLabelToIndex) {
+        int idx = findIndexForKey(key, colLabelToIndex);
+        if (idx > 0) return idx;
+
+        // try configured synonyms
+        String[] syns = FIELD_SYNONYMS.get(key);
+        if (syns != null) {
+            for (String s : syns) {
+                if (s == null) continue;
+                String sLower = s.toLowerCase(Locale.ROOT);
+                if (colLabelToIndex.containsKey(sLower)) return colLabelToIndex.get(sLower);
+            }
+        }
+
+        return -1;
+    }
+
+    // small helper to get string by index safely
+    private static String safeRsGetString(ResultSet rs, int index) {
+        try {
+            String s = rs.getString(index);
+            return s;
+        } catch (SQLException e) {
+            return "";
         }
     }
 
