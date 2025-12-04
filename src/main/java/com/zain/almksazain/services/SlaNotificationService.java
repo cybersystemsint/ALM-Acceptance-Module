@@ -647,21 +647,21 @@ private String resolveEscalationUsernameForRow(Map<String, Object> row) {
 
     private String buildStage1Subject(int count, String recordNo, String poNumber, String requestId, int agingDays) {
     try {
-        return String.format("SLA Reminder: Action Required on %d Request(s) Exceeding Aging Threshold %d Days",
+        return String.format("Reminder: Pending acceptance requests exceeded SLA",
                 Math.max(0, count),
                 Math.max(0, agingDays));
     } catch (Exception e) {
-        return "SLA Reminder: Action Required";
+        return "Reminder: Pending acceptance requests exceeded SLA";
     }
 }
 
 private String buildStage2Subject(int count, int agingDays) {
     try {
-        return String.format("SLA Escalation: Management Intervention Required on %d Request(s) Exceeding Aging Threshold %d Days",
+        return String.format("Notification: Pending acceptance requests exceeded SLA",
                 Math.max(0, count),
                 Math.max(0, agingDays));
     } catch (Exception e) {
-        return "SLA Escalation: Management Intervention Required";
+        return "Notification: Pending acceptance requests exceeded SLA";
     }
 }
 
