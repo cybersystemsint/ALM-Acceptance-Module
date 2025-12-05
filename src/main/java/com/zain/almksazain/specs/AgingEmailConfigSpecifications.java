@@ -1,12 +1,25 @@
 package com.zain.almksazain.specs;
 
-import com.zain.almksazain.dto.FilterRequestDto;
-import com.zain.almksazain.model.AgingEmailConfig;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.stream.Collectors;
+
+import javax.persistence.criteria.CriteriaBuilder;
+import javax.persistence.criteria.CriteriaQuery;
+import javax.persistence.criteria.Expression;
+import javax.persistence.criteria.Path;
+import javax.persistence.criteria.Predicate;
+import javax.persistence.criteria.Root;
+
 import org.springframework.data.jpa.domain.Specification;
 
-import javax.persistence.criteria.*;
-import java.util.*;
-import java.util.stream.Collectors;
+import com.zain.almksazain.dto.FilterRequestDto;
+import com.zain.almksazain.model.AgingEmailConfig;
 
 
 public final class AgingEmailConfigSpecifications {
@@ -127,10 +140,10 @@ public final class AgingEmailConfigSpecifications {
                             if (rawVal == null) continue;
                             String vtrim = rawVal.trim();
                             if (vtrim.isEmpty()) continue;
-                            if ("all".equalsIgnoreCase(vtrim)) {
-                                // "ALL" means no restriction; produce a tautology predicate
-                                return cb.conjunction();
-                            }
+
+                            // NOTE: removed special-case for "ALL" here so "ALL" is treated
+                            // like a normal value and only matches rows that actually contain "ALL".
+
                             String v = vtrim.toLowerCase();
 
                             List<Predicate> checks = new ArrayList<>();
