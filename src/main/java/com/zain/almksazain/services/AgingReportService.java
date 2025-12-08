@@ -287,6 +287,27 @@ String inScopeOfWork = lineItemsForDcc.stream()
                 apprDTO.setDtos(apprList);
                 approverDTOs.add(apprDTO);
             }
+
+            // Add no-approver requests as a pseudo-approver so their request numbers are visible
+            List<AgingReportDTO> noApproverDtos = deptList.stream()
+                    .filter(dto -> dto.getPendingApprovers() == null || dto.getPendingApprovers().trim().isEmpty())
+                    .collect(Collectors.toList());
+            if (!noApproverDtos.isEmpty()) {
+                AgingReportApproverDTO noApprDTO = new AgingReportApproverDTO();
+                noApprDTO.setName("No Approver"); // label shown in UI; change as desired
+                noApprDTO.setTitle("");
+                // status for these DTOs could be mixed; pick empty or derive if needed
+                noApprDTO.setStatus("");
+                noApprDTO.setDtos(noApproverDtos);
+                noApprDTO.setTotal(noApproverDtos.size());
+                BigDecimal noApprValue = noApproverDtos.stream()
+                        .map(AgingReportDTO::getTotalUnitPrice)
+                        .filter(Objects::nonNull).reduce(BigDecimal.ZERO, BigDecimal::add);
+                noApprDTO.setValue(noApprValue);
+                noApprDTO.setBuckets(getBuckets(noApproverDtos));
+                approverDTOs.add(noApprDTO);
+            }
+
             Map<String, Integer> deptBuckets = getBuckets(deptList);
             int deptTotal = deptList.size();
             BigDecimal deptValue = deptList.stream().map(AgingReportDTO::getTotalUnitPrice)
@@ -529,7 +550,6 @@ String inScopeOfWork = lineItemsForDcc.stream()
         resp.setSize(size);
         return resp;
     }
-
     // Bucket helpers
     private Map<String, Integer> getBuckets(List<AgingReportDTO> list) {
         Map<String, Integer> map = new LinkedHashMap<>();
