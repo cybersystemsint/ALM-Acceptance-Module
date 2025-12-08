@@ -271,6 +271,12 @@ public class ReportsController {
         searchableColumns.put("totalAcceptanceAmount", "(upl.uplLineUnitPrice * LN2.deliveredQty)");
         searchableColumns.put("vendorName", "HD.vendorName");
         searchableColumns.put("recordNo", "DCC.recordNo");
+        searchableColumns.put("tagNumber", "LN2.tagNumber");
+        searchableColumns.put("linkId", "LN2.linkId");
+        searchableColumns.put("activeOrPassive", "upl.activeOrPassive");
+        searchableColumns.put("createdDate", "DATE_FORMAT(CAST(DCC.createdDate AS DATE),'%e-%b-%Y')");
+        searchableColumns.put("approvalDate", "DATE_FORMAT(CAST(DCC.approvedDate AS DATE),'%e-%b-%Y')");
+        searchableColumns.put("scopeOfWork", "LN2.scopeOfWork");
 
         Set<String> numericColumns = new HashSet<>(Arrays.asList(
             "requestId", "poLineNumber", "uplLineNumber", "dccLnRecordNo",
@@ -399,7 +405,13 @@ public class ReportsController {
                 "LN2.deliveredQty AS acceptanceUplQty, " +
                 "LN2.poAcceptanceQty AS acceptancePoQty, " +
                 "(upl.uplLineUnitPrice * LN2.deliveredQty) AS totalAcceptanceAmount, " +
-                "HD.vendorName AS vendorName " +
+                "HD.vendorName AS vendorName, " +
+                "LN2.tagNumber AS tagNumber, " +
+                "LN2.linkId AS linkId, " +
+                "upl.activeOrPassive AS activeOrPassive, " +
+                "DATE_FORMAT(CAST(DCC.createdDate AS DATE),'%e-%b-%Y') AS createdDate, " +
+                "DATE_FORMAT(CAST(DCC.approvedDate AS DATE),'%e-%b-%Y') AS approvalDate, " +
+                "LN2.scopeOfWork AS scopeOfWork " +
                 baseFrom + pairWhere.toString() +
                 " ORDER BY DCC.recordNo, LN2.recordNo";
 

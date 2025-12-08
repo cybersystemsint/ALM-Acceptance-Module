@@ -1812,11 +1812,41 @@ public class APIController {
                         }
                     }
                 }
-
                 if (result.contains("Success")) {
+                    Set<Long> incomingRecordNos = new HashSet<>();
+                    for (int x = 0; x < dcc_line_data.length(); x++) {
+                        JSONObject lineObj = dcc_line_data.getJSONObject(x);
+                        long lineRecordNo = 0L;
+                        try {
+                            String rn = lineObj.optString("recordNo", "0");
+                            if (rn != null && !rn.isBlank()) {
+                                lineRecordNo = Long.parseLong(rn);
+                            }
+                        } catch (Exception e) {
+                        }
+                        if (lineRecordNo > 0L) {
+                            incomingRecordNos.add(lineRecordNo);
+                        }
+                    }
+                
+                    List<DCCLineItem> existingLines = dcclnrepo.findByDccId(newRecordNo);
+                    Set<Long> existingRecordNos = existingLines.stream()
+                            .map(DCCLineItem::getRecordNo) 
+                            .collect(Collectors.toSet());
+                    existingRecordNos.removeAll(incomingRecordNos);
+                    if (!existingRecordNos.isEmpty()) {
+                        List<Long> toDelete = new ArrayList<>(existingRecordNos);
+                        dcclnrepo.deleteByRecordNoIn(toDelete);
+                    }
+                
+                    // Continue with post-processing for remaining/updated line items
                     postdccln(poNumber, newRecordNo, status, createdBy, createdByName, vendorName, dcc_line_data.toString());
+                }
+                // if (result.contains("Success")) {
+                //     postdccln(poNumber, newRecordNo, status, createdBy, createdByName, vendorName, dcc_line_data.toString());
 
-                } else {
+                // } 
+                else {
                     net.minidev.json.JSONObject responsedata = new net.minidev.json.JSONObject();
                     responsedata.put("dccId", dccId);
                     responsedata.put("recordNo", recordNo);
