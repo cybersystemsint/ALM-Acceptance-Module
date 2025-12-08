@@ -5,6 +5,7 @@ import java.text.SimpleDateFormat;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
@@ -463,50 +464,78 @@ public class DccPoCombinedService {
                 .orElse(dcc.getProjectName());
     }
 
-    private ApprovalInfo calculateApprovalInfo(List<tbCategoryApprovals> approvals, Map<String, User> userMap, Map<Long, departmentsdata> depMap) {
-        ApprovalInfo info = new ApprovalInfo();
-        if (approvals.isEmpty()) return info;
+private ApprovalInfo calculateApprovalInfo(List<tbCategoryApprovals> approvals, Map<String, User> userMap, Map<Long, departmentsdata> depMap) {
+    ApprovalInfo info = new ApprovalInfo();
 
-        info.approvalCount = (int) approvals.stream()
-                .filter(al -> Arrays.asList("pending", "readyForApproval", "request-info").contains(al.getApprovalStatus())
-                        && "pending".equalsIgnoreCase(al.getStatus()))
+    // If there are no approvals at all, return with explicit fallback and zero count
+    if (approvals == null || approvals.isEmpty()) {
+        info.pendingApproverFullName = "No approver";
+        info.approvalCount = 0;
+        return info;
+    }
+
+    // Sort by recordDateTime ASC using existing helper ensureLocalDateTime
+    List<tbCategoryApprovals> sorted = approvals.stream()
+            .filter(Objects::nonNull)
+            .sorted(Comparator.comparing(a -> {
+                try {
+                    LocalDateTime dt = ensureLocalDateTime(a.getRecordDateTime());
+                    return dt == null ? LocalDateTime.MAX : dt;
+                } catch (Exception e) {
+                    return LocalDateTime.MAX;
+                }
+            }))
+            .collect(Collectors.toList());
+
+    // Find the pending approver only when:
+    // status == "pending" AND approvalStatus == "readyforapproval"
+    tbCategoryApprovals pendingApprover = sorted.stream()
+            .filter(a -> "pending".equalsIgnoreCase(Optional.ofNullable(a.getStatus()).orElse("").trim()))
+            .filter(a -> "readyforapproval".equalsIgnoreCase(Optional.ofNullable(a.getApprovalStatus()).orElse("").trim()))
+            .findFirst()
+            .orElse(null);
+
+    if (pendingApprover != null) {
+        info.approvalCount = (int) sorted.stream()
+                .filter(a -> "pending".equalsIgnoreCase(Optional.ofNullable(a.getStatus()).orElse("").trim()))
                 .count();
 
-        String pendingApproverName = approvals.stream()
-                .filter(al -> "readyForApproval".equals(al.getApprovalStatus()) && "pending".equalsIgnoreCase(al.getStatus()))
-                .map(tbCategoryApprovals::getApproverName)
-                .filter(Objects::nonNull)
-                .findFirst()
-                .orElseGet(() -> approvals.stream()
-                        .filter(al -> Arrays.asList("pending", "readyForApproval", "request-info").contains(al.getApprovalStatus())
-                                && "pending".equalsIgnoreCase(al.getStatus()))
-                        .map(tbCategoryApprovals::getApproverName)
-                        .filter(Objects::nonNull)
-                        .findFirst()
-                        .orElse(null));
-
-        if (pendingApproverName != null) {
-            User pendingUser = userMap.get(pendingApproverName);
+        String approverName = Optional.ofNullable(pendingApprover.getApproverName()).orElse("").trim();
+        if (!approverName.isEmpty()) {
+            User pendingUser = userMap.get(approverName);
             if (pendingUser != null) {
-                info.pendingApproverFullName = pendingUser.getFullName();
+                info.pendingApproverFullName = Optional.ofNullable(pendingUser.getFullName()).filter(s -> !s.trim().isEmpty()).orElse(approverName);
                 Optional.ofNullable(pendingUser.getDepartmentId())
                         .map(Integer::longValue)
                         .map(depMap::get)
                         .ifPresent(dep -> info.pendingApproverDepartmentName = dep.getDeptName());
+            } else {
+                info.pendingApproverFullName = approverName;
             }
+        } else {
+            info.pendingApproverFullName = "No approver";
+            info.approvalCount = 0;
         }
-
-        info.approverComment = approvals.stream()
-                .filter(al -> !Arrays.asList("pending", "readyForApproval").contains(al.getApprovalStatus()))
-                .map(tbCategoryApprovals::getComments)
-                .filter(Objects::nonNull)
-                .reduce((first, second) -> second)
-                .orElse(null);
-
-        return info;
+    } else {
+        info.pendingApproverFullName = "No approver";
+        info.approvalCount = 0;
     }
 
-    private Map<String, Object> buildResponse(Page<DCC> pagedDcc, List<Map<String, Object>> groupedResults, int page, int size) {
+    // approverComment: keep previous behavior — latest comment from non-pending/active approvals
+    info.approverComment = sorted.stream()
+            .filter(al -> {
+                String apprStatus = Optional.ofNullable(al.getApprovalStatus()).orElse("").trim().toLowerCase();
+                // exclude approvals that are still pending/active
+                return !("pending".equalsIgnoreCase(Optional.ofNullable(al.getStatus()).orElse("").trim())
+                        && "readyforapproval".equals(apprStatus));
+            })
+            .map(tbCategoryApprovals::getComments)
+            .filter(Objects::nonNull)
+            .reduce((first, second) -> second)
+            .orElse(null);
+
+    return info;
+} private Map<String, Object> buildResponse(Page<DCC> pagedDcc, List<Map<String, Object>> groupedResults, int page, int size) {
         Map<String, Object> response = new HashMap<>();
         response.put("currentPage", page);
         response.put("pageSize", size);
@@ -540,90 +569,99 @@ public class DccPoCombinedService {
         return date == null ? null : new SimpleDateFormat(DATE_FORMAT).format(date);
     }
 
-    private String calculateUserAgingCustom(DCC dcc, tbCategoryApprovalRequests approvalRequest, List<tbCategoryApprovals> approvals) {
-        String status = Optional.ofNullable(dcc.getStatus()).map(String::toLowerCase).orElse("");
-        LocalDateTime createdDate = toLocalDateTime(dcc.getCreatedDate());
-        LocalDateTime now = LocalDateTime.now();
 
-        if (Arrays.asList("rejected", "returned", "approved", "approved-received").contains(status)) {
-            return "0 days 0 hrs 0 mins";
+private String calculateUserAgingCustom(DCC dcc, tbCategoryApprovalRequests latestApprovalReq, List<tbCategoryApprovals> approvals) {
+    String defaultAging = "0 days 0 hrs 0 mins";
+    if (latestApprovalReq == null) return defaultAging;
+
+    final ZoneId KSA = ZoneId.of("Asia/Riyadh");
+    LocalDateTime now = LocalDateTime.now(KSA);
+
+    // helper to convert various temporal types into a KSA LocalDateTime
+    java.util.function.Function<Object, LocalDateTime> toKsaLocalDateTime = obj -> {
+        if (obj == null) return null;
+        if (obj instanceof LocalDateTime) return (LocalDateTime) obj;
+        if (obj instanceof java.time.LocalDate) return ((java.time.LocalDate) obj).atStartOfDay();
+        if (obj instanceof java.util.Date) {
+            return ((java.util.Date) obj).toInstant().atZone(KSA).toLocalDateTime();
         }
-        if ("request-info".equals(status)) {
-            return approvals.stream()
-                    .filter(a -> "pending".equalsIgnoreCase(a.getStatus()) && "request-info".equalsIgnoreCase(a.getApprovalStatus()))
-                    .findFirst()
-                    .filter(a -> a.getRecordDateTime() != null && a.getApprovedDate() != null)
-                    .map(a -> Duration.between(ensureLocalDateTime(a.getRecordDateTime()), ensureLocalDateTime(a.getApprovedDate())).toMinutes())
-                    .map(this::diffToAgingString)
-                    .orElse("0 days 0 hrs 0 mins");
+        if (obj instanceof String) {
+            try {
+                return LocalDateTime.parse((String) obj);
+            } catch (Exception e) {
+                return null;
+            }
         }
-        if ("inprocess".equals(status)) {
-            return approvals.stream()
-                    .filter(a -> "pending".equalsIgnoreCase(a.getStatus()) && "readyforapproval".equalsIgnoreCase(a.getApprovalStatus()))
-                    .findFirst()
-                    .map(a -> Duration.between(ensureLocalDateTime(a.getRecordDateTime()), now).toMinutes())
-                    .map(this::diffToAgingString)
-                    .orElseGet(() -> diffToAgingString(Duration.between(createdDate, now).toMinutes()));
+        return null;
+    };
+
+    List<tbCategoryApprovals> sortedApprovals = new ArrayList<>(approvals == null ? Collections.emptyList() : approvals);
+    sortedApprovals.sort(Comparator.comparing(a -> {
+        LocalDateTime dt = toKsaLocalDateTime.apply(a.getRecordDateTime());
+        return dt == null ? LocalDateTime.MAX : dt;
+    }));
+
+    // Find the pending approver: status == "pending" && approvalStatus == "readyForApproval" (case-insensitive)
+    tbCategoryApprovals pendingApprover = sortedApprovals.stream()
+            .filter(a -> "pending".equalsIgnoreCase(Optional.ofNullable(a.getStatus()).orElse("").trim()))
+            .filter(a -> "readyforapproval".equalsIgnoreCase(Optional.ofNullable(a.getApprovalStatus()).orElse("").trim()))
+            .findFirst()
+            .orElse(null);
+
+    long userAgingMinutes = 0L;
+    if (pendingApprover != null) {
+        LocalDateTime pendingRecordDateTime = toKsaLocalDateTime.apply(pendingApprover.getRecordDateTime());
+        if (pendingRecordDateTime != null) {
+            userAgingMinutes = Duration.between(pendingRecordDateTime, now).toMinutes();
         }
-        return "0 days 0 hrs 0 mins";
+    } else {
+        // No pending approver found: keep as 0 (consistent with prior behavior)
+        userAgingMinutes = 0L;
     }
 
-    private String calculateTotalAgingCustom(DCC dcc, tbCategoryApprovalRequests approvalRequest, List<tbCategoryApprovals> approvals) {
-        String status = Optional.ofNullable(dcc.getStatus()).map(String::toLowerCase).orElse("");
-        LocalDateTime createdDate = toLocalDateTime(dcc.getCreatedDate());
-        LocalDateTime now = LocalDateTime.now();
+    return diffToAgingString(userAgingMinutes);
+}
 
-        if (Arrays.asList("rejected", "returned").contains(status)) {
-            return approvals.stream()
-                    .filter(a -> "rejected".equalsIgnoreCase(a.getStatus()) && "rejected".equalsIgnoreCase(a.getApprovalStatus()))
-                    .findFirst()
-                    .filter(a -> a.getApprovedDate() != null)
-                    .map(a -> Duration.between(createdDate, ensureLocalDateTime(a.getApprovedDate())).toMinutes())
-                    .map(this::diffToAgingString)
-                    .orElse("0 days 0 hrs 0 mins");
+private String calculateTotalAgingCustom(DCC dcc, tbCategoryApprovalRequests latestApprovalReq, List<tbCategoryApprovals> approvals) {
+    String defaultAging = "0 days 0 hrs 0 mins";
+    if (latestApprovalReq == null) return defaultAging;
+
+    final ZoneId KSA = ZoneId.of("Asia/Riyadh");
+    LocalDateTime now = LocalDateTime.now(KSA);
+
+    java.util.function.Function<Object, LocalDateTime> toKsaLocalDateTime = obj -> {
+        if (obj == null) return null;
+        if (obj instanceof LocalDateTime) return (LocalDateTime) obj;
+        if (obj instanceof java.time.LocalDate) return ((java.time.LocalDate) obj).atStartOfDay();
+        if (obj instanceof java.util.Date) {
+            return ((java.util.Date) obj).toInstant().atZone(KSA).toLocalDateTime();
         }
-        if ("request-info".equals(status)) {
-            return approvals.stream()
-                    .filter(a -> "pending".equalsIgnoreCase(a.getStatus()) && "request-info".equalsIgnoreCase(a.getApprovalStatus()))
-                    .findFirst()
-                    .filter(a -> a.getApprovedDate() != null)
-                    .map(a -> approvals.stream()
-                            .map(b -> ensureLocalDateTime(b.getRecordDateTime()))
-                            .filter(Objects::nonNull)
-                            .min(LocalDateTime::compareTo)
-                            .map(firstRecord -> Duration.between(firstRecord, ensureLocalDateTime(a.getApprovedDate())).toMinutes())
-                            .orElse(0L))
-                    .map(this::diffToAgingString)
-                    .orElse("0 days 0 hrs 0 mins");
+        if (obj instanceof String) {
+            try {
+                return LocalDateTime.parse((String) obj);
+            } catch (Exception e) {
+                return null;
+            }
         }
-        if ("inprocess".equals(status)) {
-            return approvals.stream()
-                    .map(a -> ensureLocalDateTime(a.getRecordDateTime()))
-                    .filter(Objects::nonNull)
-                    .min(LocalDateTime::compareTo)
-                    .map(firstRecord -> Duration.between(firstRecord, now).toMinutes())
-                    .map(this::diffToAgingString)
-                    .orElseGet(() -> diffToAgingString(Duration.between(createdDate, now).toMinutes()));
+        return null;
+    };
+
+    List<tbCategoryApprovals> sortedApprovals = new ArrayList<>(approvals == null ? Collections.emptyList() : approvals);
+    sortedApprovals.sort(Comparator.comparing(a -> {
+        LocalDateTime dt = toKsaLocalDateTime.apply(a.getRecordDateTime());
+        return dt == null ? LocalDateTime.MAX : dt;
+    }));
+
+    if (!sortedApprovals.isEmpty()) {
+        LocalDateTime firstRecordDateTime = toKsaLocalDateTime.apply(sortedApprovals.get(0).getRecordDateTime());
+        if (firstRecordDateTime != null) {
+            long totalMinutes = Duration.between(firstRecordDateTime, now).toMinutes();
+            return diffToAgingString(totalMinutes);
         }
-        if ("approved".equals(status)) {
-            return approvals.stream()
-                    .filter(a -> "approved".equalsIgnoreCase(a.getStatus()) && "approved".equalsIgnoreCase(a.getApprovalStatus()))
-                    .max(Comparator.comparing(a -> ensureLocalDateTime(a.getApprovedDate())))
-                    .filter(a -> a.getApprovedDate() != null)
-                    .map(a -> Duration.between(createdDate, ensureLocalDateTime(a.getApprovedDate())).toMinutes())
-                    .map(this::diffToAgingString)
-                    .orElse("0 days 0 hrs 0 mins");
-        }
-        if ("approved-received".equals(status)) {
-            return Optional.ofNullable(approvalRequest)
-                    .filter(req -> req.getApprovedDate() != null)
-                    .map(req -> Duration.between(createdDate, toLocalDateTime(req.getApprovedDate())).toMinutes())
-                    .map(this::diffToAgingString)
-                    .orElse("0 days 0 hrs 0 mins");
-        }
-        return "0 days 0 hrs 0 mins";
     }
 
+    return defaultAging;
+}
     private LocalDateTime toLocalDateTime(Date date) {
         if (date == null) return null;
         if (date instanceof java.sql.Date) {
