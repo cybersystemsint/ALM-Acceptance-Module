@@ -300,7 +300,7 @@ public class DccSpecification implements Specification<DCC> {
             case "dcccurrency":
             case "currency": return "currency";
             case "vendoremail": return "vendorEmail";
-            case "supplierid": return "supplierId";
+            case "supplierid": return "vendorNumber";  // ← FIX: Map to vendorNumber, not supplierId
             default: return null;
         }
     }
