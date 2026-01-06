@@ -175,7 +175,7 @@ public class SlaNotificationService {
             logger.error("Error running SLA Stage 1 job", e);
         }
     }
-
+      
 // NOTE: This version filters out rows that have no escalation manager before grouping so only rows with an escalation manager are sent.
 
 public void runStage2EscalationsWithFilters(Map<String, Object> filters) {
@@ -701,111 +701,116 @@ private String buildStage2Subject(int count, int agingDays) {
         return o == null ? defaultVal : o.toString();
     }
 
-    // Updated: accept actual requestCount instead of stage placeholder.
-    private String constructSlaReminderHtml(String approverFullName, String rowsPreviewHtml, int requestCount, String department, int agingDays) {
-        String approverDisplay = approverFullName == null ? "Approver" : approverFullName;
-        String salutation = "<p style=\"margin:0 0 10px 0;\">Dear " + escapeHtml(approverDisplay) + ",</p>";
-        String requestCountStr = String.valueOf(Math.max(0, requestCount));
-        StringBuilder sb = new StringBuilder(8192);
+// Updated: Added inline styling to enhance compatibility with email clients like Gmail; simplified and enforced table-based layout for consistency.
+private String constructSlaReminderHtml(String approverFullName, String rowsPreviewHtml, int requestCount, String department, int agingDays) {
+    String approverDisplay = approverFullName == null ? "Approver" : approverFullName;
+    String salutation = "<p style=\"margin:0 0 10px 0; font-family: Arial, Helvetica, sans-serif;\">Dear " + escapeHtml(approverDisplay) + ",</p>";
+    String requestCountStr = String.valueOf(Math.max(0, requestCount));
+    StringBuilder sb = new StringBuilder(8192);
 
-        sb.append("<!doctype html><html><head><meta charset=\"utf-8\"/>")
-          .append("<meta name=\"viewport\" content=\"width=device-width,initial-scale:1\"/>")
-          .append("</head>");
+    sb.append("<!doctype html><html><head><meta charset=\"utf-8\"/>")
+      .append("<meta name=\"viewport\" content=\"width=device-width,initial-scale:1\"/></head>")
+      .append("<body style=\"margin:0;padding:0;background:#ffffff;color:#333;font-family:Arial,Helvetica,sans-serif;\">")
+      .append("<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" width=\"100%\" style=\"border-collapse:collapse;\">")
+      .append("<tr><td align=\"right\" style=\"padding:0;\">")
+      .append("<table role=\"presentation\" align=\"right\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" "
+              + "style=\"width:auto;background:#ffffff;margin:18px 0 18px auto;padding:14px;border-collapse:collapse;\">");
 
-        sb.append("<body style=\"margin:0;padding:0;background:#ffffff;color:#333;font-family:Arial,Helvetica,sans-serif;\">");
-        sb.append("<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" width=\"100%\">")
-          .append("<tr><td align=\"right\" style=\"padding:0;\">");
-        sb.append("<table role=\"presentation\" align=\"right\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" "
-                + "style=\"width:auto;background:#ffffff;margin:18px 0 18px auto;padding:14px;border-collapse:collapse;\">");
+    sb.append("<tr><td style=\"padding:10px 0 6px 0;font-size:13px;color:#222;font-family:Arial,Helvetica,sans-serif;\">")
+      .append(salutation)
+      .append("</td></tr>");
 
-        sb.append("<tr><td style=\"padding:10px 0 6px 0;font-size:13px;color:#222;\">")
-          .append(salutation)
+    sb.append("<tr><td style=\"padding:0 0 6px 0;font-size:13px;color:#222;font-family:Arial,Helvetica,sans-serif;\">")
+      .append("<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" width=\"100%\" style=\"border-collapse:collapse;\">")
+      .append("<tr><td style=\"vertical-align:top;padding:0 8px 0 0;width:160px;font-weight:700\">Request(s):</td>")
+      .append("<td style=\"padding:0 0 6px 0;\">" + escapeHtml(requestCountStr) + "</td></tr>")
+      .append("<tr><td style=\"vertical-align:top;padding:0 8px 0 0;font-weight:700\">Approver:</td>")
+      .append("<td style=\"padding:0 0 6px 0;\">" + escapeHtml(approverDisplay) + "</td></tr>");
+    if (department != null && !department.isBlank()) {
+        sb.append("<tr><td style=\"vertical-align:top;padding:0 8px 0 0;font-weight:700\">Department:</td>")
+          .append("<td style=\"padding:0 0 6px 0;\">" + escapeHtml(department) + "</td></tr>");
+    }
+    sb.append("<tr><td style=\"vertical-align:top;padding:0 8px 0 0;font-weight:700\">Note:</td>")
+      .append("<td style=\"padding:0 0 6px 0;\">These requests have exceeded (user aging &ge; " + escapeHtml(String.valueOf(Math.max(0, agingDays))) + " days).</td></tr>")
+      .append("</table>")
+      .append("</td></tr>");
+
+    sb.append("<tr><td style=\"padding:8px 0 12px 0;font-size:12px;color:#555;font-family:Arial,Helvetica,sans-serif;\">Please review and action the requests listed below. A full aging dashboard-style attachment is included below.</td></tr>");
+
+    if (rowsPreviewHtml != null && !rowsPreviewHtml.isEmpty()) {
+        sb.append("<tr><td style=\"padding:6px 0\">")
+          .append("<table style=\"overflow:auto;\">" + rowsPreviewHtml.replaceFirst("<table", "<table dir=\"ltr\"") + "</table>")
           .append("</td></tr>");
-
-        sb.append("<tr><td style=\"padding:0 0 6px 0;font-size:13px;color:#222;\">")
-          .append("<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" width=\"100%\" style=\"border-collapse:collapse;\">")
-          .append("<tr><td style=\"vertical-align:top;padding:0 8px 0 0;width:160px;font-weight:700\">Request(s):</td><td style=\"padding:0 0 6px 0;\">").append(escapeHtml(requestCountStr)).append("</td></tr>")
-          .append("<tr><td style=\"vertical-align:top;padding:0 8px 0 0;font-weight:700\">Approver:</td><td style=\"padding:0 0 6px 0;\">").append(escapeHtml(approverDisplay)).append("</td></tr>");
-        if (department != null && !department.isBlank()) {
-            sb.append("<tr><td style=\"vertical-align:top;padding:0 8px 0 0;font-weight:700\">Department:</td><td style=\"padding:0 0 6px 0;\">").append(escapeHtml(department)).append("</td></tr>");
-        }
-        sb.append("<tr><td style=\"vertical-align:top;padding:0 8px 0 0;font-weight:700\">Note:</td><td style=\"padding:0 0 6px 0;\">These requests have exceeded (user aging &ge; ").append(escapeHtml(String.valueOf(Math.max(0, agingDays)))).append(" days).</td></tr>")
-          .append("</table>")
-          .append("</td></tr>");
-
-        sb.append("<tr><td style=\"padding:8px 0 12px 0;font-size:12px;color:#555;\">Please review and action the requests listed below. A full aging dashboard-style attachment is included below.</td></tr>");
-
-        if (rowsPreviewHtml != null && !rowsPreviewHtml.isEmpty()) {
-            sb.append("<tr><td style=\"padding:6px 0\"><div style=\"overflow:auto;\">")
-              .append(rowsPreviewHtml.replaceFirst("<table", "<table dir=\"ltr\""))
-              .append("</div></td></tr>");
-        }
-
-        sb.append("<tr><td style=\"padding-top:12px;border-top:1px solid #e6e6e6;font-size:11px;color:#9c1b1b;\">Warning: This is an automated email. Please do not reply or forward.</td></tr>");
-
-        sb.append("</table>");
-        sb.append("</td></tr></table>");
-        sb.append("</body></html>");
-        return sb.toString();
     }
 
-    private String constructSlaEscalationHtml(String managerFullName, int requestCount, String rowsPreviewHtml, String department, Map<String, Integer> approverCounts, int agingDays) {
-        String managerDisplay = managerFullName == null ? "Manager" : managerFullName;
-        String salutation = "<p style=\"margin:0 0 10px 0;\">Dear " + escapeHtml(managerDisplay) + ",</p>";
-        StringBuilder sb = new StringBuilder(4096);
+    sb.append("<tr><td style=\"padding-top:12px;border-top:1px solid #e6e6e6;font-size:11px;color:#9c1b1b;font-family:Arial,Helvetica,sans-serif;\">Warning: This is an automated email. Please do not reply or forward.</td></tr>")
+      .append("</table>")
+      .append("</td></tr></table>")
+      .append("</body></html>");
 
-        sb.append("<!doctype html><html><head><meta charset=\"utf-8\"/>")
-          .append("<meta name=\"viewport\" content=\"width=device-width,initial-scale:1\"/></head>")
-          .append("<body style=\"margin:0;padding:0;background:#ffffff;color:#333;font-family:Arial,Helvetica,sans-serif;\">")
-          .append("<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" width=\"100%\">")
-          .append("<tr><td align=\"right\" style=\"padding:0;\">")
-          .append("<table role=\"presentation\" align=\"right\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" "
-                  + "style=\"width:auto;margin:18px 0 18px auto;padding:14px;border-collapse:collapse;\">");
+    return sb.toString();
+}
 
-        sb.append("<tr><td style=\"padding:10px 0 6px 0;font-size:13px;color:#222;\">")
-          .append(salutation)
+private String constructSlaEscalationHtml(String managerFullName, int requestCount, String rowsPreviewHtml, String department, Map<String, Integer> approverCounts, int agingDays) {
+    String managerDisplay = managerFullName == null ? "Manager" : managerFullName;
+    String salutation = "<p style=\"margin:0 0 10px 0;font-family: Arial, Helvetica, sans-serif;\">Dear " + escapeHtml(managerDisplay) + ",</p>";
+    StringBuilder sb = new StringBuilder(4096);
+
+    sb.append("<!doctype html><html><head><meta charset=\"utf-8\"/>")
+      .append("<meta name=\"viewport\" content=\"width=device-width,initial-scale:1\"/></head>")
+      .append("<body style=\"margin:0;padding:0;background:#ffffff;color:#333;font-family:Arial,Helvetica,sans-serif;\">")
+      .append("<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" width=\"100%\" style=\"border-collapse:collapse;\">")
+      .append("<tr><td align=\"right\" style=\"padding:0;\">")
+      .append("<table role=\"presentation\" align=\"right\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" "
+              + "style=\"width:auto;margin:18px 0 18px auto;padding:14px;border-collapse:collapse;\">");
+
+    sb.append("<tr><td style=\"padding:10px 0 6px 0;font-size:13px;color:#222;font-family:Arial,Helvetica,sans-serif;\">")
+      .append(salutation)
+      .append("</td></tr>");
+
+    sb.append("<tr><td style=\"padding:0 0 6px 0;font-size:13px;color:#222;font-family:Arial,Helvetica,sans-serif;\">")
+      .append("<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" width=\"100%\" style=\"border-collapse:collapse;\">")
+      .append("<tr><td style=\"vertical-align:top;padding:0 8px 0 0;width:160px;font-weight:700\">Request(s):</td>")
+      .append("<td style=\"padding:0 0 6px 0;\">" + escapeHtml(String.valueOf(requestCount)) + "</td></tr>");
+    if (department != null && !department.isBlank()) {
+        sb.append("<tr><td style=\"vertical-align:top;padding:0 8px 0 0;font-weight:700\">Department:</td>")
+          .append("<td style=\"padding:0 0 6px 0;\">" + escapeHtml(department) + "</td></tr>");
+    }
+    sb.append("<tr><td style=\"vertical-align:top;padding:0 8px 0 0;font-weight:700\">Note:</td>")
+      .append("<td style=\"padding:0 0 6px 0;\">Requests shown below have exceeded (user aging &ge; " + escapeHtml(String.valueOf(Math.max(0, agingDays))) + " days).</td></tr>")
+      .append("</table>")
+      .append("</td></tr>");
+
+    sb.append("<tr><td style=\"padding:0 0 12px 0;font-size:12px;color:#555;font-family:Arial,Helvetica,sans-serif;\">Please coordinate with your approvers for immediate action. A full aging report is attached to this email.</td></tr>");
+
+    if (approverCounts != null && !approverCounts.isEmpty()) {
+        sb.append("<tr><td style=\"padding:6px 0 0 0;font-size:13px;color:#222;font-family:Arial,Helvetica,sans-serif;\">")
+          .append("<table role=\"presentation\" cellpadding=\"4\" cellspacing=\"0\" border=\"0\" width=\"100%\" style=\"border-collapse:collapse;\">")
+          .append("<tr><td style=\"font-weight:700;padding:6px 0 4px 0;\">Approvers & Request Counts:</td></tr>");
+        for (Map.Entry<String, Integer> ac : approverCounts.entrySet()) {
+            sb.append("<tr><td style=\"padding:2px 0 2px 8px;font-size:12px;color:#333;font-family:Arial,Helvetica,sans-serif;\">")
+              .append(escapeHtml(ac.getKey()))
+              .append(" : ")
+              .append(escapeHtml(String.valueOf(ac.getValue())))
+              .append("</td></tr>");
+        }
+        sb.append("</table>")
           .append("</td></tr>");
-
-        sb.append("<tr><td style=\"padding:0 0 6px 0;font-size:13px;color:#222;\">")
-          .append("<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" width=\"100%\" style=\"border-collapse:collapse;\">")
-          .append("<tr><td style=\"vertical-align:top;padding:0 8px 0 0;width:160px;font-weight:700\">Request(s):</td>")
-          .append("<td style=\"padding:0 0 6px 0;\">").append(escapeHtml(String.valueOf(requestCount))).append("</td></tr>");
-        if (department != null && !department.isBlank()) {
-            sb.append("<tr><td style=\"vertical-align:top;padding:0 8px 0 0;font-weight:700\">Department:</td>")
-              .append("<td style=\"padding:0 0 6px 0;\">").append(escapeHtml(department)).append("</td></tr>");
-        }
-        sb.append("<tr><td style=\"vertical-align:top;padding:0 8px 0 0;font-weight:700\">Note:</td>")
-          .append("<td style=\"padding:0 0 6px 0;\">Requests shown below have exceeded (user aging &ge; ").append(escapeHtml(String.valueOf(Math.max(0, agingDays)))).append(" days).</td></tr>")
-          .append("</table></td></tr>");
-
-        sb.append("<tr><td style=\"padding:0 0 12px 0;font-size:12px;color:#555;\">Please coordinate with your approvers for immediate action. A full aging report is attached to this email.</td></tr>");
-
-        if (approverCounts != null && !approverCounts.isEmpty()) {
-            sb.append("<tr><td style=\"padding:6px 0 0 0;font-size:13px;color:#222;\">")
-              .append("<table role=\"presentation\" cellpadding=\"4\" cellspacing=\"0\" border=\"0\" width=\"100%\" style=\"border-collapse:collapse;\">")
-              .append("<tr><td style=\"font-weight:700;padding:6px 0 4px 0;\">Approvers & Request Counts:</td></tr>");
-            for (Map.Entry<String, Integer> ac : approverCounts.entrySet()) {
-                sb.append("<tr><td style=\"padding:2px 0 2px 8px;font-size:12px;color:#333;\">")
-                  .append(escapeHtml(ac.getKey()))
-                  .append(" : ")
-                  .append(escapeHtml(String.valueOf(ac.getValue())))
-                  .append("</td></tr>");
-            }
-            sb.append("</table></td></tr>");
-        }
-
-        if (rowsPreviewHtml != null && !rowsPreviewHtml.isEmpty()) {
-            sb.append("<tr><td style=\"padding:6px 0\"><div style=\"overflow:auto;\">")
-              .append(rowsPreviewHtml.replaceFirst("<table", "<table dir=\"ltr\""))
-              .append("</div></td></tr>");
-        }
-
-        sb.append("<tr><td style=\"padding-top:12px;border-top:1px solid #e6e6e6;font-size:11px;color:#9c1b1b;\">Warning: This is an automated email. Please do not reply or forward.</td></tr>")
-          .append("</table></td></tr></table></body></html>");
-
-        return sb.toString();
     }
 
+    if (rowsPreviewHtml != null && !rowsPreviewHtml.isEmpty()) {
+        sb.append("<tr><td style=\"padding:6px 0\">")
+          .append("<table style=\"overflow:auto;\">" + rowsPreviewHtml.replaceFirst("<table", "<table dir=\"ltr\"") + "</table>")
+          .append("</td></tr>");
+    }
+
+    sb.append("<tr><td style=\"padding-top:12px;border-top:1px solid #e6e6e6;font-size:11px;color:#9c1b1b;font-family:Arial,Helvetica,sans-serif;\">Warning: This is an automated email. Please do not reply or forward.</td></tr>")
+      .append("</table>")
+      .append("</td></tr></table>")
+      .append("</body></html>");
+
+    return sb.toString();
+}
 
     private String buildFrontendStyledRowsTable(List<Map<String, Object>> rows) {
         StringBuilder sb = new StringBuilder(8192);

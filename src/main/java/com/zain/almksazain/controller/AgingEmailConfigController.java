@@ -14,6 +14,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.ResponseEntity;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.ZoneId;
@@ -290,7 +291,7 @@ public class AgingEmailConfigController {
         schedulerService.cancelScheduled(cfg.getId());
         return ResponseEntity.ok(cfg);
     }
-
+      @Transactional
     @DeleteMapping("/aging-email-config/{id}")
     public ResponseEntity<?> delete(@PathVariable Long id) {
         Optional<AgingEmailConfig> o = configRepo.findById(id);

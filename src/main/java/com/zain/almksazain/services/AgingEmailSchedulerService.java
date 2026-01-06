@@ -69,118 +69,142 @@ public class AgingEmailSchedulerService implements DisposableBean {
     }
 
 
-    @Transactional
-    public synchronized void scheduleConfig(AgingEmailConfig cfg, boolean persistMetadata) {
-        if (cfg == null) return;
-        // cancel any existing
-        cancelScheduled(cfg.getId());
+@Transactional
+public synchronized void scheduleConfig(AgingEmailConfig cfg, boolean persistMetadata) {
+    if (cfg == null || cfg.getId() == null) return;
 
-        if (!cfg.isEnabled()) {
-            logger.info("Config {} (id={}) is disabled; skipping schedule", cfg.getJobName(), cfg.getId());
-            return;
-        }
-        if (!CronUtils.isValidCron(cfg.getCronExpression())) {
-            logger.warn("Invalid cron expression for config id={} cron={}", cfg.getId(), cfg.getCronExpression());
-            return;
-        }
+    final Long configId = cfg.getId();
 
-        ZoneId zone = ZoneId.of(Optional.ofNullable(cfg.getTimezone()).filter(t -> !t.isBlank()).orElse("UTC"));
+    // cancel any existing schedule
+    cancelScheduled(configId);
 
-        CronTrigger cronTrigger = new CronTrigger(cfg.getCronExpression(), zone);
-
-        Runnable task = () -> {
-            try {
-                // record lastRunTime
-                cfg.setLastRunTime(LocalDateTime.now(zone));
-                configRepo.save(cfg);
-
-                // route by targetType (approver/manager) instead of free-form jobName
-                String rawTarget = cfg.getTargetType();
-                String targetType = Optional.ofNullable(rawTarget).map(String::trim).map(String::toLowerCase).orElse("approver");
-
-                logger.info("Executing scheduled config id={} jobName='{}' targetType='{}' department='{}' userAging='{}'",
-                        cfg.getId(), cfg.getJobName(), targetType, cfg.getDepartment(), cfg.getUserAging());
-                Map<String, Object> filters = new HashMap<>();
-                if (cfg.getDepartment() != null && !cfg.getDepartment().isBlank() && !"ALL".equalsIgnoreCase(cfg.getDepartment().trim())) {
-                    // pass the full departments list (may be single or multiple) so downstream can handle it
-                    List<String> depts = cfg.getDepartmentsList();
-                    if (depts != null && !depts.isEmpty()) {
-                        filters.put("department", depts);
-                        // also provide departmentName for compatibility (first entry)
-                        filters.put("departmentName", depts.get(0));
-                    }
-                }
-                if (cfg.getUserAging() != null) {
-                    filters.put("userAging", cfg.getUserAging());
-                    // provide alias minUserAging too (in case other code expects it)
-                    filters.put("minUserAging", cfg.getUserAging());
-                }
-
-                // include optional cc/bcc from config (stored as CSV or JSON string)
-                if (cfg.getCc() != null && !cfg.getCc().isBlank()) {
-                    filters.put("cc", cfg.getCc());
-                }
-                if (cfg.getBcc() != null && !cfg.getBcc().isBlank()) {
-                    filters.put("bcc", cfg.getBcc());
-                }
-
-                if ("approver".equals(targetType)) {
-                    slaNotificationService.runStage1RemindersWithFilters(filters);
-                } else if ("manager".equals(targetType)) {
-                    slaNotificationService.runStage2EscalationsWithFilters(filters);
-                } else {
-                    // fallback: unknown targetType
-                    logger.warn("Unknown targetType='{}' for config id={}. No action taken.", rawTarget, cfg.getId());
-                }
-            } catch (Throwable t) {
-                logger.error("Error while running scheduled job id=" + cfg.getId(), t);
-            } finally {
-                // compute & persist next run (when the job runs we persist the nextRunTime/updatedAt)
-                try {
-                    Date next = cronTrigger.nextExecutionTime(new SimpleTriggerContextWrapper());
-                    if (next != null) {
-                        LocalDateTime nextRun = LocalDateTime.ofInstant(next.toInstant(), zone);
-                        cfg.setNextRunTime(nextRun);
-                    } else {
-                        cfg.setNextRunTime(null);
-                    }
-                    // Persist the computed nextRunTime so DB reflects last run's next schedule.
-                    cfg.setUpdatedAt(LocalDateTime.now(zone));
-                    configRepo.save(cfg);
-                } catch (Exception e) {
-                    logger.warn("Failed to compute nextRunTime for config id={}: {}", cfg.getId(), e.getMessage());
-                }
-            }
-        };
-
-        ScheduledFuture<?> future = taskScheduler.schedule(task, cronTrigger);
-        scheduledTasks.put(cfg.getId(), future);
-
-        // compute and optionally persist nextRunTime now
-        try {
-            Date next = cronTrigger.nextExecutionTime(new SimpleTriggerContextWrapper());
-            if (next != null) {
-                cfg.setNextRunTime(LocalDateTime.ofInstant(next.toInstant(), zone));
-            } else {
-                cfg.setNextRunTime(null);
-            }
-
-            if (persistMetadata) {
-                // Only update updatedAt and persist if requested.
-                cfg.setUpdatedAt(LocalDateTime.now(zone));
-                configRepo.save(cfg);
-            } else {
-
-                logger.debug("Scheduled job (no metadata persist) id={} jobName='{}' cron={} tz={}", cfg.getId(), cfg.getJobName(), cfg.getCronExpression(), zone);
-            }
-        } catch (Exception e) {
-            logger.warn("Failed to compute next-run for config id={}", cfg.getId(), e);
-        }
-
-        logger.info("Scheduled config id={} jobName='{}' targetType='{}' cron={} tz={}", cfg.getId(), cfg.getJobName(),
-                Optional.ofNullable(cfg.getTargetType()).map(String::trim).map(String::toLowerCase).orElse("approver"),
-                cfg.getCronExpression(), zone);
+    if (!cfg.isEnabled()) {
+        logger.info("Config {} (id={}) is disabled; skipping schedule", cfg.getJobName(), configId);
+        return;
     }
+
+    if (!CronUtils.isValidCron(cfg.getCronExpression())) {
+        logger.warn("Invalid cron expression for config id={} cron={}", configId, cfg.getCronExpression());
+        return;
+    }
+
+    ZoneId zone = ZoneId.of(
+            Optional.ofNullable(cfg.getTimezone()).filter(t -> !t.isBlank()).orElse("UTC")
+    );
+
+    CronTrigger cronTrigger = new CronTrigger(cfg.getCronExpression(), zone);
+
+    Runnable task = () -> {
+        AgingEmailConfig freshCfg = null;
+        try {
+            //  Reload entity from DB every execution
+            freshCfg = configRepo.findById(configId).orElse(null);
+            if (freshCfg == null) {
+                logger.info("Config id={} no longer exists. Cancelling scheduled task.", configId);
+                cancelScheduled(configId);
+                return;
+            }
+
+            freshCfg.setLastRunTime(LocalDateTime.now(zone));
+            configRepo.save(freshCfg);
+
+            String targetType = Optional.ofNullable(freshCfg.getTargetType())
+                    .map(String::trim)
+                    .map(String::toLowerCase)
+                    .orElse("approver");
+
+            logger.info(
+                    "Executing scheduled config id={} jobName='{}' targetType='{}'",
+                    freshCfg.getId(),
+                    freshCfg.getJobName(),
+                    targetType
+            );
+
+            Map<String, Object> filters = new HashMap<>();
+
+            if (freshCfg.getDepartment() != null
+                    && !freshCfg.getDepartment().isBlank()
+                    && !"ALL".equalsIgnoreCase(freshCfg.getDepartment().trim())) {
+
+                List<String> depts = freshCfg.getDepartmentsList();
+                if (depts != null && !depts.isEmpty()) {
+                    filters.put("department", depts);
+                    filters.put("departmentName", depts.get(0));
+                }
+            }
+
+            if (freshCfg.getUserAging() != null) {
+                filters.put("userAging", freshCfg.getUserAging());
+                filters.put("minUserAging", freshCfg.getUserAging());
+            }
+
+            if (freshCfg.getCc() != null && !freshCfg.getCc().isBlank()) {
+                filters.put("cc", freshCfg.getCc());
+            }
+            if (freshCfg.getBcc() != null && !freshCfg.getBcc().isBlank()) {
+                filters.put("bcc", freshCfg.getBcc());
+            }
+
+            if ("approver".equals(targetType)) {
+                slaNotificationService.runStage1RemindersWithFilters(filters);
+            } else if ("manager".equals(targetType)) {
+                slaNotificationService.runStage2EscalationsWithFilters(filters);
+            } else {
+                logger.warn("Unknown targetType='{}' for config id={}", targetType, configId);
+            }
+
+        } catch (Throwable t) {
+            logger.error("Error while running scheduled job id=" + configId, t);
+        } finally {
+            try {
+                if (freshCfg == null) return;
+
+                Date next = cronTrigger.nextExecutionTime(new SimpleTriggerContextWrapper());
+                freshCfg.setNextRunTime(
+                        next != null
+                                ? LocalDateTime.ofInstant(next.toInstant(), zone)
+                                : null
+                );
+
+                freshCfg.setUpdatedAt(LocalDateTime.now(zone));
+                configRepo.save(freshCfg);
+
+            } catch (Exception e) {
+                logger.warn("Failed to compute nextRunTime for config id={}: {}", configId, e.getMessage());
+            }
+        }
+    };
+
+    ScheduledFuture<?> future = taskScheduler.schedule(task, cronTrigger);
+    scheduledTasks.put(configId, future);
+
+    // persist initial nextRunTime safely
+    try {
+        Date next = cronTrigger.nextExecutionTime(new SimpleTriggerContextWrapper());
+        cfg.setNextRunTime(
+                next != null
+                        ? LocalDateTime.ofInstant(next.toInstant(), zone)
+                        : null
+        );
+
+        if (persistMetadata) {
+            cfg.setUpdatedAt(LocalDateTime.now(zone));
+            configRepo.save(cfg);
+        }
+
+    } catch (Exception e) {
+        logger.warn("Failed to compute initial nextRunTime for config id={}", configId, e);
+    }
+
+    logger.info(
+            "Scheduled config id={} jobName='{}' targetType='{}' cron={} tz={}",
+            configId,
+            cfg.getJobName(),
+            Optional.ofNullable(cfg.getTargetType()).map(String::trim).map(String::toLowerCase).orElse("approver"),
+            cfg.getCronExpression(),
+            zone
+    );
+}
 
     public synchronized void cancelScheduled(Long configId) {
         if (configId == null) return;
