@@ -39,7 +39,7 @@ public class AgingReportController {
    @PostMapping(value = "/reports/v2/agingReport", produces = "application/json")
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
     public ResponseEntity<?> getAgingReports(@RequestBody String req) {
-        logger.info("Received request for /api/reports/agingReport: {}", req);
+        logger.info("Received request for agingReport: {}", req);
 
         JsonObject obj;
         try {
