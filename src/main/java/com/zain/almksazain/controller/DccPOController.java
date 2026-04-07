@@ -36,6 +36,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
@@ -49,6 +50,16 @@ import java.util.stream.Collectors;
 public class DccPOController {
 
     private static final Logger logger = LogManager.getLogger(DccPOController.class);
+
+
+    // Configuration constants for export optimization
+    private static final int MAX_EXPORT_RECORDS = 250000; // Configurable limit
+    private static final int MAX_CONCURRENT_EXPORTS = 3; // Prevent resource exhaustion
+    private static final long EXPORT_TIMEOUT_MS = 120000L; // 2 minutes
+    private static final int EXCEL_WINDOW_SIZE = 100; // SXSSF memory window
+
+    // Throttling mechanism
+    private final Semaphore exportSemaphore = new Semaphore(MAX_CONCURRENT_EXPORTS);
 
     @Autowired
     private DccPOService dccPOService;
@@ -1245,401 +1256,380 @@ public class DccPOController {
     }
     @PostMapping(value = "/export-combined-view", produces = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     public DeferredResult<ResponseEntity<byte[]>> exportDccPOCombinedViewToExcelV2(@RequestBody Map<String, Object> request) {
-        DeferredResult<ResponseEntity<byte[]>> deferredResult = new DeferredResult<>(120000L); // 2 minutes timeout for V2
+        DeferredResult<ResponseEntity<byte[]>> deferredResult = new DeferredResult<>(EXPORT_TIMEOUT_MS);
 
-        // Extract parameters safely
-        Object supplierIdObj = request.get("supplierId");
-        String supplierId = (supplierIdObj != null) ? supplierIdObj.toString() : "0";
-
-        Object pendingApproversObj = request.get("pendingApprovers");
-        String pendingApprovers = (pendingApproversObj != null) ? pendingApproversObj.toString() : null;
-
-        Object columnNameObj = request.get("columnName");
-        String columnName = (columnNameObj != null) ? columnNameObj.toString() : null;
-
-        Object searchQueryObj = request.get("searchQuery");
-        String searchQuery = (searchQueryObj != null) ? searchQueryObj.toString() : null;
-
-        Object operatorObj = request.get("operator");
-        String operator = (operatorObj != null) ? operatorObj.toString() : null;
-
-        // ===== NEW: Extract additional field filters OUTSIDE lambda (same as filter endpoint) =====
-        final Map<String, String> fieldFilters = new HashMap<>();
-
-        // String filters (exact match - case-insensitive)
-        if (request.containsKey("dccPoNumber") && !request.get("dccPoNumber").toString().trim().isEmpty()) {
-            fieldFilters.put("dccPoNumber", request.get("dccPoNumber").toString().trim());
+        // Check concurrent export limit
+        if (!exportSemaphore.tryAcquire()) {
+            logger.warn("Export request rejected - too many concurrent exports");
+            deferredResult.setErrorResult(ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                    .body("Too many concurrent exports in progress. Please try again in a moment.".getBytes()));
+            return deferredResult;
         }
 
-        if (request.containsKey("newProjectName") && !request.get("newProjectName").toString().trim().isEmpty()) {
-            fieldFilters.put("newProjectName", request.get("newProjectName").toString().trim());
-        }
+        try {
+            // Extract and validate parameters
+            ExportParameters params = extractParameters(request);
 
-        if (request.containsKey("dccStatus") && !request.get("dccStatus").toString().trim().isEmpty()) {
-            fieldFilters.put("dccStatus", request.get("dccStatus").toString().trim());
-        }
+            logger.info("Starting export with filters: {}", params.fieldFilters.keySet());
 
-        if (request.containsKey("dccAcceptanceType") && !request.get("dccAcceptanceType").toString().trim().isEmpty()) {
-            fieldFilters.put("dccAcceptanceType", request.get("dccAcceptanceType").toString().trim());
-        }
+            // Fetch data with database-level filtering
+            CompletableFuture<List<DccPOCombinedViewDTO>> future =
+                    dccPOExportService.getAllDccPOForExportV2(
+                            params.supplierId,
+                            params.pendingApprovers,
+                            params.columnName,
+                            params.searchQuery,
+                            params.operator,
+                            params.fieldFilters,
+                            params.createdDateStart,
+                            params.createdDateEnd,
+                            params.approvedDateStart,
+                            params.approvedDateEnd,
+                            MAX_EXPORT_RECORDS // Pass limit to service
+                    );
 
-        if (request.containsKey("vendorName") && !request.get("vendorName").toString().trim().isEmpty()) {
-            fieldFilters.put("vendorName", request.get("vendorName").toString().trim());
-        }
-
-        if (request.containsKey("vendorNumber") && !request.get("vendorNumber").toString().trim().isEmpty()) {
-            fieldFilters.put("vendorNumber", request.get("vendorNumber").toString().trim());
-        }
-
-        if (request.containsKey("createdByName") && !request.get("createdByName").toString().trim().isEmpty()) {
-            fieldFilters.put("createdByName", request.get("createdByName").toString().trim());
-        }
-
-        if (request.containsKey("createdBy") && !request.get("createdBy").toString().trim().isEmpty()) {
-            fieldFilters.put("createdByName", request.get("createdBy").toString().trim());
-        }
-
-        // Support "recordNo" (from response) AND "dccRecordNo" (internal)
-        if (request.containsKey("recordNo") && !request.get("recordNo").toString().trim().isEmpty()) {
-            try {
-                fieldFilters.put("dccRecordNo", request.get("recordNo").toString().trim());
-            } catch (NumberFormatException e) {
-                logger.warn("Invalid recordNo format: {}", request.get("recordNo"));
-            }
-        }
-
-        if (request.containsKey("dccRecordNo") && !request.get("dccRecordNo").toString().trim().isEmpty()) {
-            try {
-                fieldFilters.put("dccRecordNo", request.get("dccRecordNo").toString().trim());
-            } catch (NumberFormatException e) {
-                logger.warn("Invalid dccRecordNo format: {}", request.get("dccRecordNo"));
-            }
-        }
-
-        if (request.containsKey("approvalCount") && !request.get("approvalCount").toString().trim().isEmpty()) {
-            try {
-                fieldFilters.put("approvalCount", request.get("approvalCount").toString().trim());
-            } catch (NumberFormatException e) {
-                logger.warn("Invalid approvalCount format: {}", request.get("approvalCount"));
-            }
-        }
-
-        // Date range filters
-        final String createdDateStart = request.containsKey("createdDateStart") ?
-                request.get("createdDateStart").toString().trim() : "";
-        final String createdDateEnd = request.containsKey("createdDateEnd") ?
-                request.get("createdDateEnd").toString().trim() : "";
-        final String approvedDateStart = request.containsKey("approvedDateStart") ?
-                request.get("approvedDateStart").toString().trim() : "";
-        final String approvedDateEnd = request.containsKey("approvedDateEnd") ?
-                request.get("approvedDateEnd").toString().trim() : "";
-        // ===== END NEW =====
-
-        CompletableFuture<List<DccPOCombinedViewDTO>> future = dccPOExportService.getAllDccPOForExportV2(
-                supplierId, pendingApprovers, columnName, searchQuery, operator);
-
-        future.thenAccept(data -> {
-            try {
-                // ===== NEW: Apply additional filters in memory (same as filter endpoint) =====
-                SimpleDateFormat sdf = new SimpleDateFormat("d-MMM-yyyy", Locale.ENGLISH);
-
-                List<DccPOCombinedViewDTO> filteredData = data.stream()
-                        .filter(dto -> {
-                            // Apply field filters
-                            for (Map.Entry<String, String> entry : fieldFilters.entrySet()) {
-                                String field = entry.getKey();
-                                String value = entry.getValue().toLowerCase();
-
-                                switch (field) {
-                                    case "dccRecordNo":
-                                        if (dto.getDccRecordNo() != null &&
-                                                !dto.getDccRecordNo().toString().equals(value)) {
-                                            return false;
-                                        }
-                                        break;
-                                    case "dccPoNumber":
-                                        if (dto.getDccPoNumber() == null ||
-                                                !dto.getDccPoNumber().toLowerCase().equals(value)) {
-                                            return false;
-                                        }
-                                        break;
-                                    case "newProjectName":
-                                        if (dto.getNewProjectName() == null ||
-                                                !dto.getNewProjectName().toLowerCase().equals(value)) {
-                                            return false;
-                                        }
-                                        break;
-                                    case "dccStatus":
-                                        if (dto.getDccStatus() == null ||
-                                                !dto.getDccStatus().toLowerCase().equals(value)) {
-                                            return false;
-                                        }
-                                        break;
-                                    case "dccAcceptanceType":
-                                        if (dto.getDccAcceptanceType() == null ||
-                                                !dto.getDccAcceptanceType().toLowerCase().equals(value)) {
-                                            return false;
-                                        }
-                                        break;
-                                    case "vendorName":
-                                        if (dto.getVendorName() == null ||
-                                                !dto.getVendorName().toLowerCase().equals(value)) {
-                                            return false;
-                                        }
-                                        break;
-                                    case "vendorNumber":
-                                        if (dto.getVendorNumber() == null ||
-                                                !dto.getVendorNumber().toLowerCase().equals(value)) {
-                                            return false;
-                                        }
-                                        break;
-                                    case "createdByName":
-                                        if (dto.getCreatedByName() == null ||
-                                                !dto.getCreatedByName().toLowerCase().equals(value)) {
-                                            return false;
-                                        }
-                                        break;
-                                    case "supplierId":
-                                        if (dto.getSupplierId() == null ||
-                                                !dto.getSupplierId().toLowerCase().equals(value)) {
-                                            return false;
-                                        }
-                                        break;
-                                    case "approvalCount":
-                                        if (dto.getApprovalCount() != null &&
-                                                !dto.getApprovalCount().toString().equals(value)) {
-                                            return false;
-                                        }
-                                        break;
-                                }
-                            }
-
-                            // Apply date range filters
-                            try {
-                                if (!createdDateStart.isEmpty() || !createdDateEnd.isEmpty()) {
-                                    if (dto.getDccCreatedDate() != null) {
-                                        Date dccDate = sdf.parse(dto.getDccCreatedDate());
-                                        if (!createdDateStart.isEmpty()) {
-                                            Date startDate = sdf.parse(createdDateStart);
-                                            if (dccDate.before(startDate)) return false;
-                                        }
-                                        if (!createdDateEnd.isEmpty()) {
-                                            Date endDate = sdf.parse(createdDateEnd);
-                                            if (dccDate.after(endDate)) return false;
-                                        }
-                                    }
-                                }
-
-                                if (!approvedDateStart.isEmpty() || !approvedDateEnd.isEmpty()) {
-                                    if (dto.getDateApproved() != null) {
-                                        Date approvedDate = sdf.parse(dto.getDateApproved());
-                                        if (!approvedDateStart.isEmpty()) {
-                                            Date startDate = sdf.parse(approvedDateStart);
-                                            if (approvedDate.before(startDate)) return false;
-                                        }
-                                        if (!approvedDateEnd.isEmpty()) {
-                                            Date endDate = sdf.parse(approvedDateEnd);
-                                            if (approvedDate.after(endDate)) return false;
-                                        }
-                                    }
-                                }
-                            } catch (ParseException e) {
-                                logger.warn("Error parsing dates for filtering", e);
-                            }
-
-                            return true;
-                        })
-                        .collect(Collectors.toList());
-
-                logger.info("Export filter applied: {} records after filtering (from {} original)",
-                        filteredData.size(), data.size());
-                // ===== END NEW =====
-
-                // Group by dccRecordNo to create hierarchical structure
-                Map<Long, List<DccPOCombinedViewDTO>> groupedByDccRecordNo = filteredData.stream()
-                        .collect(Collectors.groupingBy(DccPOCombinedViewDTO::getDccRecordNo));
-
-                // Sort the entire data list descending by Approval Count, then DccRecordNo (before grouping affects iteration)
-                filteredData.sort(Comparator.comparing(DccPOCombinedViewDTO::getApprovalCount, Comparator.reverseOrder())
-                        .thenComparing(DccPOCombinedViewDTO::getDccRecordNo, Comparator.reverseOrder())
-                        .thenComparing(DccPOCombinedViewDTO::getLineNumber, Comparator.reverseOrder()));
-
-                // Re-group after sorting to preserve order in lists
-                groupedByDccRecordNo = filteredData.stream()
-                        .collect(Collectors.groupingBy(DccPOCombinedViewDTO::getDccRecordNo, LinkedHashMap::new, Collectors.toList()));
-
-                // Create Excel workbook with streaming for large data
-                SXSSFWorkbook workbook = new SXSSFWorkbook(100); // Keep 100 rows in memory
-                Sheet sheet = workbook.createSheet("DCC PO Data");
-
-                // Create date cell style (reusable) - Use CreationHelper for XSSF/SXSSF
-                CreationHelper createHelper = workbook.getCreationHelper();
-                CellStyle dateStyle = workbook.createCellStyle();
-                dateStyle.setDataFormat(createHelper.createDataFormat().getFormat("MM/dd/yyyy")); // Adjust format as needed (e.g., "dd/MM/yyyy")
-
-                // FIXED: Date formatter for parsing strings (matches DTO format: "d-MMM-yyyy" e.g., "28-Sep-2025")
-                SimpleDateFormat dateFormatter = new SimpleDateFormat("d-MMM-yyyy", Locale.ENGLISH); // Locale.ENGLISH ensures consistent MMM parsing
-
-                CellStyle dateOnlyStyle = workbook.createCellStyle();
-                dateOnlyStyle.setDataFormat(createHelper.createDataFormat().getFormat("dd-MM-yyyy"));
-
-                CellStyle headerStyle = workbook.createCellStyle();
-                Font headerFont = workbook.createFont();
-                headerFont.setBold(true);
-                headerFont.setColor(IndexedColors.BLACK.getIndex());
-                headerStyle.setFont(headerFont);
-
-                // Create header row
-                Row headerRow = sheet.createRow(0);
-                String[] columnHeaders = {
-                        "Request No", "PO Number", "Project Name", "Acceptance Type", "Status", "Created Date", "Approval Date",
-                        "Vendor", "Created By", "Approval Count", "Pending Approvers", "User Aging", "Total Aging", "Vendor Comment",
-                        "Last Approver Comment", "PO Line Number", "UPL Line Number", "Serial Number", "PO Item Code", "Actual Item Code",
-                        "UPL Item Code", "PO Acceptance Qty", "PO Line Description", "UPL Line Description", "PO Pending Qty",
-                        "Acceptance Qty", "Location", "Scope of Work", "In Service Date", "Link ID", "TAG Number", "Remarks"
-                };
-
-                for (int i = 0; i < columnHeaders.length; i++) {
-                    Cell cell = headerRow.createCell(i);
-                    cell.setCellValue(columnHeaders[i]);
-                    cell.setCellStyle(headerStyle);
+            future.thenAccept(data -> {
+                try {
+                    processExportData(data, params, deferredResult);
+                } finally {
+                    exportSemaphore.release(); // Always release permit
                 }
+            }).exceptionally(throwable -> {
+                exportSemaphore.release(); // Release on error
+                handleExportError(throwable, deferredResult);
+                return null;
+            });
 
-                // Populate data rows - use firstRecord for parent fields, dto for line fields
-                int rowNum = 1;
-                for (Map.Entry<Long, List<DccPOCombinedViewDTO>> entry : groupedByDccRecordNo.entrySet()) {
-                    DccPOCombinedViewDTO firstRecord = entry.getValue().get(0);
-                    for (DccPOCombinedViewDTO dto : entry.getValue()) {
-                        Row row = sheet.createRow(rowNum++);
-                        int col = 0;
-                        // Parent fields from firstRecord
-                        row.createCell(col++).setCellValue(firstRecord.getDccRecordNo() != null ? firstRecord.getDccRecordNo().toString() : "");
-                        row.createCell(col++).setCellValue(firstRecord.getDccPoNumber());
-                        row.createCell(col++).setCellValue(firstRecord.getProjectName());
-                        row.createCell(col++).setCellValue(firstRecord.getDccAcceptanceType());
-                        row.createCell(col++).setCellValue(firstRecord.getDccStatus());
-
-                        Cell createdDateCell = row.createCell(col++);
-                        String dccCreatedDateStr = firstRecord.getDccCreatedDate();
-                        if (dccCreatedDateStr != null && !dccCreatedDateStr.isEmpty()) {
-                            try {
-                                Date dccCreatedDate = dateFormatter.parse(dccCreatedDateStr);
-                                createdDateCell.setCellValue(dccCreatedDate);
-                                createdDateCell.setCellStyle(dateOnlyStyle); // Use dd-MM-yyyy style
-                            } catch (ParseException e) {
-                                logger.warn("Failed to parse Created Date '{}': {}", dccCreatedDateStr, e.getMessage());
-                                createdDateCell.setCellValue(dccCreatedDateStr); // Fallback to string
-                            }
-                        } else {
-                            createdDateCell.setCellValue("");
-                        }
-                        // Date: Date Approved (parse from String)
-                        Cell dateApprovedCell = row.createCell(col++);
-                        String dateApprovedStr = firstRecord.getDateApproved();
-                        if (dateApprovedStr != null && !dateApprovedStr.isEmpty()) {
-                            try {
-                                Date dateApproved = dateFormatter.parse(dateApprovedStr);
-                                dateApprovedCell.setCellValue(dateApproved);
-                                dateApprovedCell.setCellStyle(dateOnlyStyle); // Use dd-MM-yyyy style
-                            } catch (ParseException e) {
-                                logger.warn("Failed to parse Date Approved '{}': {}", dateApprovedStr, e.getMessage());
-                                dateApprovedCell.setCellValue(dateApprovedStr); // Fallback to string
-                            }
-                        } else {
-                            dateApprovedCell.setCellValue("");
-                        }
-
-                        row.createCell(col++).setCellValue(firstRecord.getVendorName());
-                        row.createCell(col++).setCellValue(firstRecord.getCreatedBy());
-                        row.createCell(col++).setCellValue(firstRecord.getApprovalCount() != null ? firstRecord.getApprovalCount() : 0);
-                        row.createCell(col++).setCellValue(firstRecord.getPendingApprovers());
-                        row.createCell(col++).setCellValue(firstRecord.getUserAging());
-                        row.createCell(col++).setCellValue(firstRecord.getTotalAging());
-                        row.createCell(col++).setCellValue(firstRecord.getVendorComment());
-                        row.createCell(col++).setCellValue(firstRecord.getApproverComment());
-                        row.createCell(col++).setCellValue(dto.getLineNumber());
-                        row.createCell(col++).setCellValue(dto.getUplLineNumber());
-                        row.createCell(col++).setCellValue(dto.getLnProductSerialNo());
-                        row.createCell(col++).setCellValue(dto.getItemPartNumber());
-                        row.createCell(col++).setCellValue(dto.getActualItemCode());
-                        row.createCell(col++).setCellValue(dto.getUplLineItemCode());
-                        row.createCell(col++).setCellValue(dto.getpoAcceptanceQty() != null ? dto.getpoAcceptanceQty() : 0);
-                        row.createCell(col++).setCellValue(dto.getPoLineDescription());
-                        row.createCell(col++).setCellValue(dto.getUplLineDescription());
-                        row.createCell(col++).setCellValue(dto.getPoPendingQuantity());
-                        row.createCell(col++).setCellValue(dto.getLnDeliveredQty());
-//row.createCell(col++).setCellValue(dto.getPoOrderQuantity());
-                        row.createCell(col++).setCellValue(dto.getLnLocationName());
-                        row.createCell(col++).setCellValue(dto.getLnScopeOfWork());
-
-// Date: In-Service Date (parse from String)
-                        Cell inserviceDateCell = row.createCell(col++);
-                        String inserviceDateStr = dto.getLnInserviceDate();
-                        if (inserviceDateStr != null && !inserviceDateStr.isEmpty()) {
-                            try {
-                                Date inserviceDate = dateFormatter.parse(inserviceDateStr);
-                                inserviceDateCell.setCellValue(inserviceDate);
-                                inserviceDateCell.setCellStyle(dateOnlyStyle); // Use dd-MM-yyyy style
-                            } catch (ParseException e) {
-                                logger.warn("Failed to parse In-Service Date '{}': {}", inserviceDateStr, e.getMessage());
-                                inserviceDateCell.setCellValue(inserviceDateStr); // Fallback to string
-                            }
-                        } else {
-                            inserviceDateCell.setCellValue("");
-                        }
-
-                        row.createCell(col++).setCellValue(dto.getLinkId() != null ? String.valueOf(dto.getLinkId()) : "");
-                        row.createCell(col++).setCellValue(dto.getTagNumber());
-                        row.createCell(col++).setCellValue(dto.getLnRemarks());
-
-
-//The following has been commented as they are not required in the export template
-//row.createCell(col++).setCellValue(firstRecord.getDccVendorEmail());
-//row.createCell(col++).setCellValue(firstRecord.getNewProjectName());
-//row.createCell(col++).setCellValue(firstRecord.getDccCurrency());
-//row.createCell(col++).setCellValue(firstRecord.getDccId() != null ? firstRecord.getDccId().toString() : "");
-//row.createCell(col++).setCellValue(firstRecord.getPoId());
-//row.createCell(col++).setCellValue(firstRecord.getProjectName());
-//row.createCell(col++).setCellValue(firstRecord.getSupplierId());
-//row.createCell(col++).setCellValue(firstRecord.getVendorNumber());
-// Line fields from dto
-//row.createCell(col++).setCellValue(dto.getLnRecordNo() != null ? dto.getLnRecordNo().toString() : "");
-//row.createCell(col++).setCellValue(dto.getLnProductName());
-//row.createCell(col++).setCellValue(dto.getLnDeliveredQty() != null ? dto.getLnDeliveredQty() : 0);
-//row.createCell(col++).setCellValue(dto.getLnUnitPrice());
-//row.createCell(col++).setCellValue(dto.getPOLineAcceptanceQty());
-//row.createCell(col++).setCellValue(dto.getUplLineQuantity() != null ? dto.getUplLineQuantity() : 0);
-//row.createCell(col++).setCellValue(dto.getUnitOfMeasure());
-//row.createCell(col++).setCellValue(dto.getActiveOrPassive());
-//row.createCell(col++).setCellValue(dto.getUplPendingQuantity());
-                    }
-                }
-
-                // Write to byte array
-                ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                workbook.write(baos);
-                workbook.dispose(); // Flush and close temp files for SXSSF
-                workbook.close();
-
-                // Set response headers and return
-                HttpHeaders responseHeaders = new HttpHeaders();
-                responseHeaders.add("Content-Disposition", "attachment; filename=dcc_po_export_v2.xlsx");
-                deferredResult.setResult(new ResponseEntity<>(baos.toByteArray(), responseHeaders, HttpStatus.OK));
-                logger.info("Successfully exported Excel V2 file with {} parent records and {} total rows", groupedByDccRecordNo.size(), filteredData.size());
-            } catch (Exception ex) {
-                logger.error("Error generating Excel V2 file", ex);
-                deferredResult.setErrorResult(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                        .body(("Error generating Excel V2: " + ex.getMessage()).getBytes()));
-            }
-        }).exceptionally(throwable -> {
-            logger.error("Error processing DCC PO export V2 request", throwable);
-            deferredResult.setErrorResult(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(("Error V2: " + throwable.getCause().getMessage()).getBytes()));
-            return null;
-        });
+        } catch (Exception e) {
+            exportSemaphore.release(); // Release on validation error
+            logger.error("Error validating export request", e);
+            deferredResult.setErrorResult(ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(("Invalid request: " + e.getMessage()).getBytes()));
+        }
 
         return deferredResult;
     }
+
+    // Extract and validate request parameters
+    private ExportParameters extractParameters(Map<String, Object> request) {
+        ExportParameters params = new ExportParameters();
+
+        // Basic parameters
+        params.supplierId = getStringParam(request, "supplierId", "0");
+        params.pendingApprovers = getStringParam(request, "pendingApprovers", null);
+        params.columnName = getStringParam(request, "columnName", null);
+        params.searchQuery = getStringParam(request, "searchQuery", null);
+        params.operator = getStringParam(request, "operator", null);
+
+        // Build field filters
+        params.fieldFilters = buildFieldFilters(request);
+
+        // Date range filters (extract once, parse later if needed)
+        params.createdDateStart = getStringParam(request, "createdDateStart", "");
+        params.createdDateEnd = getStringParam(request, "createdDateEnd", "");
+        params.approvedDateStart = getStringParam(request, "approvedDateStart", "");
+        params.approvedDateEnd = getStringParam(request, "approvedDateEnd", "");
+
+        return params;
+    }
+
+    // Build field filters from request
+    private Map<String, String> buildFieldFilters(Map<String, Object> request) {
+        Map<String, String> filters = new HashMap<>();
+
+        String[] filterFields = {
+                "dccPoNumber", "newProjectName", "dccStatus", "dccAcceptanceType",
+                "vendorName", "vendorNumber", "createdByName", "createdBy",
+                "recordNo", "dccRecordNo", "approvalCount"
+        };
+
+        for (String field : filterFields) {
+            String value = getStringParam(request, field, null);
+            if (value != null && !value.isEmpty()) {
+                // Normalize field names
+                if ("recordNo".equals(field)) {
+                    filters.put("dccRecordNo", value);
+                } else if ("createdBy".equals(field)) {
+                    filters.put("createdByName", value);
+                } else {
+                    filters.put(field, value);
+                }
+            }
+        }
+
+        return filters;
+    }
+
+    // Process and export data
+    private void processExportData(List<DccPOCombinedViewDTO> data,
+                                   ExportParameters params,
+                                   DeferredResult<ResponseEntity<byte[]>> deferredResult) {
+        try {
+            // Validate data size
+            if (data.isEmpty()) {
+                logger.warn("No data found for export with given filters");
+                deferredResult.setErrorResult(ResponseEntity.status(HttpStatus.NO_CONTENT)
+                        .body("No data found matching the specified filters".getBytes()));
+                return;
+            }
+
+            if (data.size() > MAX_EXPORT_RECORDS) {
+                logger.warn("Export would return {} records, exceeding limit of {}",
+                        data.size(), MAX_EXPORT_RECORDS);
+                deferredResult.setErrorResult(ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                        .body(String.format("Export would return %d records. Maximum allowed is %d. Please add more filters.",
+                                data.size(), MAX_EXPORT_RECORDS).getBytes()));
+                return;
+            }
+
+            logger.info("Processing {} records for export", data.size());
+
+            // Single-pass sort and group (data already filtered by database)
+            List<DccPOCombinedViewDTO> sortedData = data.stream()
+                    .sorted(Comparator
+                            .comparing(DccPOCombinedViewDTO::getDccRecordNo,
+                                    Comparator.nullsLast(Comparator.reverseOrder())) // Request No DESC
+                            .thenComparing(DccPOCombinedViewDTO::getApprovalCount,
+                                    Comparator.nullsLast(Comparator.reverseOrder())) // Approval Count DESC
+                            .thenComparing(DccPOCombinedViewDTO::getLineNumber,
+                                    Comparator.nullsLast(Comparator.reverseOrder())) // Line Number DESC
+                    )
+                    .collect(Collectors.toList());
+
+
+            // Group while preserving sort order
+            Map<Long, List<DccPOCombinedViewDTO>> groupedByDccRecordNo = sortedData.stream()
+                    .collect(Collectors.groupingBy(
+                            DccPOCombinedViewDTO::getDccRecordNo,
+                            LinkedHashMap::new,
+                            Collectors.toList()));
+
+            logger.info("Grouped into {} unique DCC records", groupedByDccRecordNo.size());
+
+            // Generate Excel file
+            byte[] excelBytes = generateExcelFile(groupedByDccRecordNo, sortedData.size());
+
+            // Return response
+            HttpHeaders responseHeaders = new HttpHeaders();
+            responseHeaders.add("Content-Disposition", "attachment; filename=dcc_po_export_v2.xlsx");
+            responseHeaders.add("X-Total-Records", String.valueOf(sortedData.size()));
+            responseHeaders.add("X-Total-Groups", String.valueOf(groupedByDccRecordNo.size()));
+
+            deferredResult.setResult(new ResponseEntity<>(excelBytes, responseHeaders, HttpStatus.OK));
+
+            logger.info("Successfully exported {} records in {} groups",
+                    sortedData.size(), groupedByDccRecordNo.size());
+
+        } catch (Exception ex) {
+            logger.error("Error processing export data", ex);
+            deferredResult.setErrorResult(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(("Error generating Excel: " + ex.getMessage()).getBytes()));
+        }
+    }
+
+    // Generate Excel file
+    private byte[] generateExcelFile(Map<Long, List<DccPOCombinedViewDTO>> groupedData,
+                                     int totalRows) throws Exception {
+        SXSSFWorkbook workbook = new SXSSFWorkbook(EXCEL_WINDOW_SIZE);
+        try {
+            Sheet sheet = workbook.createSheet("DCC PO Data");
+
+            // Create reusable styles
+            ExcelStyles styles = createExcelStyles(workbook);
+
+            // Date formatter (reused throughout)
+            SimpleDateFormat dateFormatter = new SimpleDateFormat("d-MMM-yyyy", Locale.ENGLISH);
+
+            // Create header row
+            createHeaderRow(sheet, styles);
+
+            // Populate data rows
+            int rowNum = 1;
+            for (Map.Entry<Long, List<DccPOCombinedViewDTO>> entry : groupedData.entrySet()) {
+                DccPOCombinedViewDTO firstRecord = entry.getValue().get(0);
+
+                for (DccPOCombinedViewDTO dto : entry.getValue()) {
+                    Row row = sheet.createRow(rowNum++);
+                    populateDataRow(row, firstRecord, dto, styles, dateFormatter);
+                }
+            }
+
+            // Write to byte array
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            workbook.write(baos);
+            return baos.toByteArray();
+
+        } finally {
+            workbook.dispose(); // Clean up temp files
+            workbook.close();
+        }
+    }
+
+    // Create Excel styles (reusable)
+    private ExcelStyles createExcelStyles(SXSSFWorkbook workbook) {
+        CreationHelper createHelper = workbook.getCreationHelper();
+
+        // Header style
+        CellStyle headerStyle = workbook.createCellStyle();
+        Font headerFont = workbook.createFont();
+        headerFont.setBold(true);
+        headerFont.setColor(IndexedColors.BLACK.getIndex());
+        headerStyle.setFont(headerFont);
+
+        // Date style
+        CellStyle dateStyle = workbook.createCellStyle();
+        dateStyle.setDataFormat(createHelper.createDataFormat().getFormat("dd-MM-yyyy"));
+
+        return new ExcelStyles(headerStyle, dateStyle);
+    }
+
+    // Create header row
+    private void createHeaderRow(Sheet sheet, ExcelStyles styles) {
+        Row headerRow = sheet.createRow(0);
+        String[] columnHeaders = {
+                "Request No", "PO Number", "Project Name", "Acceptance Type", "Status",
+                "Created Date", "Approval Date", "Vendor", "Created By", "Approval Count",
+                "Pending Approvers", "User Aging", "Total Aging", "Vendor Comment",
+                "Last Approver Comment", "PO Line Number", "UPL Line Number", "Serial Number",
+                "PO Item Code", "Actual Item Code", "UPL Item Code", "PO Acceptance Qty",
+                "PO Line Description", "UPL Line Description", "PO Pending Qty",
+                "Acceptance Qty", "Location", "Scope of Work", "In Service Date",
+                "Link ID", "TAG Number", "Remarks"
+        };
+
+        for (int i = 0; i < columnHeaders.length; i++) {
+            Cell cell = headerRow.createCell(i);
+            cell.setCellValue(columnHeaders[i]);
+            cell.setCellStyle(styles.headerStyle);
+        }
+    }
+
+    // Populate a data row
+    private void populateDataRow(Row row,
+                                 DccPOCombinedViewDTO firstRecord,
+                                 DccPOCombinedViewDTO dto,
+                                 ExcelStyles styles,
+                                 SimpleDateFormat dateFormatter) {
+        int col = 0;
+
+        // Parent fields from firstRecord
+        setCellValue(row, col++, firstRecord.getDccRecordNo());
+        setCellValue(row, col++, firstRecord.getDccPoNumber());
+        setCellValue(row, col++, firstRecord.getProjectName());
+        setCellValue(row, col++, firstRecord.getDccAcceptanceType());
+        setCellValue(row, col++, firstRecord.getDccStatus());
+
+        // Date fields
+        col = setDateCell(row, col, firstRecord.getDccCreatedDate(), styles.dateStyle, dateFormatter);
+        col = setDateCell(row, col, firstRecord.getDateApproved(), styles.dateStyle, dateFormatter);
+
+        // More parent fields
+        setCellValue(row, col++, firstRecord.getVendorName());
+        setCellValue(row, col++, firstRecord.getCreatedBy());
+        setCellValue(row, col++, firstRecord.getApprovalCount() != null ? firstRecord.getApprovalCount() : 0);
+        setCellValue(row, col++, firstRecord.getPendingApprovers());
+        setCellValue(row, col++, firstRecord.getUserAging());
+        setCellValue(row, col++, firstRecord.getTotalAging());
+        setCellValue(row, col++, firstRecord.getVendorComment());
+        setCellValue(row, col++, firstRecord.getApproverComment());
+
+        // Line item fields from dto
+        setCellValue(row, col++, dto.getLineNumber());
+        setCellValue(row, col++, dto.getUplLineNumber());
+        setCellValue(row, col++, dto.getLnProductSerialNo());
+        setCellValue(row, col++, dto.getItemPartNumber());
+        setCellValue(row, col++, dto.getActualItemCode());
+        setCellValue(row, col++, dto.getUplLineItemCode());
+        setCellValue(row, col++, dto.getpoAcceptanceQty() != null ? dto.getpoAcceptanceQty() : 0);
+        setCellValue(row, col++, dto.getPoLineDescription());
+        setCellValue(row, col++, dto.getUplLineDescription());
+        setCellValue(row, col++, dto.getPoPendingQuantity());
+        setCellValue(row, col++, dto.getLnDeliveredQty());
+        setCellValue(row, col++, dto.getLnLocationName());
+        setCellValue(row, col++, dto.getLnScopeOfWork());
+
+        // In-service date
+        col = setDateCell(row, col, dto.getLnInserviceDate(), styles.dateStyle, dateFormatter);
+
+        // Final fields
+        setCellValue(row, col++, dto.getLinkId());
+        setCellValue(row, col++, dto.getTagNumber());
+        setCellValue(row, col++, dto.getLnRemarks());
+    }
+
+    // Helper: Set cell value (handles nulls and types)
+    private void setCellValue(Row row, int col, Object value) {
+        Cell cell = row.createCell(col);
+        if (value == null) {
+            cell.setCellValue("");
+        } else if (value instanceof Number) {
+            cell.setCellValue(((Number) value).doubleValue());
+        } else {
+            cell.setCellValue(value.toString());
+        }
+    }
+
+    // Helper: Set date cell (parse and format)
+    private int setDateCell(Row row, int col, String dateStr,
+                            CellStyle dateStyle, SimpleDateFormat dateFormatter) {
+        Cell cell = row.createCell(col);
+        if (dateStr != null && !dateStr.isEmpty()) {
+            try {
+                Date date = dateFormatter.parse(dateStr);
+                cell.setCellValue(date);
+                cell.setCellStyle(dateStyle);
+            } catch (ParseException e) {
+                logger.warn("Failed to parse date '{}': {}", dateStr, e.getMessage());
+                cell.setCellValue(dateStr); // Fallback to string
+            }
+        } else {
+            cell.setCellValue("");
+        }
+        return col + 1;
+    }
+
+    // Helper: Get string parameter
+    private String getStringParam(Map<String, Object> request, String key, String defaultValue) {
+        Object value = request.get(key);
+        if (value == null) return defaultValue;
+        String str = value.toString().trim();
+        return str.isEmpty() ? defaultValue : str;
+    }
+
+    // Handle export errors
+    private void handleExportError(Throwable throwable,
+                                   DeferredResult<ResponseEntity<byte[]>> deferredResult) {
+        logger.error("Error processing export request", throwable);
+        String errorMessage = throwable.getCause() != null ?
+                throwable.getCause().getMessage() : throwable.getMessage();
+        deferredResult.setErrorResult(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(("Export failed: " + errorMessage).getBytes()));
+    }
+
+    // Helper classes
+    private static class ExportParameters {
+        String supplierId;
+        String pendingApprovers;
+        String columnName;
+        String searchQuery;
+        String operator;
+        Map<String, String> fieldFilters;
+        String createdDateStart;
+        String createdDateEnd;
+        String approvedDateStart;
+        String approvedDateEnd;
+    }
+
+    private static class ExcelStyles {
+        final CellStyle headerStyle;
+        final CellStyle dateStyle;
+
+        ExcelStyles(CellStyle headerStyle, CellStyle dateStyle) {
+            this.headerStyle = headerStyle;
+            this.dateStyle = dateStyle;
+        }
+    }
+
     @PostMapping(value = "/export-combined-view-approvers", produces = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     public DeferredResult<ResponseEntity<byte[]>> exportDccPOCombinedViewApproversToExcel(@RequestBody Map<String, Object> request) {
         DeferredResult<ResponseEntity<byte[]>> deferredResult = new DeferredResult<>(120000L);
