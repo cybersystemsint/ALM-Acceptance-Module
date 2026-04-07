@@ -30,6 +30,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.gson.Gson;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonSyntaxException;
@@ -40,6 +41,7 @@ import com.zain.almksazain.repo.dccpoviewrepo;
 import com.zain.almksazain.repo.poviewrepo;
 import com.zain.almksazain.repo.tbChargeAccountRepo;
 import com.zain.almksazain.repo.uplrepo;
+import com.zain.almksazain.specs.QueryFilterBuilder;
 import com.zain.almzainksa.helper.helper;
 
 @RestController
@@ -223,179 +225,228 @@ public class ReportsController {
 
     }
 
-@PostMapping(value = "/reports/v2/acceptanceReport", produces = "application/json")
-@CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
-public Map<String, Object> acceptanceReceivingRequestReport(@RequestBody String req) {
-    JsonObject obj = new JsonParser().parse(req).getAsJsonObject();
-    String poNumber = obj.has("poNumber") ? obj.get("poNumber").getAsString() : "0";
-    String columnName = obj.has("columnName") ? obj.get("columnName").getAsString() : "";
-    String searchQuery = obj.has("searchQuery") ? obj.get("searchQuery").getAsString() : "";
+    @PostMapping(value = "/reports/v2/acceptanceReport", produces = "application/json")
+    @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
+    public Map<String, Object> acceptanceReceivingRequestReport(@RequestBody String req) {
+        JsonObject obj = new JsonParser().parse(req).getAsJsonObject();
+        String poNumber = obj.has("poNumber") ? obj.get("poNumber").getAsString() : "0";
+        String columnName = obj.has("columnName") ? obj.get("columnName").getAsString() : "";
+        String searchQuery = obj.has("searchQuery") ? obj.get("searchQuery").getAsString() : "";
 
-    jdbcTemplate.execute("SET SESSION sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''))");
+        // Defensive pagination limits
+        int page = obj.has("page") ? Math.max(0, obj.get("page").getAsInt()) : 0;
+        int size = obj.has("size") ? Math.max(1, Math.min(5000, obj.get("size").getAsInt())) : 200; // lower default
+        int offset = page * size;
 
-    String whereClause = "";
-    List<Object> params = new ArrayList<>();
+        // searchable columns map and numeric set (same as your original mapping)
+        Map<String, String> searchableColumns = new HashMap<>();
+        searchableColumns.put("requestId", "DCC.recordNo");
+        searchableColumns.put("requestStatus", "DCC.status");
+        searchableColumns.put("acceptanceType", "DCC.acceptanceType");
+        searchableColumns.put("poNumber", "DCC.poNumber");
+        searchableColumns.put("poLineNumber", "LN2.lineNumber");
+        searchableColumns.put("poPartNumber", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineItemCode ELSE HD.itemPartNumber END)");
+        searchableColumns.put("poLineDescription", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineDescription ELSE HD.poLineDescription END)");
+        searchableColumns.put("poItemSerializedStatus", "(CASE WHEN HD.serialControl = 'NO CONTROL' THEN 'NO' ELSE 'YES' END)");
+        searchableColumns.put("dccLnRecordNo", "LN2.recordNo");
+        searchableColumns.put("siteId", "LN2.locationName");
+        searchableColumns.put("siteTypeName", "siteType.siteTypeName");
+        searchableColumns.put("inServiceDate", "DATE_FORMAT(CAST(LN2.dateInService AS DATE),'%e-%b-%Y')");
+        searchableColumns.put("region", "rg.regionName");
+        searchableColumns.put("typeLookUpCode", "HD.typeLookUpCode");
+        searchableColumns.put("releaseNumber", "HD.releaseNum");
+        searchableColumns.put("dccProjectName", "HD.newProjectName");
+        searchableColumns.put("newProjectName", "HD.newProjectName");
+        searchableColumns.put("uplLineNumber", "LN2.uplLineNumber");
+        searchableColumns.put("uplPartNumber", "upl.uplLineItemCode");
+        searchableColumns.put("uplItemDescription", "upl.uplLineDescription");
+        searchableColumns.put("actualPartNumber", "LN2.actualItemCode");
+        searchableColumns.put("uplItemSerializedStatus", "upl.uplItemSerialized");
+        searchableColumns.put("serialNumber", "LN2.serialNumber");
+        searchableColumns.put("uplItemCategoryCode", "upl.zainItemCategoryCode");
+        searchableColumns.put("uplItemCategoryCodeDescription", "upl.zainItemCategoryDescription");
+        searchableColumns.put("unitPrice", "upl.poLineUnitPrice");
+        searchableColumns.put("acceptanceUplQty", "LN2.deliveredQty");
+        searchableColumns.put("acceptancePoQty", "LN2.poAcceptanceQty");
+        searchableColumns.put("totalAcceptanceAmount", "(upl.uplLineUnitPrice * LN2.deliveredQty)");
+        searchableColumns.put("vendorName", "HD.vendorName");
+        searchableColumns.put("recordNo", "DCC.recordNo");
+        searchableColumns.put("tagNumber", "LN2.tagNumber");
+        searchableColumns.put("linkId", "LN2.linkId");
+        searchableColumns.put("activeOrPassive", "upl.activeOrPassive");
+        searchableColumns.put("createdDate", "DATE_FORMAT(CAST(DCC.createdDate AS DATE),'%e-%b-%Y')");
+        searchableColumns.put("approvalDate", "DATE_FORMAT(CAST(DCC.approvedDate AS DATE),'%e-%b-%Y')");
+        searchableColumns.put("scopeOfWork", "LN2.scopeOfWork");
 
-    // Whitelist and map searchable columns to SQL with proper table aliases
-    Map<String, String> searchableColumns = new HashMap<>();
-    searchableColumns.put("requestId", "DCC.recordNo");
-    searchableColumns.put("requestStatus", "DCC.status");
-    searchableColumns.put("acceptanceType", "DCC.acceptanceType");
-    searchableColumns.put("poNumber", "DCC.poNumber");
-    searchableColumns.put("poLineNumber", "LN2.lineNumber");
-    searchableColumns.put("poPartNumber", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineItemCode ELSE HD.itemPartNumber END)");
-    searchableColumns.put("poLineDescription", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineDescription ELSE HD.poLineDescription END)");
-    searchableColumns.put("poItemSerializedStatus", "(CASE WHEN HD.serialControl = 'NO CONTROL' THEN 'NO' ELSE 'YES' END)");
-    searchableColumns.put("dccLnRecordNo", "LN2.recordNo");
-    searchableColumns.put("siteId", "LN2.locationName");
-    searchableColumns.put("siteTypeName", "siteType.siteTypeName");
-    searchableColumns.put("inServiceDate", "DATE_FORMAT(CAST(LN2.dateInService AS DATE),'%e-%b-%Y')");
-    searchableColumns.put("region", "rg.regionName");
-    searchableColumns.put("typeLookUpCode", "HD.typeLookUpCode");
-    searchableColumns.put("releaseNumber", "HD.releaseNum");
-    searchableColumns.put("dccProjectName", "HD.newProjectName");
-    searchableColumns.put("newProjectName", "HD.newProjectName");
-    searchableColumns.put("uplLineNumber", "LN2.uplLineNumber");
-    searchableColumns.put("uplPartNumber", "upl.uplLineItemCode");
-    searchableColumns.put("uplItemDescription", "upl.uplLineDescription");
-    searchableColumns.put("actualPartNumber", "LN2.actualItemCode");
-    searchableColumns.put("uplItemSerializedStatus", "upl.uplItemSerialized");
-    searchableColumns.put("serialNumber", "LN2.serialNumber");
-    searchableColumns.put("uplItemCategoryCode", "upl.zainItemCategoryCode");
-    searchableColumns.put("uplItemCategoryCodeDescription", "upl.zainItemCategoryDescription");
-    searchableColumns.put("unitPrice", "upl.poLineUnitPrice");
-    searchableColumns.put("acceptanceUplQty", "LN2.deliveredQty");
-    searchableColumns.put("acceptancePoQty", "LN2.poAcceptanceQty");
-    searchableColumns.put("totalAcceptanceAmount", "(upl.uplLineUnitPrice * LN2.deliveredQty)");
-    searchableColumns.put("vendorName", "HD.vendorName");
-    searchableColumns.put("recordNo", "DCC.recordNo");
+        Set<String> numericColumns = new HashSet<>(Arrays.asList(
+            "requestId", "poLineNumber", "uplLineNumber", "dccLnRecordNo",
+            "acceptanceUplQty", "acceptancePoQty", "unitPrice", "totalAcceptanceAmount",
+            "recordNo"
+        ));
 
-    // Define numeric columns for exact matching
-    Set<String> numericColumns = new HashSet<>(Arrays.asList(
-        "requestId", "poLineNumber", "uplLineNumber", "dccLnRecordNo", 
-        "acceptanceUplQty", "acceptancePoQty", "unitPrice", "totalAcceptanceAmount",
-        "recordNo"
-    ));
+        // Build WHERE clause (for the key-only query and the count)
+        StringBuilder where = new StringBuilder();
+        List<Object> whereParams = new ArrayList<>();
 
-    // PO Number filter
-    if (!poNumber.equalsIgnoreCase("0")) {
-        whereClause += " AND DCC.poNumber = ?";
-        params.add(poNumber);
-    }
+        if (!"0".equalsIgnoreCase(poNumber)) {
+            where.append(" AND DCC.poNumber = ?");
+            whereParams.add(poNumber);
+        }
 
-    // Dynamic column filtering
-    if (!columnName.isEmpty() && !searchQuery.isEmpty()) {
-        String sqlCol = searchableColumns.get(columnName);
-        if (sqlCol != null) {
-            if (numericColumns.contains(columnName)) {
-                // For numeric columns, use exact matching
-                if (searchQuery.contains(",")) {
-                    // Handle comma-separated values for IN clause
-                    String[] values = searchQuery.split(",");
-                    whereClause += " AND " + sqlCol + " IN (" + 
-                        String.join(",", Collections.nCopies(values.length, "?")) + ")";
-                    for (String value : values) {
-                        params.add(value.trim());
+        if (!columnName.isEmpty() && !searchQuery.isEmpty()) {
+            String sqlCol = searchableColumns.get(columnName);
+            if (sqlCol != null) {
+                if (numericColumns.contains(columnName)) {
+                    if (searchQuery.contains(",")) {
+                        String[] vals = searchQuery.split(",");
+                        where.append(" AND ").append(sqlCol).append(" IN (")
+                             .append(String.join(",", Collections.nCopies(vals.length, "?"))).append(")");
+                        for (String v : vals) whereParams.add(v.trim());
+                    } else {
+                        where.append(" AND ").append(sqlCol).append(" = ?");
+                        whereParams.add(searchQuery.trim());
                     }
                 } else {
-                    whereClause += " AND " + sqlCol + " = ?";
-                    params.add(searchQuery.trim());
+                    // Prefer collation-aware comparison instead of LOWER() to use indexes
+                    // If your database uses case-insensitive collation, you can drop LOWER()
+                    where.append(" AND ").append(sqlCol).append(" LIKE ?");
+                    whereParams.add("%" + searchQuery.trim() + "%");
                 }
-            } else {
-                // For text columns, use LIKE with case-insensitive search
-                whereClause += " AND LOWER(" + sqlCol + ") LIKE LOWER(?)";
-                params.add("%" + searchQuery.trim() + "%");
             }
         }
+
+        // Base from/joins used by both queries (only selecting keys in first query)
+        String baseFrom = " FROM tb_DCC DCC " +
+                "JOIN tb_PurchaseOrder HD ON DCC.poNumber = HD.poNumber " +
+                "JOIN tb_Category_Approval_Requests AR ON DCC.recordNo = AR.acceptanceRequestRecordNo " +
+                "JOIN tb_DCC_LN LN2 ON DCC.recordNo = LN2.dccId " +
+                "LEFT JOIN tb_PurchaseOrderUPL upl ON DCC.poNumber = upl.poNumber AND LN2.uplLineNumber = upl.uplLine AND upl.poLineNumber = LN2.lineNumber " +
+                "LEFT JOIN tb_Site site ON LN2.locationName COLLATE utf8mb4_general_ci = site.siteId COLLATE utf8mb4_general_ci " +
+                "LEFT JOIN tb_Site_Type siteType ON site.siteTypeId COLLATE utf8mb4_general_ci = siteType.recordNo COLLATE utf8mb4_general_ci " +
+                "LEFT JOIN tb_Region rg ON site.regionId COLLATE utf8mb4_general_ci = rg.recordNo COLLATE utf8mb4_general_ci " +
+                " WHERE (0 <> (CASE WHEN LENGTH(LN2.uplLineNumber) > 0 " +
+                "  THEN (LN2.uplLineNumber = upl.uplLine AND upl.poLineNumber = LN2.lineNumber AND upl.poNumber = DCC.poNumber) " +
+                "  ELSE (HD.lineNumber = LN2.lineNumber AND HD.poNumber = DCC.poNumber) END))";
+
+        // 1) Count total using a grouped-subquery that only projects keys (lighter)
+        String countSubquery = "SELECT 1 " + baseFrom + where.toString() + " GROUP BY DCC.recordNo, LN2.recordNo";
+        String countSql = "SELECT COUNT(*) FROM (" + countSubquery + ") t";
+        int totalRecords = 0;
+        try {
+            Object cnt = jdbcTemplate.queryForObject(countSql, Integer.class, whereParams.toArray());
+            totalRecords = cnt == null ? 0 : (Integer) cnt;
+        } catch (Exception e) {
+            // fallback - log and proceed with 0
+            totalRecords = 0;
+        }
+
+        // 2) Select keys for requested page (only keys, cheap)
+        String keysSql = "SELECT DCC.recordNo AS requestId, LN2.recordNo AS dccLnRecordNo " +
+                baseFrom + where.toString() + " GROUP BY DCC.recordNo, LN2.recordNo " +
+                " ORDER BY DCC.recordNo, LN2.recordNo LIMIT ? OFFSET ?";
+        List<Object> keysParams = new ArrayList<>(whereParams);
+        keysParams.add(size);
+        keysParams.add(offset);
+
+        List<Map<String, Object>> keys = jdbcTemplate.queryForList(keysSql, keysParams.toArray());
+        if (keys.isEmpty()) {
+            Map<String, Object> emptyResp = new HashMap<>();
+            emptyResp.put("data", Collections.emptyList());
+            emptyResp.put("totalRecords", totalRecords);
+            emptyResp.put("currentPage", page);
+            emptyResp.put("pageSize", size);
+            emptyResp.put("totalPages", (int) Math.ceil((double) totalRecords / size));
+            return emptyResp;
+        }
+
+        // Build WHERE for full detail fetch using the selected key pairs.
+        // Use an OR list: (DCC.recordNo = ? AND LN2.recordNo = ?) OR ...
+        StringBuilder pairWhere = new StringBuilder(" AND (");
+        List<Object> pairParams = new ArrayList<>();
+        String prefix = "";
+        for (Map<String, Object> key : keys) {
+            pairWhere.append(prefix).append("(DCC.recordNo = ? AND LN2.recordNo = ?)");
+            prefix = " OR ";
+            pairParams.add(key.get("requestId"));
+            pairParams.add(key.get("dccLnRecordNo"));
+        }
+        pairWhere.append(") ");
+
+        // 3) Fetch full rows for those keys without GROUP BY (each pair is unique)
+        String detailSql = "SELECT " +
+                "DCC.recordNo AS requestId, " +
+                "DCC.status AS requestStatus, " +
+                "DCC.acceptanceType AS acceptanceType, " +
+                "DCC.poNumber AS poNumber, " +
+                "LN2.lineNumber AS poLineNumber, " +
+                "CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineItemCode ELSE HD.itemPartNumber END AS poPartNumber, " +
+                "CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineDescription ELSE HD.poLineDescription END AS poLineDescription, " +
+                "CASE WHEN HD.serialControl = 'NO CONTROL' THEN 'NO' ELSE 'YES' END AS poItemSerializedStatus, " +
+                "'SAR' AS currency, " +
+                "upl.poLineUnitPrice AS unitPrice, " +
+                "LN2.recordNo AS dccLnRecordNo, " +
+                "LN2.locationName AS siteId, " +
+                "siteType.siteTypeName AS siteTypeName, " +
+                "DATE_FORMAT(CAST(LN2.dateInService AS DATE),'%e-%b-%Y') AS inServiceDate, " +
+                "rg.regionName AS region, " +
+                "HD.typeLookUpCode AS typeLookUpCode, " +
+                "HD.releaseNum AS releaseNumber, " +
+                "HD.newProjectName AS dccProjectName, " +
+                "HD.newProjectName AS newProjectName, " +
+                "LN2.uplLineNumber AS uplLineNumber, " +
+                "upl.uplLineItemCode AS uplPartNumber, " +
+                "upl.uplLineDescription AS uplItemDescription, " +
+                "LN2.actualItemCode AS actualPartNumber, " +
+                "upl.uplItemSerialized AS uplItemSerializedStatus, " +
+                "LN2.serialNumber AS serialNumber, " +
+                "upl.zainItemCategoryCode AS uplItemCategoryCode, " +
+                "upl.zainItemCategoryDescription AS uplItemCategoryCodeDescription, " +
+                "upl.uplLineUnitPrice AS uplLineUnitPrice, " +
+                "LN2.deliveredQty AS acceptanceUplQty, " +
+                "LN2.poAcceptanceQty AS acceptancePoQty, " +
+                "(upl.uplLineUnitPrice * LN2.deliveredQty) AS totalAcceptanceAmount, " +
+                "HD.vendorName AS vendorName, " +
+                "LN2.tagNumber AS tagNumber, " +
+                "LN2.linkId AS linkId, " +
+                "upl.activeOrPassive AS activeOrPassive, " +
+                "DATE_FORMAT(CAST(DCC.createdDate AS DATE),'%e-%b-%Y') AS createdDate, " +
+                "DATE_FORMAT(CAST(DCC.approvedDate AS DATE),'%e-%b-%Y') AS approvalDate, " +
+                "LN2.scopeOfWork AS scopeOfWork " +
+                baseFrom + pairWhere.toString() +
+                " ORDER BY DCC.recordNo, LN2.recordNo";
+
+        List<Object> detailParams = new ArrayList<>(pairParams);
+        // Run detail query
+        List<Map<String, Object>> detailRows = jdbcTemplate.queryForList(detailSql, detailParams.toArray());
+
+        // Keep original ordering by the keys list (important for consistent paging)
+        Map<String, Map<String, Object>> byPair = new LinkedHashMap<>();
+        for (Map<String, Object> row : detailRows) {
+            String key = row.get("requestId") + "-" + row.get("dccLnRecordNo");
+            byPair.put(key, row);
+        }
+
+        // Preserve the order from keys list and add incremental record numbers
+        AtomicInteger counter = new AtomicInteger(1 + offset);
+        List<Map<String, Object>> orderedResult = new ArrayList<>();
+        for (Map<String, Object> k : keys) {
+            String composite = k.get("requestId") + "-" + k.get("dccLnRecordNo");
+            Map<String, Object> r = byPair.get(composite);
+            if (r != null) {
+                r.put("recordNo", counter.getAndIncrement());
+                orderedResult.add(r);
+            }
+        }
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("data", orderedResult);
+        response.put("totalRecords", totalRecords);
+        response.put("currentPage", page);
+        response.put("pageSize", size);
+        response.put("totalPages", (int) Math.ceil((double) totalRecords / size));
+
+        return response;
     }
-
-    // Only group by tb_DCC and tb_DCC_LN unique keys
-    String groupBy = " GROUP BY DCC.recordNo, LN2.recordNo ";
-
-    // Base SQL with proper joins and conditions
-    String baseSql = " FROM tb_DCC DCC " +
-            "JOIN tb_PurchaseOrder HD ON DCC.poNumber = HD.poNumber " +
-            "JOIN tb_Category_Approval_Requests AR ON DCC.recordNo = AR.acceptanceRequestRecordNo " +
-            "JOIN tb_DCC_LN LN2 ON DCC.recordNo = LN2.dccId " +
-            "LEFT JOIN tb_PurchaseOrderUPL upl ON DCC.poNumber = upl.poNumber AND LN2.uplLineNumber = upl.uplLine AND upl.poLineNumber = LN2.lineNumber " +
-            "LEFT JOIN tb_Site site ON LN2.locationName COLLATE utf8mb4_general_ci = site.siteId COLLATE utf8mb4_general_ci " +
-            "LEFT JOIN tb_Site_Type siteType ON site.siteTypeId COLLATE utf8mb4_general_ci = siteType.recordNo COLLATE utf8mb4_general_ci " +
-            "LEFT JOIN tb_Region rg ON site.regionId COLLATE utf8mb4_general_ci = rg.recordNo COLLATE utf8mb4_general_ci " +
-            "WHERE (0 <> (CASE WHEN LENGTH(LN2.uplLineNumber) > 0 " +
-            "  THEN (LN2.uplLineNumber = upl.uplLine AND upl.poLineNumber = LN2.lineNumber AND upl.poNumber = DCC.poNumber) " +
-            "  ELSE (HD.lineNumber = LN2.lineNumber AND HD.poNumber = DCC.poNumber) END))" +
-            whereClause;
-
-    // Count query with the same grouping to get accurate total
-    String countSql = "SELECT COUNT(DISTINCT CONCAT(DCC.recordNo, '-', LN2.recordNo)) " + baseSql;
-    int totalRecords = jdbcTemplate.queryForObject(countSql, Integer.class, params.toArray());
-
-    // Pagination logic
-    // --- PAGINATION: allow 0-based page ---
-    int page = obj.has("page") ? obj.get("page").getAsInt() : 0; // default to 0 now
-    int size = obj.has("size") ? obj.get("size").getAsInt() : 20000;
-
-    page = Math.max(page, 0); // allow page 0
-    size = Math.max(size, 1);
-
-    int offset = page * size; // 0-based paging
-    String paginationSql = " LIMIT " + size + " OFFSET " + offset;
-
-
-    // Main query selecting all the required fields
-    // Use aggregate functions for non-key fields to avoid ambiguity
-    String sql = "SELECT " +
-            "DCC.recordNo AS requestId, " +
-            "MAX(DCC.status) AS requestStatus, " +
-            "MAX(DCC.acceptanceType) AS acceptanceType, " +
-            "MAX(DCC.poNumber) AS poNumber, " +
-            "MAX(LN2.lineNumber) AS poLineNumber, " +
-            "MAX(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineItemCode ELSE HD.itemPartNumber END) AS poPartNumber, " +
-            "MAX(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineDescription ELSE HD.poLineDescription END) AS poLineDescription, " +
-            "MAX(CASE WHEN HD.serialControl = 'NO CONTROL' THEN 'NO' ELSE 'YES' END) AS poItemSerializedStatus, " +
-            "'SAR' AS currency, " +
-            "MAX(upl.poLineUnitPrice) AS unitPrice, " +
-            "LN2.recordNo AS dccLnRecordNo, " +
-            "MAX(LN2.locationName) AS siteId, " +
-            "MAX(siteType.siteTypeName) AS siteTypeName, " +
-            "MAX(DATE_FORMAT(CAST(LN2.dateInService AS DATE),'%e-%b-%Y')) AS inServiceDate, " +
-            "MAX(rg.regionName) AS region, " +
-            "MAX(HD.typeLookUpCode) AS typeLookUpCode, " +
-            "MAX(HD.releaseNum) AS releaseNumber, " +
-            "MAX(HD.newProjectName) AS dccProjectName, " +
-            "MAX(HD.newProjectName) AS newProjectName, " +
-            "MAX(LN2.uplLineNumber) AS uplLineNumber, " +
-            "MAX(upl.uplLineItemCode) AS uplPartNumber, " +
-            "MAX(upl.uplLineDescription) AS uplItemDescription, " +
-            "MAX(LN2.actualItemCode) AS actualPartNumber, " +
-            "MAX(upl.uplItemSerialized) AS uplItemSerializedStatus, " +
-            "MAX(LN2.serialNumber) AS serialNumber, " +
-            "MAX(upl.zainItemCategoryCode) AS uplItemCategoryCode, " +
-            "MAX(upl.zainItemCategoryDescription) AS uplItemCategoryCodeDescription, " +
-            "MAX(upl.uplLineUnitPrice) AS uplLineUnitPrice, " +
-            "MAX(LN2.deliveredQty) AS acceptanceUplQty, " +
-            "MAX(LN2.poAcceptanceQty) AS acceptancePoQty, " +
-            "MAX(upl.uplLineUnitPrice * LN2.deliveredQty) AS totalAcceptanceAmount, " +
-            "MAX(HD.vendorName) AS vendorName " +
-            baseSql + groupBy + paginationSql;
-
-    List<Map<String, Object>> result = jdbcTemplate.queryForList(sql, params.toArray());
-
-    // Add incremental record number
-    AtomicInteger counter = new AtomicInteger(1);
-    result.forEach(row -> row.put("recordNo", counter.getAndIncrement()));
-
-    Map<String, Object> response = new HashMap<>();
-    response.put("data", result);
-    response.put("totalRecords", totalRecords);
-    response.put("currentPage", page);
-    response.put("pageSize", size);
-    response.put("totalPages", (int) Math.ceil((double) totalRecords / size));
-
-    return response;
-}
-
-
 
 @PostMapping(value = "/reports/v2/capitalizationReport", produces = "application/json")
 @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
@@ -428,7 +479,11 @@ public Map<String, Object> capitalizationReceivingReport(@RequestBody String req
 
     searchableColumns.put("quantity", "LN2.deliveredQty");
     searchableColumns.put("partNumber", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (CASE WHEN LENGTH(LN2.actualItemCode) > 0 THEN LN2.actualItemCode ELSE upl.uplLineItemCode END) ELSE HD.itemPartNumber END)");
-    searchableColumns.put("itemSerializedStatus", "(CASE WHEN HD.serialControl = 'NO CONTROL' THEN 'NO' ELSE 'YES' END)");
+        searchableColumns.put("itemSerializedStatus",
+        "(CASE " +
+            "WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('YES','Y','TRUE','1') THEN 'YES' " +
+            "WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('NO','N','FALSE','0') THEN 'NO' " +
+            "ELSE NULL END)");
     searchableColumns.put("serialNumber", "LN2.serialNumber");
     searchableColumns.put("uplItemCategoryCodeDescription", "upl.zainItemCategoryDescription");
     searchableColumns.put("faBookingAmount", "(upl.uplLineUnitPrice * LN2.deliveredQty)");
@@ -563,7 +618,10 @@ if (!isdFrom.isEmpty() && !isdTo.isEmpty()) {
 
             "LN2.deliveredQty AS quantity, " +
             "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (CASE WHEN LENGTH(LN2.actualItemCode) > 0 THEN LN2.actualItemCode ELSE upl.uplLineItemCode END) ELSE HD.itemPartNumber END) AS partNumber, " +
-            "(CASE WHEN HD.serialControl = 'NO CONTROL' THEN 'NO' ELSE 'YES' END) AS itemSerializedStatus, " +
+            "(CASE " +
+                "WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('YES','Y','TRUE','1') THEN 'YES' " +
+                "WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('NO','N','FALSE','0') THEN 'NO' " +
+                "ELSE NULL END) AS itemSerializedStatus, " +
             "LN2.serialNumber AS serialNumber, " +
             "upl.zainItemCategoryDescription AS uplItemCategoryCodeDescription, " +
             "(upl.uplLineUnitPrice * LN2.deliveredQty) AS faBookingAmount, " +
@@ -605,39 +663,91 @@ private String convertToSqlDate(String input) {
 
 
 
-    ///GET ALL CREATED CHARGE ACCOUNTS
-    @PostMapping(value = "/reports/getAllItemCodeSubstitutes", produces = "application/json")
+    ///GET ALL CREATED CHARGE ACCOUNTS  
+     @PostMapping(value = "/reports/getAllItemCodeSubstitutes", produces = "application/json")
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
     public Map<String, Object> getAllItemCodeSubstitutes(@RequestBody String req) {
-        JsonObject obj = new JsonParser().parse(req).getAsJsonObject();
-        Integer recordNo = obj.get("recordNo").getAsInt();
-        String columnName = obj.has("columnName") ? obj.get("columnName").getAsString() : "";
-        String searchQuery = obj.has("searchQuery") ? obj.get("searchQuery").getAsString() : "";
+        JsonObject obj = JsonParser.parseString(req).getAsJsonObject();
 
-        int page = obj.has("page") ? obj.get("page").getAsInt() : 1;
-        int size = obj.has("size") ? obj.get("size").getAsInt() : 20000;
+        Integer recordNo = obj.has("recordNo") && !obj.get("recordNo").isJsonNull() ? obj.get("recordNo").getAsInt() : 0;
+        String columnName = obj.has("columnName") && !obj.get("columnName").isJsonNull() ? obj.get("columnName").getAsString() : "";
+        String searchQuery = obj.has("searchQuery") && !obj.get("searchQuery").isJsonNull() ? obj.get("searchQuery").getAsString() : "";
+        String searchOperator = obj.has("searchOperator") && !obj.get("searchOperator").isJsonNull()
+                ? obj.get("searchOperator").getAsString() : null;
+
+        int page = obj.has("page") && !obj.get("page").isJsonNull() ? obj.get("page").getAsInt() : 1;
+        int size = obj.has("size") && !obj.get("size").isJsonNull() ? obj.get("size").getAsInt() : 100;
 
         page = Math.max(page, 0);
         size = Math.max(size, 0);
 
-        String paginationSql = "";
+        Map<String, String> allowedColumns = new HashMap<>();
+        allowedColumns.put("recordno", "recordNo");
+        allowedColumns.put("record_no", "recordNo");
+        allowedColumns.put("recorddatetime", "recordDateTime");
+        allowedColumns.put("record_date_time", "recordDateTime");
+        allowedColumns.put("itemcode", "itemCode");
+        allowedColumns.put("relateditemcode", "relatedItemCode");
+        allowedColumns.put("reciprocalflag", "reciprocalFlag");
+        allowedColumns.put("createdby", "createdBy");
+        allowedColumns.put("createddatetime", "createdDatetime");
+        allowedColumns.put("created_datetime", "createdDatetime");
+        allowedColumns.put("updatedby", "updatedBy");
 
-        List<Object> params = new ArrayList<>();
         String whereClause = " WHERE 1=1";
+        List<Object> params = new ArrayList<>();
 
-        if (recordNo != 0) {
+        if (recordNo != null && recordNo != 0) {
             whereClause += " AND recordNo = ?";
             params.add(recordNo);
         }
 
+        // single column search
         if (!columnName.isEmpty() && !searchQuery.isEmpty()) {
-            whereClause += " AND " + columnName + " LIKE ?";
-            params.add("%" + searchQuery + "%");
+            String colKey = columnName.trim().toLowerCase();
+            String mapped = allowedColumns.get(colKey);
+            if (mapped != null) {
+                QueryFilterBuilder.OperatorAndValues ov = new QueryFilterBuilder.OperatorAndValues();
+                ov.operator = (searchOperator != null && !searchOperator.isBlank()) ? searchOperator.trim().toLowerCase()
+                        : null;
+                ov.values = Collections.singletonList(searchQuery);
+
+                String fragment = QueryFilterBuilder.buildPredicateFragment(mapped, ov, params);
+                if (fragment != null && !fragment.isEmpty()) {
+                    whereClause += " AND (" + fragment + ")";
+                }
+            }
         }
 
-        String countScript = "SELECT COUNT(*) FROM tb_ItemCodeSubstitute" + whereClause;
-        int totalRecords = jdbcTemplate.queryForObject(countScript, Integer.class, params.toArray());
+        // filterBy multi-filters
+        if (obj.has("filterBy") && obj.get("filterBy").isJsonObject()) {
+            JsonObject filterBy = obj.getAsJsonObject("filterBy");
+            for (Map.Entry<String, JsonElement> entry : filterBy.entrySet()) {
+                String rawKey = entry.getKey();
+                if (rawKey == null) continue;
+                String key = rawKey.trim().toLowerCase();
+                String mapped = allowedColumns.get(key);
+                if (mapped == null) continue;
 
+                QueryFilterBuilder.OperatorAndValues ov = QueryFilterBuilder.normalizeOperatorAndValuesFromJson(entry.getValue());
+                if (ov.values == null || ov.values.isEmpty()) continue;
+
+                String fragment = QueryFilterBuilder.buildPredicateFragment(mapped, ov, params);
+                if (fragment != null && !fragment.isEmpty()) whereClause += " AND (" + fragment + ")";
+            }
+        }
+
+        // COUNT
+        String countScript = "SELECT COUNT(*) FROM tb_ItemCodeSubstitute" + whereClause;
+        int totalRecords = 0;
+        if (params.isEmpty()) {
+            totalRecords = jdbcTemplate.queryForObject(countScript, Integer.class);
+        } else {
+            totalRecords = jdbcTemplate.queryForObject(countScript, Integer.class, params.toArray());
+        }
+
+        // Pagination SQL
+        String paginationSql = "";
         if (page == 0 && size == 0) {
             paginationSql = "";
         } else if (page == 1 && size == 20000) {
@@ -646,9 +756,7 @@ private String convertToSqlDate(String input) {
             page = Math.max(page, 1);
             size = Math.max(size, 1);
             int offset = (page - 1) * size;
-
             paginationSql = " LIMIT " + size + " OFFSET " + offset;
-
         } else {
             page = Math.max(page, 1);
             size = Math.max(size, 1);
@@ -660,19 +768,25 @@ private String convertToSqlDate(String input) {
                 + "createdBy, createdDatetime, updatedBy, updatedDateTime FROM tb_ItemCodeSubstitute"
                 + whereClause + paginationSql;
 
-        List<Map<String, Object>> result = jdbcTemplate.queryForList(itemCodes, params.toArray());
+        List<Map<String, Object>> result;
+        if (params.isEmpty()) {
+            result = jdbcTemplate.queryForList(itemCodes);
+        } else {
+            result = jdbcTemplate.queryForList(itemCodes, params.toArray());
+        }
 
         Map<String, Object> response = new HashMap<>();
         response.put("data", result);
         response.put("totalRecords", totalRecords);
         response.put("currentPage", page);
         response.put("pageSize", size);
-        response.put("totalPages", (int) Math.ceil((double) totalRecords / size));
+        response.put("totalPages", size > 0 ? (int) Math.ceil((double) totalRecords / size) : 0);
 
         return response;
     }
+  
 
-    ///GET ALL CREATED CHARGE ACCOUNTS
+///GET ALL CREATED CHARGE ACCOUNTS
     @PostMapping(value = "/reports/getAllChargeAccounts", produces = "application/json")
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
     public List<Map<String, Object>> getAllChargeAccounts(@RequestBody String req) {
@@ -1453,6 +1567,7 @@ private String convertToSqlDate(String input) {
 
             // Add the line item to the POlineItems list
             ((List<Map<String, Object>>) paginatedGroupedResults.get(poNumber).get("lineItems")).add(poLineItem);
+
         });
         // Prepare the response
         Map<String, Object> response = new HashMap<>();
@@ -2167,7 +2282,7 @@ private String convertToSqlDate(String input) {
 
             // Prepare response
             Map<String, Object> response = new HashMap<>();
-            response.put("reports", result);
+            response.put("reports", result); // Match frontend's expected key
             response.put("currentPage", page);
             response.put("totalItems", totalRecords);
             response.put("totalPages", (int) Math.ceil((double) totalRecords / size));
@@ -2185,7 +2300,7 @@ private String convertToSqlDate(String input) {
         }
     }
 
-    @PostMapping("/filterby")
+        @PostMapping("/filterby")
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
     public ResponseEntity<Map<String, Object>> filterPurchaseOrders(
             @RequestBody List<Map<String, Object>> filterList,  // Changed: Array of {columnName, operator, value}
@@ -3513,7 +3628,12 @@ private String convertToSqlDate(String input) {
             searchableColumns.put("totalAcceptanceAmount", "(upl.uplLineUnitPrice * LN2.deliveredQty)");
             searchableColumns.put("vendorName", "HD.vendorName");
             searchableColumns.put("recordNo", "DCC.recordNo");
-
+            searchableColumns.put("tagNumber", "LN2.tagNumber");
+            searchableColumns.put("linkId", "LN2.linkId");
+            searchableColumns.put("activeOrPassive", "upl.activeOrPassive");
+            searchableColumns.put("createdDate", "DATE_FORMAT(CAST(DCC.createdDate AS DATE),'%e-%b-%Y')");
+            searchableColumns.put("approvalDate", "DATE_FORMAT(CAST(DCC.approvedDate AS DATE),'%e-%b-%Y')");
+            searchableColumns.put("scopeOfWork", "LN2.scopeOfWork");
             // Define numeric columns for exact matching
             Set<String> numericColumns = new HashSet<>(Arrays.asList(
                     "requestId", "poLineNumber", "uplLineNumber", "dccLnRecordNo",
@@ -3629,7 +3749,13 @@ private String convertToSqlDate(String input) {
                     "MAX(LN2.deliveredQty) AS acceptanceUplQty, " +
                     "MAX(LN2.poAcceptanceQty) AS acceptancePoQty, " +
                     "MAX(upl.uplLineUnitPrice * LN2.deliveredQty) AS totalAcceptanceAmount, " +
-                    "MAX(HD.vendorName) AS vendorName " +
+                    "MAX(HD.vendorName) AS vendorName, " +
+                    "LN2.tagNumber AS tagNumber, " +
+                    "LN2.linkId AS linkId, " +
+                    "upl.activeOrPassive AS activeOrPassive, " +
+                    "DATE_FORMAT(CAST(DCC.createdDate AS DATE),'%e-%b-%Y') AS createdDate, " +
+                    "DATE_FORMAT(CAST(DCC.approvedDate AS DATE),'%e-%b-%Y') AS approvalDate, " +
+                    "LN2.scopeOfWork AS scopeOfWork " +
                     baseSql + groupBy + orderBy + paginationSql;
 
             List<Map<String, Object>> result = jdbcTemplate.queryForList(sql, queryParams.toArray());
@@ -3685,7 +3811,11 @@ private String convertToSqlDate(String input) {
             searchableColumns.put("description", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineDescription ELSE HD.poLineDescription END)");
             searchableColumns.put("quantity", "LN2.deliveredQty");
             searchableColumns.put("partNumber", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (CASE WHEN LENGTH(LN2.actualItemCode) > 0 THEN LN2.actualItemCode ELSE upl.uplLineItemCode END) ELSE HD.itemPartNumber END)");
-            searchableColumns.put("itemSerializedStatus", "(CASE WHEN HD.serialControl = 'NO CONTROL' THEN 'NO' ELSE 'YES' END)");
+            searchableColumns.put("itemSerializedStatus",
+                "(CASE " +
+                        "WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('YES','Y','TRUE','1') THEN 'YES' " +
+                        "WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('NO','N','FALSE','0') THEN 'NO' " +
+                        "ELSE NULL END)");
             searchableColumns.put("serialNumber", "LN2.serialNumber");
             searchableColumns.put("uplItemCategoryCodeDescription", "upl.zainItemCategoryDescription");
             searchableColumns.put("faBookingAmount", "(upl.uplLineUnitPrice * LN2.deliveredQty)");
@@ -3824,7 +3954,10 @@ private String convertToSqlDate(String input) {
                     "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineDescription ELSE HD.poLineDescription END) AS description, " +
                     "LN2.deliveredQty AS quantity, " +
                     "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (CASE WHEN LENGTH(LN2.actualItemCode) > 0 THEN LN2.actualItemCode ELSE upl.uplLineItemCode END) ELSE HD.itemPartNumber END) AS partNumber, " +
-                    "(CASE WHEN HD.serialControl = 'NO CONTROL' THEN 'NO' ELSE 'YES' END) AS itemSerializedStatus, " +
+                    " (CASE " +
+                     "WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('YES','Y','TRUE','1') THEN 'YES' " +
+                     "WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('NO','N','FALSE','0') THEN 'NO' " +
+                     "ELSE NULL END) AS itemSerializedStatus, " +
                     "LN2.serialNumber AS serialNumber, " +
                     "upl.zainItemCategoryDescription AS uplItemCategoryCodeDescription, " +
                     "(upl.uplLineUnitPrice * LN2.deliveredQty) AS faBookingAmount, " +
@@ -3858,6 +3991,5 @@ private String convertToSqlDate(String input) {
                     HttpStatus.INTERNAL_SERVER_ERROR);
         }
     }
-
 
 }

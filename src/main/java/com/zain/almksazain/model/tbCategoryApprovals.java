@@ -48,7 +48,8 @@ public class tbCategoryApprovals implements Serializable {
 
     private LocalDateTime approvedDate;
 
-    private LocalDate recordDateTime;
+    // private LocalDate recordDateTime;
+    private LocalDateTime recordDateTime;
 
     private boolean display;
 
@@ -148,11 +149,11 @@ public class tbCategoryApprovals implements Serializable {
         this.approvedDate = approvedDate;
     }
 
-    public LocalDate getRecordDateTime() {
+    public LocalDateTime  getRecordDateTime() {
         return recordDateTime;
     }
 
-    public void setRecordDateTime(LocalDate recordDateTime) {
+    public void setRecordDateTime(LocalDateTime  recordDateTime) {
         this.recordDateTime = recordDateTime;
     }
 

@@ -8,4 +8,6 @@ import java.util.List;
 public interface deptsrepo extends JpaRepository<departmentsdata,Long> {
     departmentsdata findByRecordNo(long recordno);
     List<departmentsdata> findBySysStatus(boolean active);
+    List<departmentsdata> findAllById(Iterable<Long> ids);
+     departmentsdata findByDeptName(String deptName);
 }
