@@ -2,7 +2,6 @@ package com.zain.almksazain.repo;
 
 import com.zain.almksazain.model.DCC;
 import com.zain.almksazain.model.DCCLineItem;
-
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -35,4 +34,20 @@ public interface DCCRepository extends JpaRepository<DCC, Long>, JpaSpecificatio
     // For unpaged / list results (used with Pageable.unpaged())
     List<DCC> findAllByStatus(String status);
     List<DCC> findAllBySupplierIdAndStatus(String supplierId, String status);
+
+@Query(
+  value = "SELECT DISTINCT d.* FROM tb_DCC d " +
+          "INNER JOIN tb_PurchaseOrder po ON d.poNumber = po.poNumber " +
+          "WHERE LOWER(d.status) = LOWER(:status) AND po.vendorNumber = :supplierId",
+  countQuery = "SELECT COUNT(DISTINCT d.recordNo) FROM tb_DCC d " +
+               "INNER JOIN tb_PurchaseOrder po ON d.poNumber = po.poNumber " +
+               "WHERE LOWER(d.status) = LOWER(:status) AND po.vendorNumber = :supplierId",
+  nativeQuery = true
+)
+Page<DCC> findAllBySupplierVendorAndStatus(
+    @Param("supplierId") String supplierId,
+    @Param("status") String status,
+    Pageable pageable
+);
+                                           
 }

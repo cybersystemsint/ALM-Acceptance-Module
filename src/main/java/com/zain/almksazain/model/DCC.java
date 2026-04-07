@@ -44,6 +44,7 @@ public class DCC {
     private String termsAndConditions;
     private String createdBy;
     private String vendorComment;
+     private Date approvedDate;
 
     // Constructors, getters, and setters
     // Constructor
@@ -288,6 +289,14 @@ public class DCC {
 
     public void setCreatedBy(String createdBy) {
         this.createdBy = createdBy;
+    }
+
+    public Date getApprovedDate() {
+        return approvedDate;
+    }
+
+    public void setApprovedDate(Date approvedDate) {
+        this.approvedDate = approvedDate;
     }
 
 }

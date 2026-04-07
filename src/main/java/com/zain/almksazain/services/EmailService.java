@@ -1,5 +1,15 @@
 package com.zain.almksazain.services;
 
+import java.io.File;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -13,12 +23,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestTemplate;
-
-import java.io.File;
-import java.util.*;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * EmailService with improved diagnostic logging and endpoint preflight checks.
@@ -49,13 +53,14 @@ public class EmailService {
         logger.debug("Computed emailHash={} for to={} subject={} dept={} user={} role={} requestCount={} cc={} bcc={}",
                 emailHash, to, subject, department, userName, role, requestCount, cc, bcc);
 
-        // Prevent duplicate emails within 2-minute window
-        if (recentEmailHashes.contains(emailHash)) {
+
+        if (!recentEmailHashes.add(emailHash)) {
             logger.warn("DUPLICATE_EMAIL_PREVENTED: to={}, subject={}, dept={}, user={}, role={}, requestCount={}, cc={}, bcc={}",
                     to, subject, department, userName, role, requestCount, cc, bcc);
             return;
         }
 
+        // Validate endpoints AFTER adding hash to prevent retry storms on misconfiguration
         boolean wantsMultipart = attachments != null && !attachments.isEmpty();
         if (wantsMultipart) {
             if (MULTIPART_EMAIL_ENDPOINT == null || MULTIPART_EMAIL_ENDPOINT.isBlank()) {
@@ -69,8 +74,6 @@ public class EmailService {
                 return;
             }
         }
-
-        recentEmailHashes.add(emailHash);
 
         try {
             String emailId = generateEmailId();
@@ -88,7 +91,6 @@ public class EmailService {
         } catch (Exception e) {
             logger.error("Failed to send email to {}: {}", to, e.getMessage(), e);
         } finally {
-            // Clean up hash after 2 minutes to prevent memory leak
             CompletableFuture.delayedExecutor(2, TimeUnit.MINUTES)
                     .execute(() -> recentEmailHashes.remove(emailHash));
         }
@@ -175,7 +177,4 @@ public class EmailService {
             throw e;
         }
     }
-
-
-
 }

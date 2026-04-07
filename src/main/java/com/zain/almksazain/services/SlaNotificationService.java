@@ -175,7 +175,7 @@ public class SlaNotificationService {
             logger.error("Error running SLA Stage 1 job", e);
         }
     }
-
+      
 // NOTE: This version filters out rows that have no escalation manager before grouping so only rows with an escalation manager are sent.
 
 public void runStage2EscalationsWithFilters(Map<String, Object> filters) {
@@ -701,111 +701,117 @@ private String buildStage2Subject(int count, int agingDays) {
         return o == null ? defaultVal : o.toString();
     }
 
-    // Updated: accept actual requestCount instead of stage placeholder.
-    private String constructSlaReminderHtml(String approverFullName, String rowsPreviewHtml, int requestCount, String department, int agingDays) {
-        String approverDisplay = approverFullName == null ? "Approver" : approverFullName;
-        String salutation = "<p style=\"margin:0 0 10px 0;\">Dear " + escapeHtml(approverDisplay) + ",</p>";
-        String requestCountStr = String.valueOf(Math.max(0, requestCount));
-        StringBuilder sb = new StringBuilder(8192);
 
-        sb.append("<!doctype html><html><head><meta charset=\"utf-8\"/>")
-          .append("<meta name=\"viewport\" content=\"width=device-width,initial-scale:1\"/>")
-          .append("</head>");
+private String constructSlaReminderHtml(String approverFullName, String rowsPreviewHtml, int requestCount, String department, int agingDays) {
+    String approverDisplay = approverFullName == null ? "Approver" : approverFullName;
+    String requestCountStr = String.valueOf(Math.max(0, requestCount));
+    String salutation = "<p>Dear " + escapeHtml(approverDisplay) + ",</p>";
+    StringBuilder sb = new StringBuilder(8192);
 
-        sb.append("<body style=\"margin:0;padding:0;background:#ffffff;color:#333;font-family:Arial,Helvetica,sans-serif;\">");
-        sb.append("<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" width=\"100%\">")
-          .append("<tr><td align=\"right\" style=\"padding:0;\">");
-        sb.append("<table role=\"presentation\" align=\"right\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" "
-                + "style=\"width:auto;background:#ffffff;margin:18px 0 18px auto;padding:14px;border-collapse:collapse;\">");
+    sb.append(String.format("""
+        <!doctype html>
+        <html>
+          <head>
+            <meta charset="utf-8"/>
+            <meta name="viewport" content="width=device-width,initial-scale=1"/>
+            <style>
+              body { font-family: Arial, Helvetica, sans-serif; color: #333; margin: 0; padding: 0; background: #fff; }
+              table { width: 100%%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+              th, td { border: 1px solid #74B72E; padding: 6px; text-align: left; font-size: 12px; }
+              th { background-color: #74B72E; color: #fff; }
+              .desc-table { border: none; }
+              .desc-table td { border: none; padding: 3px 8px 3px 0; }
+              p { font-size: 13px; }
+              .footer { margin-top: 16px; font-size: 11px; color: #9c1b1b; }
+            </style>
+          </head>
+          <body>
+            %s
+            <table class="desc-table">
+              <tr><td style="font-weight:700;width:160px;">Request(s):</td><td>%s</td></tr>
+              <tr><td style="font-weight:700;">Approver:</td><td>%s</td></tr>
+              %s
+              <tr><td style="font-weight:700;">Note:</td><td>These requests have exceeded (user aging &ge; %d days).</td></tr>
+            </table>
+            <p>Please review and action the requests listed below. A full aging dashboard-style attachment is included below.</p>
+            %s
+            <p class="footer">Warning: This is an automated email. Please do not reply or forward.</p>
+          </body>
+        </html>
+    """,
+    salutation,
+    escapeHtml(requestCountStr),
+    escapeHtml(approverDisplay),
+    (department != null && !department.isBlank() ? "<tr><td style=\"font-weight:700;\">Department:</td><td>" + escapeHtml(department) + "</td></tr>" : ""),
+    Math.max(0, agingDays),
+    (rowsPreviewHtml != null && !rowsPreviewHtml.isEmpty()
+        ? "<div style='overflow:auto;'>" + rowsPreviewHtml.replaceFirst("<table", "<table style=\"direction:ltr;text-align:left;\"") + "</div>"
+        : "")
+    ));
+    return sb.toString();
+}
 
-        sb.append("<tr><td style=\"padding:10px 0 6px 0;font-size:13px;color:#222;\">")
-          .append(salutation)
-          .append("</td></tr>");
+private String constructSlaEscalationHtml(String managerFullName, int requestCount, String rowsPreviewHtml, String department, Map<String, Integer> approverCounts, int agingDays) {
+    String managerDisplay = managerFullName == null ? "Manager" : managerFullName;
+    String salutation = "<p>Dear " + escapeHtml(managerDisplay) + ",</p>";
+    StringBuilder approverList = new StringBuilder();
 
-        sb.append("<tr><td style=\"padding:0 0 6px 0;font-size:13px;color:#222;\">")
-          .append("<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" width=\"100%\" style=\"border-collapse:collapse;\">")
-          .append("<tr><td style=\"vertical-align:top;padding:0 8px 0 0;width:160px;font-weight:700\">Request(s):</td><td style=\"padding:0 0 6px 0;\">").append(escapeHtml(requestCountStr)).append("</td></tr>")
-          .append("<tr><td style=\"vertical-align:top;padding:0 8px 0 0;font-weight:700\">Approver:</td><td style=\"padding:0 0 6px 0;\">").append(escapeHtml(approverDisplay)).append("</td></tr>");
-        if (department != null && !department.isBlank()) {
-            sb.append("<tr><td style=\"vertical-align:top;padding:0 8px 0 0;font-weight:700\">Department:</td><td style=\"padding:0 0 6px 0;\">").append(escapeHtml(department)).append("</td></tr>");
-        }
-        sb.append("<tr><td style=\"vertical-align:top;padding:0 8px 0 0;font-weight:700\">Note:</td><td style=\"padding:0 0 6px 0;\">These requests have exceeded (user aging &ge; ").append(escapeHtml(String.valueOf(Math.max(0, agingDays)))).append(" days).</td></tr>")
-          .append("</table>")
-          .append("</td></tr>");
+// if (approverCounts != null && !approverCounts.isEmpty()) {
+//     approverList.append("<h4>Approvers & Request Counts:</h4><ul style=\"margin:0;padding-left:18px;\">");
+//     for (Map.Entry<String, Integer> ac : approverCounts.entrySet()) {
+//         approverList.append("<li>")
+//             .append("<b>").append(escapeHtml(ac.getKey())).append(":</b> ")
+//             .append(escapeHtml(String.valueOf(ac.getValue())))
+//             .append("</li>");
+//     }
+//     approverList.append("</ul>");
+// }
 
-        sb.append("<tr><td style=\"padding:8px 0 12px 0;font-size:12px;color:#555;\">Please review and action the requests listed below. A full aging dashboard-style attachment is included below.</td></tr>");
+    String deptRow = (department != null && !department.isBlank())
+        ? "<tr><td style=\"font-weight:700;\">Department:</td><td>" + escapeHtml(department) + "</td></tr>"
+        : "";
 
-        if (rowsPreviewHtml != null && !rowsPreviewHtml.isEmpty()) {
-            sb.append("<tr><td style=\"padding:6px 0\"><div style=\"overflow:auto;\">")
-              .append(rowsPreviewHtml.replaceFirst("<table", "<table dir=\"ltr\""))
-              .append("</div></td></tr>");
-        }
-
-        sb.append("<tr><td style=\"padding-top:12px;border-top:1px solid #e6e6e6;font-size:11px;color:#9c1b1b;\">Warning: This is an automated email. Please do not reply or forward.</td></tr>");
-
-        sb.append("</table>");
-        sb.append("</td></tr></table>");
-        sb.append("</body></html>");
-        return sb.toString();
-    }
-
-    private String constructSlaEscalationHtml(String managerFullName, int requestCount, String rowsPreviewHtml, String department, Map<String, Integer> approverCounts, int agingDays) {
-        String managerDisplay = managerFullName == null ? "Manager" : managerFullName;
-        String salutation = "<p style=\"margin:0 0 10px 0;\">Dear " + escapeHtml(managerDisplay) + ",</p>";
-        StringBuilder sb = new StringBuilder(4096);
-
-        sb.append("<!doctype html><html><head><meta charset=\"utf-8\"/>")
-          .append("<meta name=\"viewport\" content=\"width=device-width,initial-scale:1\"/></head>")
-          .append("<body style=\"margin:0;padding:0;background:#ffffff;color:#333;font-family:Arial,Helvetica,sans-serif;\">")
-          .append("<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" width=\"100%\">")
-          .append("<tr><td align=\"right\" style=\"padding:0;\">")
-          .append("<table role=\"presentation\" align=\"right\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" "
-                  + "style=\"width:auto;margin:18px 0 18px auto;padding:14px;border-collapse:collapse;\">");
-
-        sb.append("<tr><td style=\"padding:10px 0 6px 0;font-size:13px;color:#222;\">")
-          .append(salutation)
-          .append("</td></tr>");
-
-        sb.append("<tr><td style=\"padding:0 0 6px 0;font-size:13px;color:#222;\">")
-          .append("<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" width=\"100%\" style=\"border-collapse:collapse;\">")
-          .append("<tr><td style=\"vertical-align:top;padding:0 8px 0 0;width:160px;font-weight:700\">Request(s):</td>")
-          .append("<td style=\"padding:0 0 6px 0;\">").append(escapeHtml(String.valueOf(requestCount))).append("</td></tr>");
-        if (department != null && !department.isBlank()) {
-            sb.append("<tr><td style=\"vertical-align:top;padding:0 8px 0 0;font-weight:700\">Department:</td>")
-              .append("<td style=\"padding:0 0 6px 0;\">").append(escapeHtml(department)).append("</td></tr>");
-        }
-        sb.append("<tr><td style=\"vertical-align:top;padding:0 8px 0 0;font-weight:700\">Note:</td>")
-          .append("<td style=\"padding:0 0 6px 0;\">Requests shown below have exceeded (user aging &ge; ").append(escapeHtml(String.valueOf(Math.max(0, agingDays)))).append(" days).</td></tr>")
-          .append("</table></td></tr>");
-
-        sb.append("<tr><td style=\"padding:0 0 12px 0;font-size:12px;color:#555;\">Please coordinate with your approvers for immediate action. A full aging report is attached to this email.</td></tr>");
-
-        if (approverCounts != null && !approverCounts.isEmpty()) {
-            sb.append("<tr><td style=\"padding:6px 0 0 0;font-size:13px;color:#222;\">")
-              .append("<table role=\"presentation\" cellpadding=\"4\" cellspacing=\"0\" border=\"0\" width=\"100%\" style=\"border-collapse:collapse;\">")
-              .append("<tr><td style=\"font-weight:700;padding:6px 0 4px 0;\">Approvers & Request Counts:</td></tr>");
-            for (Map.Entry<String, Integer> ac : approverCounts.entrySet()) {
-                sb.append("<tr><td style=\"padding:2px 0 2px 8px;font-size:12px;color:#333;\">")
-                  .append(escapeHtml(ac.getKey()))
-                  .append(" : ")
-                  .append(escapeHtml(String.valueOf(ac.getValue())))
-                  .append("</td></tr>");
-            }
-            sb.append("</table></td></tr>");
-        }
-
-        if (rowsPreviewHtml != null && !rowsPreviewHtml.isEmpty()) {
-            sb.append("<tr><td style=\"padding:6px 0\"><div style=\"overflow:auto;\">")
-              .append(rowsPreviewHtml.replaceFirst("<table", "<table dir=\"ltr\""))
-              .append("</div></td></tr>");
-        }
-
-        sb.append("<tr><td style=\"padding-top:12px;border-top:1px solid #e6e6e6;font-size:11px;color:#9c1b1b;\">Warning: This is an automated email. Please do not reply or forward.</td></tr>")
-          .append("</table></td></tr></table></body></html>");
-
-        return sb.toString();
-    }
-
+    return String.format("""
+        <!doctype html>
+        <html>
+          <head>
+            <meta charset="utf-8"/>
+            <meta name="viewport" content="width=device-width,initial-scale=1"/>
+            <style>
+              body { font-family: Arial, Helvetica, sans-serif; color: #333; margin: 0; padding: 0; background: #fff; }
+              table { width: 100%%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+              th, td { border: 1px solid #74B72E; padding: 6px; text-align: left; font-size: 12px; }
+              th { background-color: #74B72E; color: #fff;}
+              .desc-table { border: none; }
+              .desc-table td { border: none; padding: 3px 8px 3px 0; }
+              p { font-size: 13px; }
+              .footer { margin-top: 16px; font-size: 11px; color: #9c1b1b; }
+            </style>
+          </head>
+          <body>
+            %s
+            <table class="desc-table">
+              <tr><td style="font-weight:700;width:160px;">Request(s):</td><td>%d</td></tr>
+              %s
+              <tr><td style="font-weight:700;">Note:</td><td>Requests shown below have exceeded (user aging &ge; %d days).</td></tr>
+            </table>
+            <p>Please coordinate with your approvers for immediate action. A full aging report is attached to this email.</p>
+            %s
+            %s
+            <p class="footer">Warning: This is an automated email. Please do not reply or forward.</p>
+          </body>
+        </html>
+    """,
+    salutation,
+    requestCount,
+    deptRow,
+    Math.max(0, agingDays),
+    approverList.toString(),
+    (rowsPreviewHtml != null && !rowsPreviewHtml.isEmpty()
+        ? "<div style='overflow:auto;'>" + rowsPreviewHtml.replaceFirst("<table", "<table style=\\\"direction:ltr;text-align:left;\\\"") + "</div>"
+        : "")
+    );
+}
 
     private String buildFrontendStyledRowsTable(List<Map<String, Object>> rows) {
         StringBuilder sb = new StringBuilder(8192);

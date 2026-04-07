@@ -61,5 +61,10 @@ public interface DccLineRepo extends JpaRepository<DCCLineItem, Long> {
   List<DCCLineItem> findByDccIdAndDccStatusNotIn(String dccId, List<String> excludedStatuses);
   
     List<DCCLineItem> findByDccIdIn(Collection<String> dccIds);
-    
+      
+    // Bulk delete by recordNo
+    @Modifying
+    @Transactional
+    @Query("delete from DCCLineItem d where d.recordNo in :recordNos")
+    void deleteByRecordNoIn(@Param("recordNos") List<Long> recordNos);
 }
