@@ -16,6 +16,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -24,11 +25,16 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.servlet.http.HttpServletResponse;
 import javax.sql.DataSource;
+
+import org.apache.poi.ss.usermodel.BorderStyle;
 import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.CellStyle;
 import org.apache.poi.ss.usermodel.CellType;
 import org.apache.poi.ss.usermodel.CreationHelper;
+import org.apache.poi.ss.usermodel.FillPatternType;
+import org.apache.poi.ss.usermodel.Font;
 import org.apache.poi.ss.usermodel.HorizontalAlignment;
+import org.apache.poi.ss.usermodel.IndexedColors;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.xssf.streaming.SXSSFWorkbook;
@@ -449,7 +455,9 @@ public class ExportsController {
 
 
     //ITEM CODE EXPORT
-  @PostMapping(value = "/reports/getAllItemCodeSubstitutes/export")
+ 
+ 
+    @PostMapping(value = "/reports/getAllItemCodeSubstitutes/export")
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
     public void exportItemCodeSubstitutes(@RequestBody String req, HttpServletResponse response) throws IOException {
         JsonObject obj = JsonParser.parseString(req).getAsJsonObject();
@@ -628,7 +636,9 @@ public class ExportsController {
             }
         }
     }
-        @PostMapping(value = "/reports/getNestedPurchaseOrders/export")
+     
+    
+    @PostMapping(value = "/reports/getNestedPurchaseOrders/export")
     public void exportPurchaseOrdersNested(@RequestBody String req, HttpServletResponse response) throws IOException {
         try {
             JsonObject obj = JsonParser.parseString(req).getAsJsonObject();
@@ -796,7 +806,265 @@ public class ExportsController {
             return null;
         }
     }
+@PostMapping(value = "/reports/v2/acceptanceReport/export")
+@CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
+public void exportAcceptanceReport(@RequestBody String req, HttpServletResponse response) throws IOException {
 
+    JsonObject obj = new JsonParser().parse(req).getAsJsonObject();
+    String poNumber   = obj.has("poNumber")    ? obj.get("poNumber").getAsString()    : "0";
+    String columnName = obj.has("columnName")  ? obj.get("columnName").getAsString()  : "";
+    String searchQuery= obj.has("searchQuery") ? obj.get("searchQuery").getAsString() : "";
 
+    // ── Identical searchable columns + numeric set as the JSON endpoint ───────
+    Map<String, String> searchableColumns = new HashMap<>();
+    searchableColumns.put("requestId",                      "DCC.recordNo");
+    searchableColumns.put("requestStatus",                  "DCC.status");
+    searchableColumns.put("acceptanceType",                 "DCC.acceptanceType");
+    searchableColumns.put("poNumber",                       "DCC.poNumber");
+    searchableColumns.put("poLineNumber",                   "LN2.lineNumber");
+    searchableColumns.put("poPartNumber",                   "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineItemCode ELSE HD.itemPartNumber END)");
+    searchableColumns.put("poLineDescription",              "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineDescription ELSE HD.poLineDescription END)");
+    searchableColumns.put("poItemSerializedStatus",         "(CASE WHEN HD.serialControl = 'NO CONTROL' THEN 'NO' ELSE 'YES' END)");
+    searchableColumns.put("dccLnRecordNo",                  "LN2.recordNo");
+    searchableColumns.put("siteId",                         "LN2.locationName");
+    searchableColumns.put("siteTypeName",                   "siteType.siteTypeName");
+    searchableColumns.put("inServiceDate",                  "DATE_FORMAT(CAST(LN2.dateInService AS DATE),'%e-%b-%Y')");
+    searchableColumns.put("region",                         "rg.regionName");
+    searchableColumns.put("typeLookUpCode",                 "HD.typeLookUpCode");
+    searchableColumns.put("releaseNumber",                  "HD.releaseNum");
+    searchableColumns.put("dccProjectName",                 "HD.newProjectName");
+    searchableColumns.put("newProjectName",                 "HD.newProjectName");
+    searchableColumns.put("uplLineNumber",                  "LN2.uplLineNumber");
+    searchableColumns.put("uplPartNumber",                  "upl.uplLineItemCode");
+    searchableColumns.put("uplItemDescription",             "upl.uplLineDescription");
+    searchableColumns.put("actualPartNumber",               "LN2.actualItemCode");
+    searchableColumns.put("uplItemSerializedStatus",        "upl.uplItemSerialized");
+    searchableColumns.put("serialNumber",                   "LN2.serialNumber");
+    searchableColumns.put("uplItemCategoryCode",            "upl.zainItemCategoryCode");
+    searchableColumns.put("uplItemCategoryCodeDescription", "upl.zainItemCategoryDescription");
+    searchableColumns.put("unitPrice",                      "upl.poLineUnitPrice");
+    searchableColumns.put("acceptanceUplQty",               "LN2.deliveredQty");
+    searchableColumns.put("acceptancePoQty",                "LN2.poAcceptanceQty");
+    searchableColumns.put("totalAcceptanceAmount",          "(upl.uplLineUnitPrice * LN2.deliveredQty)");
+    searchableColumns.put("vendorName",                     "HD.vendorName");
+    searchableColumns.put("recordNo",                       "DCC.recordNo");
+    searchableColumns.put("tagNumber",                      "LN2.tagNumber");
+    searchableColumns.put("linkId",                         "LN2.linkId");
+    searchableColumns.put("activeOrPassive",                "upl.activeOrPassive");
+    searchableColumns.put("createdDate",                    "DATE_FORMAT(CAST(DCC.createdDate AS DATE),'%e-%b-%Y')");
+    searchableColumns.put("approvalDate",                   "DATE_FORMAT(CAST(DCC.approvedDate AS DATE),'%e-%b-%Y')");
+    searchableColumns.put("scopeOfWork",                    "LN2.scopeOfWork");
 
+    Set<String> numericColumns = new HashSet<>(Arrays.asList(
+        "requestId", "poLineNumber", "uplLineNumber", "dccLnRecordNo",
+        "acceptanceUplQty", "acceptancePoQty", "unitPrice", "totalAcceptanceAmount", "recordNo"
+    ));
+
+    // ── Identical WHERE-building logic as the JSON endpoint ───────────────────
+    StringBuilder where = new StringBuilder();
+    List<Object> whereParams = new ArrayList<>();
+
+    if (!"0".equalsIgnoreCase(poNumber)) {
+        where.append(" AND DCC.poNumber = ?");
+        whereParams.add(poNumber);
+    }
+
+    if (!columnName.isEmpty() && !searchQuery.isEmpty()) {
+        String sqlCol = searchableColumns.get(columnName);
+        if (sqlCol != null) {
+            if (numericColumns.contains(columnName)) {
+                if (searchQuery.contains(",")) {
+                    String[] vals = searchQuery.split(",");
+                    where.append(" AND ").append(sqlCol).append(" IN (")
+                         .append(String.join(",", Collections.nCopies(vals.length, "?"))).append(")");
+                    for (String v : vals) whereParams.add(v.trim());
+                } else {
+                    where.append(" AND ").append(sqlCol).append(" = ?");
+                    whereParams.add(searchQuery.trim());
+                }
+            } else {
+                where.append(" AND ").append(sqlCol).append(" LIKE ?");
+                whereParams.add("%" + searchQuery.trim() + "%");
+            }
+        }
+    }
+
+    // ── Identical baseFrom as the JSON endpoint ───────────────────────────────
+    String baseFrom = " FROM tb_DCC DCC " +
+            "JOIN tb_PurchaseOrder HD ON DCC.poNumber = HD.poNumber " +
+            "JOIN tb_Category_Approval_Requests AR ON DCC.recordNo = AR.acceptanceRequestRecordNo " +
+            "JOIN tb_DCC_LN LN2 ON DCC.recordNo = LN2.dccId " +
+            "LEFT JOIN tb_PurchaseOrderUPL upl ON DCC.poNumber = upl.poNumber AND LN2.uplLineNumber = upl.uplLine AND upl.poLineNumber = LN2.lineNumber " +
+            "LEFT JOIN tb_Site site ON LN2.locationName COLLATE utf8mb4_general_ci = site.siteId COLLATE utf8mb4_general_ci " +
+            "LEFT JOIN tb_Site_Type siteType ON site.siteTypeId COLLATE utf8mb4_general_ci = siteType.recordNo COLLATE utf8mb4_general_ci " +
+            "LEFT JOIN tb_Region rg ON site.regionId COLLATE utf8mb4_general_ci = rg.recordNo COLLATE utf8mb4_general_ci " +
+            " WHERE (0 <> (CASE WHEN LENGTH(LN2.uplLineNumber) > 0 " +
+            "  THEN (LN2.uplLineNumber = upl.uplLine AND upl.poLineNumber = LN2.lineNumber AND upl.poNumber = DCC.poNumber) " +
+            "  ELSE (HD.lineNumber = LN2.lineNumber AND HD.poNumber = DCC.poNumber) END))";
+
+    // ── Fetch ALL matching keys (no pagination for export) ────────────────────
+    String keysSql = "SELECT DCC.recordNo AS requestId, LN2.recordNo AS dccLnRecordNo " +
+            baseFrom + where +
+            " GROUP BY DCC.recordNo, LN2.recordNo" +
+            " ORDER BY DCC.recordNo, LN2.recordNo";
+
+    List<Map<String, Object>> keys = jdbcTemplate.queryForList(keysSql, whereParams.toArray());
+
+    // ── Fetch full detail rows using key pairs (identical to JSON endpoint) ───
+    List<Map<String, Object>> orderedResult = new ArrayList<>();
+
+    if (!keys.isEmpty()) {
+        StringBuilder pairWhere = new StringBuilder(" AND (");
+        List<Object> pairParams = new ArrayList<>();
+        String prefix = "";
+        for (Map<String, Object> key : keys) {
+            pairWhere.append(prefix).append("(DCC.recordNo = ? AND LN2.recordNo = ?)");
+            prefix = " OR ";
+            pairParams.add(key.get("requestId"));
+            pairParams.add(key.get("dccLnRecordNo"));
+        }
+        pairWhere.append(") ");
+
+        String detailSql = "SELECT " +
+                "DCC.recordNo AS requestId, " +
+                "DCC.status AS requestStatus, " +
+                "DCC.acceptanceType AS acceptanceType, " +
+                "HD.typeLookUpCode AS typeLookUpCode, " +
+                "DCC.poNumber AS poNumber, " +
+                "HD.releaseNum AS releaseNumber, " +
+                "LN2.lineNumber AS poLineNumber, " +
+                "CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineItemCode ELSE HD.itemPartNumber END AS poPartNumber, " +
+                "CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineDescription ELSE HD.poLineDescription END AS poLineDescription, " +
+                "CASE WHEN HD.serialControl = 'NO CONTROL' THEN 'NO' ELSE 'YES' END AS poItemSerializedStatus, " +
+                "'SAR' AS currency, " +
+                "upl.poLineUnitPrice AS unitPrice, " +
+                "LN2.locationName AS siteId, " +
+                "rg.regionName AS region, " +
+                "siteType.siteTypeName AS siteTypeName, " +
+                "HD.newProjectName AS newProjectName, " +
+                "DATE_FORMAT(CAST(LN2.dateInService AS DATE),'%e-%b-%Y') AS inServiceDate, " +
+                "LN2.uplLineNumber AS uplLineNumber, " +
+                "upl.uplLineItemCode AS uplPartNumber, " +
+                "upl.uplLineDescription AS uplItemDescription, " +
+                "LN2.actualItemCode AS actualPartNumber, " +
+                "upl.uplItemSerialized AS uplItemSerializedStatus, " +
+                "LN2.serialNumber AS serialNumber, " +
+                "LN2.tagNumber AS tagNumber, " +
+                "LN2.linkId AS linkId, " +
+                "upl.activeOrPassive AS activeOrPassive, " +
+                "upl.zainItemCategoryCode AS uplItemCategoryCode, " +
+                "upl.zainItemCategoryDescription AS uplItemCategoryCodeDescription, " +
+                "upl.uplLineUnitPrice AS uplLineUnitPrice, " +
+                "LN2.deliveredQty AS acceptanceUplQty, " +
+                "LN2.poAcceptanceQty AS acceptancePoQty, " +
+                "(upl.uplLineUnitPrice * LN2.deliveredQty) AS totalAcceptanceAmount, " +
+                "HD.vendorName AS vendorName, " +
+                "DATE_FORMAT(CAST(DCC.createdDate AS DATE),'%e-%b-%Y') AS createdDate, " +
+                "DATE_FORMAT(CAST(DCC.approvedDate AS DATE),'%e-%b-%Y') AS approvalDate, " +
+                "LN2.scopeOfWork AS scopeOfWork " +
+                baseFrom + pairWhere +
+                " ORDER BY DCC.recordNo, LN2.recordNo";
+
+        List<Map<String, Object>> detailRows = jdbcTemplate.queryForList(detailSql, pairParams.toArray());
+
+        Map<String, Map<String, Object>> byPair = new LinkedHashMap<>();
+        for (Map<String, Object> row : detailRows) {
+            byPair.put(row.get("requestId") + "-" + row.get("dccLnRecordNo"), row);
+        }
+        for (Map<String, Object> k : keys) {
+            Map<String, Object> r = byPair.get(k.get("requestId") + "-" + k.get("dccLnRecordNo"));
+            if (r != null) orderedResult.add(r);
+        }
+    }
+
+    // ── Excel headers + fields in requested column order ─────────────────────
+    List<String> headers = Arrays.asList(
+        "Request No",                "Request Status",                "Acceptance Type",
+        "PO Type",                   "PO Number",                     "Release Number",
+        "PO Line Number",            "PO Part Number",                "PO Line Description",
+        "PO Item Serialized Status", "Currency",                      "PO Line Unit Price",
+        "Site ID",                   "Region",                        "Site Type Name",
+        "Project Name",              "In Service Date",               "UPL Line Number",
+        "UPL Part Number",           "UPL Item Description",          "Actual Part Number",
+        "UPL Item Serialized Status","Serial Number",                 "Tag Number",
+        "Link ID",                   "Active / Passive",              "UPL Item Category Code",
+        "UPL Item Category Description", "UPL Line Unit Price",       "Acceptance UPL Qty",
+        "Acceptance PO Qty",         "Total Acceptance Amount",       "Vendor Name",
+        "Created Date",              "Approval Date",                 "Scope of Work"
+    );
+
+    List<String> fields = Arrays.asList(
+        "requestId",                 "requestStatus",                 "acceptanceType",
+        "typeLookUpCode",            "poNumber",                      "releaseNumber",
+        "poLineNumber",              "poPartNumber",                  "poLineDescription",
+        "poItemSerializedStatus",    "currency",                      "unitPrice",
+        "siteId",                    "region",                        "siteTypeName",
+        "newProjectName",            "inServiceDate",                 "uplLineNumber",
+        "uplPartNumber",             "uplItemDescription",            "actualPartNumber",
+        "uplItemSerializedStatus",   "serialNumber",                  "tagNumber",
+        "linkId",                    "activeOrPassive",               "uplItemCategoryCode",
+        "uplItemCategoryCodeDescription", "uplLineUnitPrice",         "acceptanceUplQty",
+        "acceptancePoQty",           "totalAcceptanceAmount",         "vendorName",
+        "createdDate",               "approvalDate",                  "scopeOfWork"
+    );
+
+    response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    response.setHeader("Content-Disposition", "attachment; filename=acceptance_report.xlsx");
+
+    try (SXSSFWorkbook workbook = new SXSSFWorkbook(100);
+         BufferedOutputStream bos = new BufferedOutputStream(response.getOutputStream(), 64 * 1024)) {
+
+        Sheet sheet = workbook.createSheet("Acceptance Report");
+
+        CellStyle headerStyle = workbook.createCellStyle();
+        Font headerFont = workbook.createFont();
+        headerFont.setBold(true);
+        headerStyle.setFont(headerFont);
+        headerStyle.setFillForegroundColor(IndexedColors.GREY_25_PERCENT.getIndex());
+        headerStyle.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+        headerStyle.setBorderBottom(BorderStyle.THIN);
+        headerStyle.setAlignment(HorizontalAlignment.CENTER);
+
+        CellStyle numberStyle = workbook.createCellStyle();
+        numberStyle.setDataFormat(workbook.createDataFormat().getFormat("#,##0.##"));
+
+        Row headerRow = sheet.createRow(0);
+        for (int i = 0; i < headers.size(); i++) {
+            Cell cell = headerRow.createCell(i);
+            cell.setCellValue(headers.get(i));
+            cell.setCellStyle(headerStyle);
+        }
+
+        AtomicInteger rowIdx = new AtomicInteger(1);
+        for (Map<String, Object> dataRow : orderedResult) {
+            Row row = sheet.createRow(rowIdx.getAndIncrement());
+            for (int i = 0; i < fields.size(); i++) {
+                Cell cell = row.createCell(i);
+                Object val = dataRow.get(fields.get(i));
+                if (val == null) {
+                    cell.setCellValue("");
+                } else if (val instanceof Number) {
+                    cell.setCellValue(((Number) val).doubleValue());
+                    cell.setCellStyle(numberStyle);
+                } else {
+                    cell.setCellValue(val.toString());
+                }
+            }
+        }
+
+        workbook.write(bos);
+        bos.flush();
+        response.flushBuffer();
+        workbook.dispose();
+
+    } catch (Exception e) {
+        if (!response.isCommitted()) {
+            response.reset();
+            response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+            response.setContentType("text/plain");
+            response.getWriter().write("Excel export failed: " + e.getMessage());
+            response.getWriter().flush();
+        }
+    }
+}
 }
