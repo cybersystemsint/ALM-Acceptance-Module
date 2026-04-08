@@ -889,6 +889,32 @@ public void exportAcceptanceReport(@RequestBody String req, HttpServletResponse 
         }
     }
 
+    if (obj.has("filterBy") && obj.get("filterBy").isJsonObject()) {
+    JsonObject filterBy = obj.getAsJsonObject("filterBy");
+    for (Map.Entry<String, com.google.gson.JsonElement> entry : filterBy.entrySet()) {
+        String col    = entry.getKey();
+        String sqlCol = searchableColumns.get(col);
+        if (sqlCol == null) continue;
+        String val = entry.getValue().getAsString().trim();
+        if (val.isEmpty()) continue;
+
+        if (numericColumns.contains(col)) {
+            if (val.contains(",")) {
+                String[] vals = val.split(",");
+                where.append(" AND ").append(sqlCol).append(" IN (")
+                     .append(String.join(",", Collections.nCopies(vals.length, "?"))).append(")");
+                for (String v : vals) whereParams.add(v.trim());
+            } else {
+                where.append(" AND ").append(sqlCol).append(" = ?");
+                whereParams.add(val);
+            }
+        } else {
+            where.append(" AND ").append(sqlCol).append(" LIKE ?");
+            whereParams.add("%" + val + "%");
+        }
+    }
+}
+
     // ── Identical baseFrom as the JSON endpoint ───────────────────────────────
     String baseFrom = " FROM tb_DCC DCC " +
             "JOIN tb_PurchaseOrder HD ON DCC.poNumber = HD.poNumber " +
