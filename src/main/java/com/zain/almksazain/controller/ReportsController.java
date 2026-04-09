@@ -314,7 +314,63 @@ public class ReportsController {
                 }
             }
         }
+        
+        
+                // ── filterBy multi-filter (optional) ─────────────────────────────────
+        // {
+        //   "filterBy": {
+        //     "region":       "Central",
+        //     "serialNumber": "SN123456",
+        //     "siteTypeName": "Outdoor",
+        //     "requestId":    "1001,1002,1003"  ← comma = IN for numeric
+        //     "vendorName":   "Nokia,Ericsson"  ← comma = OR LIKE for text
+        //   }
+        // }
+        if (obj.has("filterBy") && obj.get("filterBy").isJsonObject()) {
+            JsonObject filterBy = obj.getAsJsonObject("filterBy");
+            for (Map.Entry<String, JsonElement> entry : filterBy.entrySet()) {
+                String col = entry.getKey();
+                if (col == null) continue;
 
+                String sqlCol = searchableColumns.get(col);
+                if (sqlCol == null) continue;
+
+                JsonElement valEl = entry.getValue();
+                if (valEl == null || valEl.isJsonNull()) continue;
+                String val = valEl.getAsString().trim();
+                if (val.isEmpty()) continue;
+
+                if (numericColumns.contains(col)) {
+                    if (val.contains(",")) {
+                        // "requestId": "1001,1002,1003" → IN (?,?,?)
+                        String[] vals = val.split(",");
+                        where.append(" AND ").append(sqlCol).append(" IN (")
+                             .append(String.join(",", Collections.nCopies(vals.length, "?"))).append(")");
+                        for (String v : vals) whereParams.add(v.trim());
+                    } else {
+                        // "poLineNumber": "5" → = ?
+                        where.append(" AND ").append(sqlCol).append(" = ?");
+                        whereParams.add(val);
+                    }
+                } else {
+                    if (val.contains(",")) {
+                        // "vendorName": "Nokia,Ericsson" → (col LIKE ? OR col LIKE ?)
+                        String[] tokens = val.split(",");
+                        where.append(" AND (");
+                        for (int i = 0; i < tokens.length; i++) {
+                            if (i > 0) where.append(" OR ");
+                            where.append(sqlCol).append(" LIKE ?");
+                            whereParams.add("%" + tokens[i].trim() + "%");
+                        }
+                        where.append(")");
+                    } else {
+                        // "region": "Central" → col LIKE ?
+                        where.append(" AND ").append(sqlCol).append(" LIKE ?");
+                        whereParams.add("%" + val + "%");
+                    }
+                }
+            }
+        }
         // Base from/joins used by both queries (only selecting keys in first query)
         String baseFrom = " FROM tb_DCC DCC " +
                 "JOIN tb_PurchaseOrder HD ON DCC.poNumber = HD.poNumber " +
