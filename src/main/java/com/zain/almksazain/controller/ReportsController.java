@@ -1722,30 +1722,32 @@ private String convertToSqlDate(String input) {
             params.add("%" + searchQuery + "%");
         }
 
-        String countSql = "SELECT COUNT(*) FROM combinedPurchaseOrderView" + whereClause;
-        int totalRecords = jdbcTemplate.queryForObject(countSql, Integer.class,
-                params.toArray());
+        int totalRecords;
+        List<Map<String, Object>> result;
 
-        //  int totalRecords = jdbcTemplate.queryForObject(countSql, Integer.class);
-        if (page == 0 && size == 0) {
-            paginationSql = "";
-        } else if (page == 1 && size == 20000) {
-            page = 0;
-            size = totalRecords;
-            page = Math.max(page, 1);
-            size = Math.max(size, 1);
-            int offset = (page - 1) * size;
-
-            paginationSql = " LIMIT " + size + " OFFSET " + offset;
+        if (page == 1 && size == 20000) {
+            // Fetch-all mode: single query, no COUNT needed
+            String sql = "SELECT * FROM combinedPurchaseOrderView" + whereClause;
+            result = jdbcTemplate.queryForList(sql, params.toArray());
+            totalRecords = result.size();
+            page = 1;
+            size = Math.max(totalRecords, 1);
         } else {
-            page = Math.max(page, 1);
-            size = Math.max(size, 1);
-            int offset = (page - 1) * size;
-            paginationSql = " LIMIT " + size + " OFFSET " + offset;
-        }
+            String countSql = "SELECT COUNT(*) FROM combinedPurchaseOrderView" + whereClause;
+            totalRecords = jdbcTemplate.queryForObject(countSql, Integer.class, params.toArray());
 
-        String sql = "SELECT * FROM combinedPurchaseOrderView" + whereClause + paginationSql;
-        List<Map<String, Object>> result = jdbcTemplate.queryForList(sql, params.toArray());
+            if (page == 0 && size == 0) {
+                paginationSql = "";
+            } else {
+                page = Math.max(page, 1);
+                size = Math.max(size, 1);
+                int offset = (page - 1) * size;
+                paginationSql = " LIMIT " + size + " OFFSET " + offset;
+            }
+
+            String sql = "SELECT * FROM combinedPurchaseOrderView" + whereClause + paginationSql;
+            result = jdbcTemplate.queryForList(sql, params.toArray());
+        }
 
         Map<String, Object> response = new HashMap<>();
         response.put("data", result);
