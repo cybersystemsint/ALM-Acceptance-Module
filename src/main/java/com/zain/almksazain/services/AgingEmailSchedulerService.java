@@ -1,5 +1,6 @@
 package com.zain.almksazain.services;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
@@ -27,6 +28,10 @@ import com.zain.almksazain.model.AgingEmailConfig;
 import com.zain.almksazain.repo.AgingEmailConfigRepository;
 import com.zain.almksazain.utlities.CronUtils;
 
+import net.javacrumbs.shedlock.core.LockConfiguration;
+import net.javacrumbs.shedlock.core.LockProvider;
+import net.javacrumbs.shedlock.core.SimpleLock;
+
 @Service
 public class AgingEmailSchedulerService implements DisposableBean {
     private static final Logger logger = LoggerFactory.getLogger(AgingEmailSchedulerService.class);
@@ -34,18 +39,23 @@ public class AgingEmailSchedulerService implements DisposableBean {
     private final ThreadPoolTaskScheduler taskScheduler;
     private final AgingEmailConfigRepository configRepo;
     private final SlaNotificationService slaNotificationService;
+    private final LockProvider lockProvider;
 
     // map configId -> ScheduledFuture
     private final Map<Long, ScheduledFuture<?>> scheduledTasks = new ConcurrentHashMap<>();
 
-    @Autowired
-    public AgingEmailSchedulerService(ThreadPoolTaskScheduler taskScheduler,
-                                      AgingEmailConfigRepository configRepo,
-                                      SlaNotificationService slaNotificationService) {
-        this.taskScheduler = taskScheduler;
-        this.configRepo = configRepo;
-        this.slaNotificationService = slaNotificationService;
-    }
+
+    
+  @Autowired
+public AgingEmailSchedulerService(ThreadPoolTaskScheduler taskScheduler,
+                                  AgingEmailConfigRepository configRepo,
+                                  SlaNotificationService slaNotificationService,
+                                  LockProvider lockProvider) {
+    this.taskScheduler = taskScheduler;
+    this.configRepo = configRepo;
+    this.slaNotificationService = slaNotificationService;
+    this.lockProvider = lockProvider;
+}
 
     @PostConstruct
     public void init() {
@@ -94,10 +104,29 @@ public synchronized void scheduleConfig(AgingEmailConfig cfg, boolean persistMet
 
     CronTrigger cronTrigger = new CronTrigger(cfg.getCronExpression(), zone);
 
-    Runnable task = () -> {
+   Runnable task = () -> {
+    // per-config lock name so each config has its own cluster lock
+    String lockName = "aging-email-config-" + configId;
+
+    // configure lock durations: adjust lockAtMostFor to be safely larger than the expected maximum run time.
+    LockConfiguration lockConfig = new LockConfiguration(
+            lockName,
+            java.time.Instant.now().plus(Duration.ofMinutes(5)),
+            java.time.Instant.now().plus(Duration.ofSeconds(2))
+    );
+
+    Optional<SimpleLock> lock = Optional.empty();
+    try {
+        lock = lockProvider.lock(lockConfig);
+        if (lock.isEmpty()) {
+            logger.info("Could not acquire cluster lock for configId={} (instance={}) - skipping this run", configId, /*instanceId if present*/ "instance");
+            return;
+        }
+
+        // ---- BEGIN existing scheduled job logic ----
         AgingEmailConfig freshCfg = null;
         try {
-            //  Reload entity from DB every execution
+            // Reload entity from DB every execution
             freshCfg = configRepo.findById(configId).orElse(null);
             if (freshCfg == null) {
                 logger.info("Config id={} no longer exists. Cancelling scheduled task.", configId);
@@ -113,31 +142,21 @@ public synchronized void scheduleConfig(AgingEmailConfig cfg, boolean persistMet
                     .map(String::toLowerCase)
                     .orElse("approver");
 
-            logger.info(
-                    "Executing scheduled config id={} jobName='{}' targetType='{}'",
-                    freshCfg.getId(),
-                    freshCfg.getJobName(),
-                    targetType
-            );
+            logger.info("Executing scheduled config id={} jobName='{}' targetType='{}' (instance={})",
+                    freshCfg.getId(), freshCfg.getJobName(), targetType, /*instanceId*/ "instance");
 
             Map<String, Object> filters = new HashMap<>();
-
-            if (freshCfg.getDepartment() != null
-                    && !freshCfg.getDepartment().isBlank()
-                    && !"ALL".equalsIgnoreCase(freshCfg.getDepartment().trim())) {
-
+            if (freshCfg.getDepartment() != null && !freshCfg.getDepartment().isBlank() && !"ALL".equalsIgnoreCase(freshCfg.getDepartment().trim())) {
                 List<String> depts = freshCfg.getDepartmentsList();
                 if (depts != null && !depts.isEmpty()) {
                     filters.put("department", depts);
                     filters.put("departmentName", depts.get(0));
                 }
             }
-
             if (freshCfg.getUserAging() != null) {
                 filters.put("userAging", freshCfg.getUserAging());
                 filters.put("minUserAging", freshCfg.getUserAging());
             }
-
             if (freshCfg.getCc() != null && !freshCfg.getCc().isBlank()) {
                 filters.put("cc", freshCfg.getCc());
             }
@@ -158,22 +177,26 @@ public synchronized void scheduleConfig(AgingEmailConfig cfg, boolean persistMet
         } finally {
             try {
                 if (freshCfg == null) return;
-
                 Date next = cronTrigger.nextExecutionTime(new SimpleTriggerContextWrapper());
-                freshCfg.setNextRunTime(
-                        next != null
-                                ? LocalDateTime.ofInstant(next.toInstant(), zone)
-                                : null
-                );
-
+                freshCfg.setNextRunTime(next != null ? LocalDateTime.ofInstant(next.toInstant(), zone) : null);
                 freshCfg.setUpdatedAt(LocalDateTime.now(zone));
                 configRepo.save(freshCfg);
-
             } catch (Exception e) {
                 logger.warn("Failed to compute nextRunTime for config id={}: {}", configId, e.getMessage());
             }
         }
-    };
+        // ---- END existing scheduled job logic ----
+
+    } finally {
+        if (lock.isPresent()) {
+            try {
+                lock.get().unlock();
+            } catch (Exception e) {
+                logger.warn("Failed to release lock {}: {}", lockName, e.getMessage());
+            }
+        }
+    }
+};
 
     ScheduledFuture<?> future = taskScheduler.schedule(task, cronTrigger);
     scheduledTasks.put(configId, future);
