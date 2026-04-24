@@ -417,8 +417,8 @@ public Map<String, Object> getAgingReport(
         row.put("totalAgingInDays", extractDaysFromAging(totalAging));
 
         // Request Amount SAR
-        Double requestAmount = calculateRequestAmount(ln, totalDeliveredQty, poByNumberLine);
-        row.put("requestAmountSAR", requestAmount);
+        Double requestAmountSAR = calculateRequestAmountSAR(lineItems, uplMap);
+        row.put("requestAmountSAR", requestAmountSAR);
         row.put("poId", po != null ? po.getPoNumber() : dcc.getPoNumber());
 
         // Created By details
@@ -534,16 +534,19 @@ private ApprovalInfo calculateApprovalInfo(List<tbCategoryApprovals> approvals, 
         }
     }
 
-    private Double calculateRequestAmount(DCCLineItem lineItem, Double deliveredQty, Map<String, tbPurchaseOrder> poByNumberLine) {
-        if (lineItem == null || deliveredQty == null || lineItem.getPoId() == null || lineItem.getLineNumber() == null) {
-            return 0.0;
-        }
-        String key = lineItem.getPoId() + "-" + lineItem.getLineNumber();
-        return Optional.ofNullable(poByNumberLine.get(key))
-                .map(tbPurchaseOrder::getUnitPriceInSAR)
-                .map(unitPrice -> unitPrice * deliveredQty)
-                .orElse(0.0);
-    }
+private Double calculateRequestAmountSAR(List<DCCLineItem> lineItems, Map<String, List<tb_PurchaseOrderUPL>> uplMap) {
+    if (lineItems == null || lineItems.isEmpty()) return 0.0;
+    return lineItems.stream()
+        .filter(li -> li.getPoId() != null && li.getLineNumber() != null && li.getUplLineNumber() != null)
+        .mapToDouble(li -> {
+            String key = li.getPoId() + "-" + li.getLineNumber() + "-" + li.getUplLineNumber();
+            List<tb_PurchaseOrderUPL> upls = uplMap.getOrDefault(key, Collections.emptyList());
+            if (upls.isEmpty()) return 0.0;
+            // uplLineUnitPrice * deliveredQty — same formula as acceptanceReceivingRequestReport
+            return upls.get(0).getUplLineUnitPrice() * li.getDeliveredQty();
+        })
+        .sum();
+}
 
     private String formatDate(Date date) {
         return date == null ? null : new SimpleDateFormat(DATE_FORMAT).format(date);
