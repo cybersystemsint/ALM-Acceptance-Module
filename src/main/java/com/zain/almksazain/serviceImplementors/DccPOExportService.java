@@ -4,7 +4,6 @@ import com.zain.almksazain.DTO.DccPOCombinedViewDTO;
 import com.zain.almksazain.exception.DccPOProcessingException;
 import com.zain.almksazain.model.*;
 import com.zain.almksazain.repo.*;
-import com.zain.almksazain.serviceImplementors.DccSpecification;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -15,7 +14,6 @@ import org.springframework.data.domain.Sort;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
-import java.math.BigDecimal;
 import java.text.SimpleDateFormat;
 import java.time.*;
 import java.time.format.DateTimeFormatter;
@@ -29,6 +27,13 @@ import java.util.stream.Stream;
 public class DccPOExportService {
 
     private static final Logger logger = LogManager.getLogger(DccPOExportService.class);
+
+    // BATCH PROCESSING CONFIGURATION - Prevents memory exhaustion
+    private static final int BATCH_SIZE = 500; // Process 500 DCC records at a time
+    private static final int MAX_PAGES = 200; // Safety limit: max 200 pages (100,000 DCCs)
+
+    private static final DateTimeFormatter DATE_FORMATTER =
+            DateTimeFormatter.ofPattern("d-MMM-yyyy").withZone(ZoneId.of("Africa/Nairobi"));
 
     @Autowired
     private TbDccRepository tbDccRepository;
@@ -48,154 +53,290 @@ public class DccPOExportService {
     @Autowired
     private TbCategoryApprovalsRepository tbCategoryApprovalsRepository;
 
-    private static final DateTimeFormatter DATE_FORMATTER =
-            DateTimeFormatter.ofPattern("d-MMM-yyyy").withZone(ZoneId.of("Africa/Nairobi"));  // Use your desired zone
-
+    /**
+     * Optimized export with batch processing to prevent memory exhaustion.
+     * Processes DCC records in batches to keep memory usage low and stable.
+     */
     @Async("taskExecutor")
     public CompletableFuture<List<DccPOCombinedViewDTO>> getAllDccPOForExportV2(
-            String supplierId, String pendingApprovers, String columnName, String searchQuery, String operator) {
+            String supplierId,
+            String pendingApprovers,
+            String columnName,
+            String searchQuery,
+            String operator,
+            Map<String, String> fieldFilters,
+            String createdDateStart,
+            String createdDateEnd,
+            String approvedDateStart,
+            String approvedDateEnd,
+            int maxRecords) {
+
         return CompletableFuture.supplyAsync(() -> {
             try {
-                logger.info("Starting optimized export V2 of all DCC PO Combined View with supplierId: {}, pendingApprovers: {}, columnName: {}, searchQuery: {}, operator: {}",
-                        supplierId, pendingApprovers, columnName, searchQuery, operator);
+                logger.info("Starting optimized export V2 - supplierId: {}, pendingApprovers: {}, filters: {}, maxRecords: {}",
+                        supplierId, pendingApprovers, fieldFilters != null ? fieldFilters.keySet() : "none", maxRecords);
 
-                // Fetch all DCC records using the specification (bulk fetch)
-                DccSpecification spec = new DccSpecification(supplierId, pendingApprovers, columnName, searchQuery, operator);
-                Pageable pageable = PageRequest.of(0, Integer.MAX_VALUE, Sort.by(Sort.Direction.DESC, "recordNo"));
-                Page<DCC> dccPage = tbDccRepository.findAll(spec, pageable);
-                List<DCC> dccList = dccPage.getContent();
-                long totalFilteredRecords = dccPage.getTotalElements();
+                // Build enhanced specification with ALL filters
+                DccSpecification spec = new DccSpecification(
+                        supplierId,
+                        pendingApprovers,
+                        columnName,
+                        searchQuery,
+                        operator,
+                        fieldFilters,
+                        createdDateStart,
+                        createdDateEnd,
+                        approvedDateStart,
+                        approvedDateEnd
+                );
 
-                if (dccList.isEmpty()) {
-                    logger.info("No records found for export V2");
-                    return new ArrayList<>();
+                // BATCH PROCESSING - Process in chunks to control memory
+                List<DccPOCombinedViewDTO> allResults = new ArrayList<>();
+                int currentPage = 0;
+                int totalDccProcessed = 0;
+                boolean shouldContinue = true;
+
+                while (shouldContinue && allResults.size() < maxRecords) {
+                    // Fetch one batch of DCC records
+                    Pageable pageable = PageRequest.of(currentPage, BATCH_SIZE,
+                            Sort.by(Sort.Direction.DESC, "recordNo"));
+
+                    Page<DCC> dccPage = tbDccRepository.findAll(spec, pageable);
+                    List<DCC> dccBatch = dccPage.getContent();
+
+                    if (dccBatch.isEmpty()) {
+                        logger.info("No more DCC records found at page {}", currentPage);
+                        break;
+                    }
+
+                    logger.info("Processing batch {} with {} DCC records (total DTOs so far: {})",
+                            currentPage, dccBatch.size(), allResults.size());
+
+                    // Validate batch
+                    List<DCC> invalidRecords = dccBatch.stream()
+                            .filter(dcc -> dcc.getPoNumber() == null || dcc.getPoNumber().isEmpty())
+                            .collect(Collectors.toList());
+
+                    if (!invalidRecords.isEmpty()) {
+                        logger.error("Found {} invalid DCC records in batch {} with missing poNumber",
+                                invalidRecords.size(), currentPage);
+                        throw new DccPOProcessingException("Invalid DCC records detected with missing poNumber");
+                    }
+
+                    // Process THIS BATCH ONLY (memory-efficient)
+                    List<DccPOCombinedViewDTO> batchResults = processDccBatch(dccBatch);
+
+                    // Add results, respecting maxRecords limit
+                    int remainingCapacity = maxRecords - allResults.size();
+                    if (batchResults.size() <= remainingCapacity) {
+                        allResults.addAll(batchResults);
+                        totalDccProcessed += dccBatch.size();
+                    } else {
+                        // Only add what fits within maxRecords
+                        allResults.addAll(batchResults.subList(0, remainingCapacity));
+                        logger.warn("Reached maxRecords limit of {}. Stopping batch processing.", maxRecords);
+                        shouldContinue = false;
+                        break;
+                    }
+
+                    logger.info("Batch {} complete: added {} DTOs, total now: {}/{} (processed {} DCCs)",
+                            currentPage, batchResults.size(), allResults.size(), maxRecords, totalDccProcessed);
+
+                    // Check if more pages exist
+                    if (!dccPage.hasNext()) {
+                        logger.info("No more pages available. Processed {} total DCC records.", totalDccProcessed);
+                        shouldContinue = false;
+                    }
+
+                    currentPage++;
+
+                    // Safety check: prevent infinite loops
+                    if (currentPage >= MAX_PAGES) {
+                        logger.warn("Reached maximum page limit of {}. Stopping for safety.", MAX_PAGES);
+                        break;
+                    }
                 }
 
-                logger.info("Fetched {} DCC records for export V2", dccList.size());
+                logger.info("Export V2 complete: {} DTOs generated from {} DCC records (max allowed: {})",
+                        allResults.size(), totalDccProcessed, maxRecords);
 
-                // Validate no invalid records
-                List<DCC> invalidDccRecords = dccList.stream()
-                        .filter(dcc -> dcc.getPoNumber() == null || dcc.getPoNumber().isEmpty())
-                        .collect(Collectors.toList());
-                if (!invalidDccRecords.isEmpty()) {
-                    logger.error("Found {} DCC records with missing or invalid poNumber", invalidDccRecords.size());
-                    throw new DccPOProcessingException("Invalid DCC records detected with missing poNumber");
-                }
+                return allResults;
 
-                // Bulk fetch all related data
-                Set<String> poNumbersSet = dccList.stream().map(DCC::getPoNumber).collect(Collectors.toSet());
-                List<String> poNumbers = new ArrayList<>(poNumbersSet);
-
-                // Purchase Orders
-                Map<String, List<tbPurchaseOrder>> purchaseOrderMap = tbPurchaseOrderRepository.findByPoNumberIn(poNumbers)
-                        .stream().collect(Collectors.groupingBy(tbPurchaseOrder::getPoNumber));
-
-                // UPLs
-                Map<String, List<tb_PurchaseOrderUPL>> uplMap = tbPurchaseOrderUplRepository.findByPoNumberIn(poNumbers)
-                        .stream().collect(Collectors.groupingBy(tb_PurchaseOrderUPL::getPoNumber));
-
-                // All DCC Line Items
-                List<Long> dccIds = dccList.stream().map(DCC::getRecordNo).collect(Collectors.toList());
-                List<DCCLineItem> allDccLn = tbDccLnRepository.findByDccIdIn(dccIds.stream().map(String::valueOf).collect(Collectors.toList()));
-
-                // DCC Map for status lookup
-                Map<Long, DCC> dccMap = dccList.stream().collect(Collectors.toMap(DCC::getRecordNo, Function.identity()));
-
-                // Precompute delivered sums
-                Map<String, Double> deliveredMap = allDccLn.stream()
-                        .filter(dln -> {
-                            DCC dd = dccMap.get(Long.parseLong(dln.getDccId()));
-                            return dd != null && !Arrays.asList("incomplete", "rejected").contains(dd.getStatus().toLowerCase()) && dln.getDeliveredQty() != null;
-                        })
-                        .collect(Collectors.groupingBy(
-                                dln -> dln.getPoId() + "-" + dln.getLineNumber() + "-" + (dln.getUplLineNumber() != null ? dln.getUplLineNumber() : ""),
-                                Collectors.summingDouble(DCCLineItem::getDeliveredQty)
-                        ));
-
-                // All UPL for acceptance calculations
-                List<tb_PurchaseOrderUPL> allUplList = uplMap.values().stream().flatMap(List::stream).collect(Collectors.toList());
-                Map<String, Double> acceptanceByPoLine = allUplList.stream()
-                        .filter(u -> u.getUplLineQuantity() != null && u.getUplLineQuantity() > 0
-                                && u.getPoLineQuantity() != null && u.getPoLineQuantity() > 0
-                                && u.getPoLineUnitPrice() != null && u.getPoLineUnitPrice() > 0)
-                        .collect(Collectors.groupingBy(
-                                u -> u.getPoNumber() + "-" + u.getPoLineNumber(),
-                                Collectors.summingDouble(u -> {
-                                    double denominator = u.getPoLineQuantity() * u.getPoLineUnitPrice();
-                                    if (denominator == 0) {
-                                        return 0.0;
-                                    }
-                                    double numerator = u.getUplLineQuantity() * u.getPoLineQuantity();
-                                    return numerator / denominator;
-                                })
-                        ));
-
-                // Set of UPL keys that have DCC_LN
-                Set<String> hasDccLnSet = allDccLn.stream()
-                        .map(dln -> dln.getPoId() + "-" + dln.getLineNumber() + "-" + (dln.getUplLineNumber() != null ? dln.getUplLineNumber() : ""))
-                        .collect(Collectors.toSet());
-
-                // All Approval Requests for these DCCs
-                List<TbCategoryApprovalRequests> allRequests = tbCategoryApprovalRequestsRepository
-                        .findByAcceptanceRequestRecordNoInOrderByAcceptanceRequestRecordNoAscRecordDateTimeDesc(dccIds);
-
-                // Group requests by DCC ID
-                Map<Long, List<TbCategoryApprovalRequests>> requestsByDccId = allRequests.stream()
-                        .collect(Collectors.groupingBy(TbCategoryApprovalRequests::getAcceptanceRequestRecordNo));
-
-                // All request recordNos
-                Set<Long> allRequestRecordNos = allRequests.stream().map(TbCategoryApprovalRequests::getRecordNo).collect(Collectors.toSet());
-
-                // All Approvals
-                List<TbCategoryApprovals> allApprovals = tbCategoryApprovalsRepository.findByApprovalRecordIdIn(new ArrayList<>(allRequestRecordNos));
-
-                // Group approvals by request recordNo
-                Map<Long, List<TbCategoryApprovals>> approvalsByRequestRecordNo = allApprovals.stream()
-                        .collect(Collectors.groupingBy(TbCategoryApprovals::getApprovalRecordId));
-
-                SimpleDateFormat dateFormat = new SimpleDateFormat("d-MMM-yyyy");
-
-                // Process all records in parallel
-                List<DccPOCombinedViewDTO> result = dccList.parallelStream()
-                        .flatMap(dcc -> {
-                            List<tbPurchaseOrder> purchaseOrderList = purchaseOrderMap.getOrDefault(dcc.getPoNumber(), Collections.emptyList());
-                            if (purchaseOrderList.isEmpty()) {
-                                logger.error("No Purchase Order found for poNumber: {} in DCC record: {}.", dcc.getPoNumber(), dcc.getRecordNo());
-                                return Stream.empty(); // Skip instead of throw for export
-                            }
-                            tbPurchaseOrder purchaseOrder = purchaseOrderList.get(0);
-
-                            List<tb_PurchaseOrderUPL> uplList = uplMap.getOrDefault(dcc.getPoNumber(), Collections.emptyList());
-                            List<DCCLineItem> dccLnList = allDccLn.stream()
-                                    .filter(dln -> dln.getDccId().equals(String.valueOf(dcc.getRecordNo())))
-                                    .collect(Collectors.toList());
-
-                            List<TbCategoryApprovalRequests> dccRequests = requestsByDccId.getOrDefault(dcc.getRecordNo(), Collections.emptyList());
-                            TbCategoryApprovalRequests latestApprovalRequest = dccRequests.stream()
-                                    .max(Comparator.comparing(TbCategoryApprovalRequests::getRecordDateTime))
-                                    .orElse(null);
-
-                            List<TbCategoryApprovals> allRelatedApprovals = dccRequests.stream()
-                                    .flatMap(r -> approvalsByRequestRecordNo.getOrDefault(r.getRecordNo(), Collections.emptyList()).stream())
-                                    .collect(Collectors.toList());
-
-                            if (dccLnList.isEmpty() || uplList.isEmpty()) {
-                                logger.warn("No DCC_LN or UPL records found for DCC ID: {}. Skipping.", dcc.getRecordNo());
-                                return Stream.empty();
-                            }
-
-                            return buildDccPOCombinedViewDTOs(dcc, purchaseOrder, uplList, dccLnList, latestApprovalRequest, dccRequests, allRelatedApprovals,
-                                    deliveredMap, acceptanceByPoLine, hasDccLnSet, dateFormat).stream();
-                        })
-                        .collect(Collectors.toList());
-
-                logger.info("Exported {} records successfully in V2", result.size());
-                return result;
             } catch (Exception ex) {
                 logger.error("Error during optimized export V2 of DCC PO Combined View", ex);
                 throw new DccPOProcessingException("Failed to export DCC PO Combined View V2", ex);
             }
         });
+    }
+
+    /**
+     * Process a single batch of DCC records and return DTOs.
+     * This method fetches ONLY the related data for THIS BATCH to minimize memory usage.
+     */
+    private List<DccPOCombinedViewDTO> processDccBatch(List<DCC> dccBatch) {
+        // Extract IDs from THIS BATCH only
+        Set<String> poNumbersSet = dccBatch.stream()
+                .map(DCC::getPoNumber)
+                .collect(Collectors.toSet());
+        List<String> poNumbers = new ArrayList<>(poNumbersSet);
+
+        List<Long> dccIds = dccBatch.stream()
+                .map(DCC::getRecordNo)
+                .collect(Collectors.toList());
+
+        logger.debug("Fetching related data for batch: {} unique PO numbers, {} DCC IDs",
+                poNumbers.size(), dccIds.size());
+
+        // Fetch related data for THIS BATCH ONLY (not all records)
+        // Purchase Orders
+        Map<String, List<tbPurchaseOrder>> purchaseOrderMap = tbPurchaseOrderRepository
+                .findByPoNumberIn(poNumbers)
+                .stream()
+                .collect(Collectors.groupingBy(tbPurchaseOrder::getPoNumber));
+
+        // UPLs
+        Map<String, List<tb_PurchaseOrderUPL>> uplMap = tbPurchaseOrderUplRepository
+                .findByPoNumberIn(poNumbers)
+                .stream()
+                .collect(Collectors.groupingBy(tb_PurchaseOrderUPL::getPoNumber));
+
+        // CRITICAL: Only fetch line items for THIS BATCH (prevents loading millions of rows)
+        List<DCCLineItem> allDccLn = tbDccLnRepository
+                .findByDccIdIn(dccIds.stream()
+                        .map(String::valueOf)
+                        .collect(Collectors.toList()));
+
+        logger.debug("Fetched {} line items for this batch of {} DCCs",
+                allDccLn.size(), dccBatch.size());
+
+        // DCC Map for status lookup
+        Map<Long, DCC> dccMap = dccBatch.stream()
+                .collect(Collectors.toMap(DCC::getRecordNo, Function.identity()));
+
+        // Precompute delivered sums for THIS BATCH
+        Map<String, Double> deliveredMap = allDccLn.stream()
+                .filter(dln -> {
+                    DCC dd = dccMap.get(Long.parseLong(dln.getDccId()));
+                    return dd != null &&
+                            !Arrays.asList("incomplete", "rejected").contains(dd.getStatus().toLowerCase()) &&
+                            dln.getDeliveredQty() != null;
+                })
+                .collect(Collectors.groupingBy(
+                        dln -> dln.getPoId() + "-" + dln.getLineNumber() + "-" +
+                                (dln.getUplLineNumber() != null ? dln.getUplLineNumber() : ""),
+                        Collectors.summingDouble(DCCLineItem::getDeliveredQty)
+                ));
+
+        // All UPL for acceptance calculations for THIS BATCH
+        List<tb_PurchaseOrderUPL> allUplList = uplMap.values().stream()
+                .flatMap(List::stream)
+                .collect(Collectors.toList());
+
+        Map<String, Double> acceptanceByPoLine = allUplList.stream()
+                .filter(u -> u.getUplLineQuantity() != null && u.getUplLineQuantity() > 0
+                        && u.getPoLineQuantity() != null && u.getPoLineQuantity() > 0
+                        && u.getPoLineUnitPrice() != null && u.getPoLineUnitPrice() > 0)
+                .collect(Collectors.groupingBy(
+                        u -> u.getPoNumber() + "-" + u.getPoLineNumber(),
+                        Collectors.summingDouble(u -> {
+                            double denominator = u.getPoLineQuantity() * u.getPoLineUnitPrice();
+                            if (denominator == 0) {
+                                return 0.0;
+                            }
+                            double numerator = u.getUplLineQuantity() * u.getPoLineQuantity();
+                            return numerator / denominator;
+                        })
+                ));
+
+        // Set of UPL keys that have DCC_LN
+        Set<String> hasDccLnSet = allDccLn.stream()
+                .map(dln -> dln.getPoId() + "-" + dln.getLineNumber() + "-" +
+                        (dln.getUplLineNumber() != null ? dln.getUplLineNumber() : ""))
+                .collect(Collectors.toSet());
+
+        // All Approval Requests for these DCCs
+        List<TbCategoryApprovalRequests> allRequests = tbCategoryApprovalRequestsRepository
+                .findByAcceptanceRequestRecordNoInOrderByAcceptanceRequestRecordNoAscRecordDateTimeDesc(dccIds);
+
+        // Group requests by DCC ID
+        Map<Long, List<TbCategoryApprovalRequests>> requestsByDccId = allRequests.stream()
+                .collect(Collectors.groupingBy(TbCategoryApprovalRequests::getAcceptanceRequestRecordNo));
+
+        // All request recordNos
+        Set<Long> allRequestRecordNos = allRequests.stream()
+                .map(TbCategoryApprovalRequests::getRecordNo)
+                .collect(Collectors.toSet());
+
+        // All Approvals
+        List<TbCategoryApprovals> allApprovals = allRequestRecordNos.isEmpty()
+                ? Collections.emptyList()
+                : tbCategoryApprovalsRepository.findByApprovalRecordIdIn(new ArrayList<>(allRequestRecordNos));
+
+        // Group approvals by request recordNo
+        Map<Long, List<TbCategoryApprovals>> approvalsByRequestRecordNo = allApprovals.stream()
+                .collect(Collectors.groupingBy(TbCategoryApprovals::getApprovalRecordId));
+
+        SimpleDateFormat dateFormat = new SimpleDateFormat("d-MMM-yyyy");
+
+        // Process all records in parallel for THIS BATCH
+        List<DccPOCombinedViewDTO> result = dccBatch.parallelStream()
+                .flatMap(dcc -> {
+                    List<tbPurchaseOrder> purchaseOrderList = purchaseOrderMap
+                            .getOrDefault(dcc.getPoNumber(), Collections.emptyList());
+
+                    if (purchaseOrderList.isEmpty()) {
+                        logger.error("No Purchase Order found for poNumber: {} in DCC record: {}.",
+                                dcc.getPoNumber(), dcc.getRecordNo());
+                        return Stream.empty(); // Skip instead of throw for export
+                    }
+
+                    tbPurchaseOrder purchaseOrder = purchaseOrderList.get(0);
+
+                    List<tb_PurchaseOrderUPL> uplList = uplMap
+                            .getOrDefault(dcc.getPoNumber(), Collections.emptyList());
+
+                    List<DCCLineItem> dccLnList = allDccLn.stream()
+                            .filter(dln -> dln.getDccId().equals(String.valueOf(dcc.getRecordNo())))
+                            .collect(Collectors.toList());
+
+                    List<TbCategoryApprovalRequests> dccRequests = requestsByDccId
+                            .getOrDefault(dcc.getRecordNo(), Collections.emptyList());
+
+                    TbCategoryApprovalRequests latestApprovalRequest = dccRequests.stream()
+                            .max(Comparator.comparing(TbCategoryApprovalRequests::getRecordDateTime))
+                            .orElse(null);
+
+                    List<TbCategoryApprovals> allRelatedApprovals = dccRequests.stream()
+                            .flatMap(r -> approvalsByRequestRecordNo
+                                    .getOrDefault(r.getRecordNo(), Collections.emptyList()).stream())
+                            .collect(Collectors.toList());
+
+                    if (dccLnList.isEmpty() || uplList.isEmpty()) {
+                        logger.warn("No DCC_LN or UPL records found for DCC ID: {}. Skipping.",
+                                dcc.getRecordNo());
+                        return Stream.empty();
+                    }
+
+                    return buildDccPOCombinedViewDTOs(
+                            dcc,
+                            purchaseOrder,
+                            uplList,
+                            dccLnList,
+                            latestApprovalRequest,
+                            dccRequests,
+                            allRelatedApprovals,
+                            deliveredMap,
+                            acceptanceByPoLine,
+                            hasDccLnSet,
+                            dateFormat
+                    ).stream();
+                })
+                .collect(Collectors.toList());
+
+        logger.debug("Batch processing complete: generated {} DTOs from {} DCC records",
+                result.size(), dccBatch.size());
+
+        return result;
     }
 
     private List<DccPOCombinedViewDTO> buildDccPOCombinedViewDTOs(

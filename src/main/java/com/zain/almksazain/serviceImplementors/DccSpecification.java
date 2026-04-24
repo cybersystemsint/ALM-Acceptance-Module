@@ -14,7 +14,8 @@ import java.time.LocalDateTime;
 import java.util.*;
 
 /**
- * JPA Specification for filtering DCC records.
+ * JPA Specification for filtering DCC records with enhanced export support.
+ * Now includes support for approved date range filtering.
  */
 public class DccSpecification implements Specification<DCC> {
 
@@ -26,11 +27,14 @@ public class DccSpecification implements Specification<DCC> {
     private final Map<String, String> fieldFilters;
     private final String createdDateStart;
     private final String createdDateEnd;
+    private final String approvedDateStart;
+    private final String approvedDateEnd;
 
-    // New constructor with all filters
+    // Constructor 1: Full constructor with ALL filters (10 parameters)
     public DccSpecification(String supplierId, String pendingApprovers, String columnName, String searchQuery,
                             String operator, Map<String, String> fieldFilters,
-                            String createdDateStart, String createdDateEnd) {
+                            String createdDateStart, String createdDateEnd,
+                            String approvedDateStart, String approvedDateEnd) {
         this.supplierId = supplierId;
         this.pendingApprovers = pendingApprovers;
         this.columnName = columnName;
@@ -39,18 +43,23 @@ public class DccSpecification implements Specification<DCC> {
         this.fieldFilters = fieldFilters;
         this.createdDateStart = createdDateStart;
         this.createdDateEnd = createdDateEnd;
+        this.approvedDateStart = approvedDateStart;
+        this.approvedDateEnd = approvedDateEnd;
     }
 
-    // Old constructor for backward compatibility - FIXED to initialize new fields
-    public DccSpecification(String supplierId, String pendingApprovers, String columnName, String searchQuery, String operator) {
-        this.supplierId = supplierId;
-        this.pendingApprovers = pendingApprovers;
-        this.columnName = columnName;
-        this.searchQuery = searchQuery;
-        this.operator = operator;
-        this.fieldFilters = null;
-        this.createdDateStart = null;
-        this.createdDateEnd = null;
+    // Constructor 2: With field filters but no approved dates (8 parameters) - FOR SERVICE COMPATIBILITY
+    public DccSpecification(String supplierId, String pendingApprovers, String columnName,
+                            String searchQuery, String operator, Map<String, String> fieldFilters,
+                            String createdDateStart, String createdDateEnd) {
+        this(supplierId, pendingApprovers, columnName, searchQuery, operator,
+                fieldFilters, createdDateStart, createdDateEnd, null, null);
+    }
+
+    // Constructor 3: Old/legacy constructor for backward compatibility (5 parameters)
+    public DccSpecification(String supplierId, String pendingApprovers, String columnName,
+                            String searchQuery, String operator) {
+        this(supplierId, pendingApprovers, columnName, searchQuery, operator,
+                null, null, null, null, null);
     }
 
     @Override
@@ -70,6 +79,7 @@ public class DccSpecification implements Specification<DCC> {
             // Subquery to get the latest TbCategoryApprovalRequests.recordNo for each DCC
             Subquery<Long> approvalRequestSubquery = query.subquery(Long.class);
             Root<TbCategoryApprovalRequests> approvalRequestRoot = approvalRequestSubquery.from(TbCategoryApprovalRequests.class);
+
             // Subquery to find the maximum recordDateTime for the matching acceptanceRequestRecordNo
             Subquery<LocalDateTime> maxDateSubquery = query.subquery(LocalDateTime.class);
             Root<TbCategoryApprovalRequests> maxDateRoot = maxDateSubquery.from(TbCategoryApprovalRequests.class);
@@ -80,6 +90,7 @@ public class DccSpecification implements Specification<DCC> {
                                     cb.equal(maxDateRoot.get("status"), "pending")
                             )
                     );
+
             // Select the recordNo where recordDateTime matches the maximum
             approvalRequestSubquery.select(approvalRequestRoot.get("recordNo"))
                     .where(
@@ -105,7 +116,7 @@ public class DccSpecification implements Specification<DCC> {
             predicates.add(cb.exists(approvalsSubquery));
         }
 
-        // Apply search filter
+        // Apply legacy search filter (columnName/searchQuery)
         if (columnName != null && !columnName.isEmpty() && searchQuery != null && !searchQuery.isEmpty()) {
             String dbColumnName = mapColumnToDbField(columnName);
             if (dbColumnName != null) {
@@ -139,7 +150,7 @@ public class DccSpecification implements Specification<DCC> {
             }
         }
 
-        // Apply field filters (CONTAINS for strings, EXACT for IDs/numbers)
+        // Apply field filters (NEW: enhanced filtering for exports)
         if (fieldFilters != null && !fieldFilters.isEmpty()) {
             for (Map.Entry<String, String> entry : fieldFilters.entrySet()) {
                 String field = entry.getKey();
@@ -159,16 +170,16 @@ public class DccSpecification implements Specification<DCC> {
                         // Skip invalid number
                     }
                 }
-                // Skip fields not in DCC table (these will be filtered later in memory)
-                else if (field.equals("approvalCount") || field.equals("supplierId")) {
-                    // These fields are not in DCC entity, skip
+                // Skip fields not in DCC table (filtered in-memory after DTO construction)
+                else if (field.equals("approvalCount")) {
+                    // approvalCount is calculated, not in DCC table - skip
                 }
-                // CONTAINS match for all other string fields
+                // EXACT match for string fields (case-insensitive)
                 else {
                     try {
-                        predicates.add(cb.like(
+                        predicates.add(cb.equal(
                                 cb.lower(root.get(dbField).as(String.class)),
-                                "%" + value.toLowerCase() + "%"
+                                value.toLowerCase()
                         ));
                     } catch (Exception e) {
                         // Skip if field doesn't support string operations
@@ -177,7 +188,7 @@ public class DccSpecification implements Specification<DCC> {
             }
         }
 
-        // Date range filters
+        // Date range filters - Created Date
         if (createdDateStart != null && !createdDateStart.isEmpty()) {
             try {
                 SimpleDateFormat sdf = new SimpleDateFormat("d-MMM-yyyy", Locale.ENGLISH);
@@ -198,14 +209,35 @@ public class DccSpecification implements Specification<DCC> {
             }
         }
 
-        // Subquery for DCCLineItem
+        // NEW: Date range filters - Approved Date
+        if (approvedDateStart != null && !approvedDateStart.isEmpty()) {
+            try {
+                SimpleDateFormat sdf = new SimpleDateFormat("d-MMM-yyyy", Locale.ENGLISH);
+                Date startDate = sdf.parse(approvedDateStart);
+                predicates.add(cb.greaterThanOrEqualTo(root.get("approvedDate"), startDate));
+            } catch (Exception e) {
+                // Skip invalid date
+            }
+        }
+
+        if (approvedDateEnd != null && !approvedDateEnd.isEmpty()) {
+            try {
+                SimpleDateFormat sdf = new SimpleDateFormat("d-MMM-yyyy", Locale.ENGLISH);
+                Date endDate = sdf.parse(approvedDateEnd);
+                predicates.add(cb.lessThanOrEqualTo(root.get("approvedDate"), endDate));
+            } catch (Exception e) {
+                // Skip invalid date
+            }
+        }
+
+        // Subquery for DCCLineItem (ensure records have line items)
         Subquery<DCCLineItem> lineItemSubquery = query.subquery(DCCLineItem.class);
         Root<DCCLineItem> lineItemRoot = lineItemSubquery.from(DCCLineItem.class);
         lineItemSubquery.select(lineItemRoot)
                 .where(cb.equal(lineItemRoot.get("dccId"), root.get("recordNo").as(String.class)));
         predicates.add(cb.exists(lineItemSubquery));
 
-        // Subquery for tb_PurchaseOrderUPL
+        // Subquery for tb_PurchaseOrderUPL (ensure records have UPL data)
         Subquery<tb_PurchaseOrderUPL> uplSubquery = query.subquery(tb_PurchaseOrderUPL.class);
         Root<tb_PurchaseOrderUPL> uplRoot = uplSubquery.from(tb_PurchaseOrderUPL.class);
         uplSubquery.select(uplRoot)
@@ -219,21 +251,28 @@ public class DccSpecification implements Specification<DCC> {
         if (columnName == null) return null;
         switch (columnName.toLowerCase()) {
             case "recordno": return "recordNo";
-            case "dccponumber": return "poNumber";
+            case "dccponumber":
+            case "ponumber": return "poNumber";
             case "newprojectname": return "newProjectName";
-            case "dccacceptancetype": return "acceptanceType";
-            case "dccstatus": return "status";
-            case "dcccreateddate": return "createdDate";
+            case "dccacceptancetype":
+            case "acceptancetype": return "acceptanceType";
+            case "dccstatus":
+            case "status": return "status";
+            case "dcccreateddate":
+            case "createddate": return "createdDate";
             case "vendorcomment": return "vendorComment";
             case "dccid": return "dccId";
             case "poid": return "poNumber";
             case "projectname": return "projectName";
-            case "supplierid":
+            case "supplierid": return "supplierId";
             case "vendornumber": return "vendorNumber";
             case "vendorname": return "vendorName";
-            case "createdby": return "createdBy";
+            case "createdby":
             case "createdbyname": return "createdBy";
             case "vendoremail": return "vendorEmail";
+            case "currency":
+            case "dcccurrency": return "currency";
+            case "approveddate": return "approvedDate";
             default: return null;
         }
     }
@@ -244,20 +283,24 @@ public class DccSpecification implements Specification<DCC> {
         switch (field.toLowerCase()) {
             case "dccrecordno":
             case "recordno": return "recordNo";
-            case "dccponumber": return "poNumber";
+            case "dccponumber":
+            case "ponumber": return "poNumber";
             case "newprojectname": return "newProjectName";
-            case "dccstatus": return "status";
-            case "dccacceptancetype": return "acceptanceType";
+            case "projectname": return "projectName";
+            case "dccstatus":
+            case "status": return "status";
+            case "dccacceptancetype":
+            case "acceptancetype": return "acceptanceType";
             case "vendorname": return "vendorName";
             case "vendornumber": return "vendorNumber";
             case "createdbyname":
             case "createdby": return "createdBy";
             case "vendorcomment": return "vendorComment";
             case "dccid": return "dccId";
-            case "projectname": return "projectName";
             case "dcccurrency":
             case "currency": return "currency";
             case "vendoremail": return "vendorEmail";
+            case "supplierid": return "supplierId";
             default: return null;
         }
     }
