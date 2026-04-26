@@ -37,7 +37,7 @@ public class TbCategoryApprovals {
     private String comments;
 
     @Column(name = "approvedBy")
-    private String approvedBy;
+    private Integer approvedBy;
 
     @Column(name = "actionTypeId")
     private Long actionTypeId;
@@ -124,11 +124,11 @@ public class TbCategoryApprovals {
         this.comments = comments;
     }
 
-    public String getApprovedBy() {
+    public Integer getApprovedBy() {
         return approvedBy;
     }
 
-    public void setApprovedBy(String approvedBy) {
+    public void setApprovedBy(Integer approvedBy) {
         this.approvedBy = approvedBy;
     }
 

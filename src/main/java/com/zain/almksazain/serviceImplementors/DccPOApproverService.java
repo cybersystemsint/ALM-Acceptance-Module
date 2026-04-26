@@ -104,7 +104,8 @@ public class DccPOApproverService {
                 }
 
                 // Step 1: Get approvals by this user (with request-info logic)
-                List<TbCategoryApprovals> approvals = tbCategoryApprovalsRepository.findByApprovedBy(pendingApprovers).stream()
+                List<TbCategoryApprovals> approvals = tbCategoryApprovalsRepository
+                        .findByApprovedBy(approverIdAsInt).stream()
                         .filter(a -> {
                             if ("pending".equals(a.getStatus())) {
                                 return "request-info".equals(a.getApprovalStatus());
