@@ -456,28 +456,48 @@ public class APIController {
     //=================================NEW PO END POINT FOR NEW PO FORMAT ====
     @PostMapping(value = "/createpo")
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
-    public Map<String, String> createpo(@RequestBody String req) throws ParseException, ParseException, ParseException {
+    public Map<String, String> createpo(@RequestBody String req) throws ParseException {
+
         String batchfilename = "";
         long recordNo = 0;
         logger.info("PO CREATE REQUEST |  " + req);
+
         try {
-            SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd"); // Adjust the pattern as per your date format
+            SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd");
             JSONArray jsonArray = new JSONArray(req);
             String responseinfo = "Failed to save or data";
 
             List<String> validationErrors = new ArrayList<>();
             List<String> blanketerrors = new ArrayList<>();
+            Set<String> batchSeenKeys = new HashSet<>();
+
             for (int i = 0; i < jsonArray.length(); i++) {
                 JSONObject jsonObject = jsonArray.getJSONObject(i);
                 recordNo = Integer.parseInt(jsonObject.getString("recordNo"));
+                String typelookup = jsonObject.getString("typeLookUpCode").trim();
+                String releaseNum  = jsonObject.getString("releaseNum").trim();
+                String rawPoNumber = jsonObject.getString("poNumber").trim();
 
+                // Derive the stored-format poNumber for lookup (mirrors save transformation)
+                String lookupPoNumber = (typelookup.equalsIgnoreCase("BLANKET") && !releaseNum.equalsIgnoreCase("0"))
+                        ? rawPoNumber + "-" + releaseNum
+                        : rawPoNumber;
+
+                // Build intra-batch key and check for within-batch duplicate
+                String batchKey = lookupPoNumber + "|" + jsonObject.getInt("lineNumber") + "|" + releaseNum;
+                if (batchSeenKeys.contains(batchKey)) {
+                    // This combination already appeared earlier in this same batch — skip it
+                    logger.info("INTRA-BATCH DUPLICATE SKIPPED | " + batchKey);
+                    continue;
+                }
+                batchSeenKeys.add(batchKey);
                 tbPurchaseOrder spldt = PurchaseOrderRepo.findByRecordNo(recordNo);
                 if (spldt != null) {
 
-                    spldt.setPoNumber(jsonObject.getString("poNumber").trim());
-                    spldt.setTypeLookUpCode(jsonObject.getString("typeLookUpCode").trim());
+                    spldt.setPoNumber(rawPoNumber);
+                    spldt.setTypeLookUpCode(typelookup);
                     spldt.setBlanketTotalAmount(jsonObject.getDouble("blanketTotalAmount"));
-                    spldt.setReleaseNum(jsonObject.getString("releaseNum").trim());
+                    spldt.setReleaseNum(releaseNum);
                     spldt.setLineNumber(jsonObject.getInt("lineNumber"));
                     spldt.setPrNum(jsonObject.getString("prNum").trim());
                     spldt.setProjectName(jsonObject.getString("projectName").trim());
@@ -509,7 +529,6 @@ public class APIController {
                     spldt.setAuthorisationStatus(jsonObject.getString("authorisationStatus").trim());
                     spldt.setPoClosureStatus(jsonObject.getString("poClosureStatus").trim());
                     spldt.setDepartmentName(jsonObject.getString("departmentName").trim());
-                    // spldt.setBusinessOwner(jsonObject.getString("businessOwner").trim());
                     spldt.setPoLineType(jsonObject.getString("poLineType").trim());
                     spldt.setAcceptanceType(jsonObject.getString("acceptanceType").trim());
                     spldt.setCostCenter(jsonObject.getString("costCenter").trim());
@@ -527,9 +546,9 @@ public class APIController {
                     spldt.setCreatedBy(jsonObject.getInt("createdById"));
                     spldt.setCreatedByName(jsonObject.getString("createdByName").trim());
                     String dateApproved = jsonObject.getString("approvedDate");
-                    String dateCreated = jsonObject.getString("createdDate");
-                    Double unitPrice = jsonObject.optDouble("unitPriceInPoCurrency", 0.0);
-                    Double poQtyNew = jsonObject.optDouble("poQtyNew", 0.0);
+                    String dateCreated  = jsonObject.getString("createdDate");
+                    Double unitPrice       = jsonObject.optDouble("unitPriceInPoCurrency", 0.0);
+                    Double poQtyNew        = jsonObject.optDouble("poQtyNew", 0.0);
                     Double poOrderQuantity = jsonObject.optDouble("poOrderQuantity", 0.0);
                     if (poQtyNew > 0) {
                         Double quantityDiff = poOrderQuantity - poQtyNew;
@@ -537,10 +556,10 @@ public class APIController {
                         spldt.setNewLinePriceInPoCurrency(poQtyNew * unitPrice);
                     }
                     try {
-                        java.util.Date parsedDate = dateFormat.parse(dateApproved);
-                        java.sql.Date sqlDate = new java.sql.Date(parsedDate.getTime());
-                        java.util.Date newDate = dateFormat.parse(dateCreated);
-                        java.sql.Date sqlcreatedDate = new java.sql.Date(newDate.getTime());
+                        java.util.Date parsedDate    = dateFormat.parse(dateApproved);
+                        java.sql.Date  sqlDate        = new java.sql.Date(parsedDate.getTime());
+                        java.util.Date newDate        = dateFormat.parse(dateCreated);
+                        java.sql.Date  sqlcreatedDate = new java.sql.Date(newDate.getTime());
                         spldt.setApprovedDate(sqlDate);
                         spldt.setCreatedDate(sqlcreatedDate);
                     } catch (ParseException ex) {
@@ -554,28 +573,33 @@ public class APIController {
                         logger.info("Exception |  " + excc.toString());
                         responseinfo = excc.toString();
                     }
+
                 } else {
 
-                    tbPurchaseOrder topRecord = PurchaseOrderRepo.findTopByPoNumberAndLineNumberAndReleaseNum(jsonObject.getString("poNumber"), String.valueOf(jsonObject.getInt("lineNumber")), jsonObject.getString("releaseNum"));
+                    tbPurchaseOrder topRecord = PurchaseOrderRepo
+                            .findTopByPoNumberAndLineNumberAndReleaseNum(
+                                    lookupPoNumber,  //uses transformed key
+                                    String.valueOf(jsonObject.getInt("lineNumber")),
+                                    releaseNum
+                            );
                     String poNum = topRecord != null ? String.valueOf(topRecord.getPoNumber()) : "";
 
                     if (poNum.length() < 1) {
 
-                        String typelookup = jsonObject.getString("typeLookUpCode").trim();
-                        String releaseNum = jsonObject.getString("releaseNum").trim();
-
                         if (typelookup.equalsIgnoreCase("BLANKET") && releaseNum.equalsIgnoreCase("0")) {
-                            blanketerrors.add(jsonObject.getString("poNumber"));
+                            blanketerrors.add(rawPoNumber);
                         } else {
+
                             tbPurchaseOrder nwspldt = new tbPurchaseOrder();
                             if (typelookup.equalsIgnoreCase("BLANKET")) {
-                                nwspldt.setPoNumber(jsonObject.getString("poNumber").trim() + "-" + releaseNum);
+                                nwspldt.setPoNumber(rawPoNumber + "-" + releaseNum);
                             } else {
-                                nwspldt.setPoNumber(jsonObject.getString("poNumber").trim());
+                                nwspldt.setPoNumber(rawPoNumber);
                             }
-                            nwspldt.setTypeLookUpCode(jsonObject.getString("typeLookUpCode").trim());
+
+                            nwspldt.setTypeLookUpCode(typelookup);
                             nwspldt.setBlanketTotalAmount(jsonObject.getDouble("blanketTotalAmount"));
-                            nwspldt.setReleaseNum(jsonObject.getString("releaseNum").trim());
+                            nwspldt.setReleaseNum(releaseNum);
                             nwspldt.setLineNumber(jsonObject.getInt("lineNumber"));
                             nwspldt.setPrNum(jsonObject.getString("prNum").trim());
                             nwspldt.setProjectName(jsonObject.getString("projectName").trim());
@@ -623,21 +647,24 @@ public class APIController {
                             nwspldt.setVendorNumber(jsonObject.getString("vendorNumber").trim());
                             nwspldt.setCreatedBy(jsonObject.getInt("createdById"));
                             nwspldt.setCreatedByName(jsonObject.getString("createdByName").trim());
-                            String dateApproved = jsonObject.getString("approvedDate");
-                            String dateCreated = jsonObject.getString("createdDate");
-                            Double unitPrice = jsonObject.optDouble("unitPriceInPoCurrency", 0.0);
-                            Double poQtyNew = jsonObject.optDouble("poQtyNew", 0.0);
+
+                            String dateApproved    = jsonObject.getString("approvedDate");
+                            String dateCreated     = jsonObject.getString("createdDate");
+                            Double unitPrice       = jsonObject.optDouble("unitPriceInPoCurrency", 0.0);
+                            Double poQtyNew        = jsonObject.optDouble("poQtyNew", 0.0);
                             Double poOrderQuantity = jsonObject.optDouble("poOrderQuantity", 0.0);
+
                             if (poQtyNew > 0) {
                                 Double quantityDiff = poOrderQuantity - poQtyNew;
                                 nwspldt.setDescopedLinePriceInPoCurrency(quantityDiff * unitPrice);
                                 nwspldt.setNewLinePriceInPoCurrency(poQtyNew * unitPrice);
                             }
+
                             try {
-                                java.util.Date parsedDate = dateFormat.parse(dateApproved);
-                                java.sql.Date sqlDate = new java.sql.Date(parsedDate.getTime());
-                                java.util.Date newDate = dateFormat.parse(dateCreated);
-                                java.sql.Date sqlcreatedDate = new java.sql.Date(newDate.getTime());
+                                java.util.Date parsedDate    = dateFormat.parse(dateApproved);
+                                java.sql.Date  sqlDate        = new java.sql.Date(parsedDate.getTime());
+                                java.util.Date newDate        = dateFormat.parse(dateCreated);
+                                java.sql.Date  sqlcreatedDate = new java.sql.Date(newDate.getTime());
                                 nwspldt.setApprovedDate(sqlDate);
                                 nwspldt.setCreatedDate(sqlcreatedDate);
                             } catch (ParseException ex) {
@@ -648,28 +675,29 @@ public class APIController {
                             try {
                                 PurchaseOrderRepo.save(nwspldt);
                                 responseinfo = "Record Created Success";
-
                             } catch (JSONException excc) {
-
                                 logger.info("Exception |  " + excc.toString());
-
                                 responseinfo = excc.toString();
                             }
                         }
-                        // }
+
                     } else {
-                        validationErrors.add(jsonObject.getString("poNumber") + " " + jsonObject.getInt("lineNumber"));
+                        // Record already exists in DB — flag as duplicate for response
+                        validationErrors.add(rawPoNumber + " " + jsonObject.getInt("lineNumber"));
                     }
-
                 }
-
             }
+
             logger.info("PO CREATE RESPONSE |  " + responseinfo);
             logger.info("VALIDATION RESPONSE |  " + validationErrors);
+            logger.info("BLANKET HEADER SKIPPED |  " + blanketerrors);
+
             if (!validationErrors.isEmpty()) {
                 batchfilename = getbatchfilename("FailedUpload");
                 helper.logBatchFile(responseinfo, true, batchfilename);
-                return response("Error", "PO numbers and Line Items: " + String.join(", ", validationErrors) + " are already uploaded. Duplicates not allowed");
+                return response("Error", "PO numbers and Line Items: "
+                        + String.join(", ", validationErrors)
+                        + " are already uploaded. Duplicates not allowed");
             } else if (!responseinfo.contains("Success")) {
                 batchfilename = getbatchfilename("FailedUpload");
                 helper.logBatchFile(responseinfo, true, batchfilename);
