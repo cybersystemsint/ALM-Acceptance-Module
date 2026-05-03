@@ -834,7 +834,7 @@ public class DccPOController {
             String[] filterableFields = {
                     "dccPoNumber", "newProjectName", "dccStatus", "dccAcceptanceType",
                     "vendorName", "vendorNumber", "createdByName", "createdBy",
-                    "recordNo", "dccRecordNo", "approvalCount", "supplierId"
+                    "recordNo", "dccRecordNo", "approvalCount"
             };
 
             for (String field : filterableFields) {
@@ -1034,7 +1034,7 @@ public class DccPOController {
                     "projectName", "newProjectName", "dccAcceptanceType", "acceptanceType",
                     "dccStatus", "status", "vendorName", "vendorNumber", "vendorEmail",
                     "dccEmail", "createdBy", "createdByName", "vendorComment", "vendorComments",
-                    "approverComment", "approvalCount", "dccCurrency", "currency", "supplierId"
+                    "approverComment", "approvalCount", "dccCurrency", "currency"
                     // NOTE: pendingApprovers is NOT in this array - handled separately below
             };
 

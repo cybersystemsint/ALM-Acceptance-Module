@@ -174,12 +174,24 @@ public class DccSpecification implements Specification<DCC> {
                 else if (field.equals("approvalCount")) {
                     // approvalCount is calculated, not in DCC table - skip
                 }
-                // EXACT match for string fields (case-insensitive)
+                // supplierId maps to vendorNumber
+                else if (field.equals("supplierId")) {
+                    predicates.add(cb.equal(root.get("vendorNumber"), value));
+                }
+// EXACT match for status/type/id fields
+                else if (field.equals("dccStatus") || field.equals("dccAcceptanceType") ||
+                        field.equals("vendorNumber")) {
+                    predicates.add(cb.equal(
+                            cb.lower(root.get(dbField).as(String.class)),
+                            value.toLowerCase()
+                    ));
+                }
+// CONTAINS match for vendorName, createdByName, dccPoNumber, projectName etc.
                 else {
                     try {
-                        predicates.add(cb.equal(
+                        predicates.add(cb.like(
                                 cb.lower(root.get(dbField).as(String.class)),
-                                value.toLowerCase()
+                                "%" + value.toLowerCase() + "%"
                         ));
                     } catch (Exception e) {
                         // Skip if field doesn't support string operations
@@ -300,7 +312,7 @@ public class DccSpecification implements Specification<DCC> {
             case "dcccurrency":
             case "currency": return "currency";
             case "vendoremail": return "vendorEmail";
-            case "supplierid": return "supplierId";
+            case "supplierid": return "vendorNumber";
             default: return null;
         }
     }
