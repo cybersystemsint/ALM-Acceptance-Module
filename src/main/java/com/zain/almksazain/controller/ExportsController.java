@@ -84,7 +84,7 @@ public class ExportsController {
             produces = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     public DeferredResult<ResponseEntity<byte[]>> exportAcceptanceReport(
             @RequestBody String req) {
-
+        logger.info("Acceptance report export request body : " + req);
         // Returns to client immediately — 10 min async timeout
         DeferredResult<ResponseEntity<byte[]>> deferredResult = new DeferredResult<>(600000L);
 
@@ -144,7 +144,7 @@ public class ExportsController {
                 + buildBaseFrom()
                 + where
                 + " GROUP BY DCC.recordNo, LN2.recordNo"
-                + " ORDER BY DCC.recordNo, LN2.recordNo"
+                + " ORDER BY DCC.recordNo DESC, LN2.recordNo DESC"
                 + (limit > 0 ? " LIMIT " + limit : "");
 
         final List<String> headers     = buildHeaders();
@@ -152,7 +152,7 @@ public class ExportsController {
         final List<Object> finalParams = new ArrayList<>(whereParams);
 
         final Set<String> numericFields = new HashSet<>(Arrays.asList(
-                "requestId", "poLineNumber", "unitPrice", "uplLineUnitPrice",
+                "poLineNumber", "unitPrice", "uplLineUnitPrice",
                 "acceptanceUplQty", "acceptancePoQty", "totalAcceptanceAmount"
         ));
 
