@@ -715,21 +715,21 @@ public Map<String, Object> getAgingReportWithMultipleFilters(
     
     final String onlyStatus = "inprocess";
 
-    if (hasFilters) {
-        Pageable unpaged = Pageable.unpaged();
-        pagedDcc = (supplierId != null && !"0".equals(supplierId))
-                ? dccRepository.findAllBySupplierIdAndStatus(supplierId, onlyStatus, unpaged)
-                : dccRepository.findAllByStatus(onlyStatus, unpaged);
-        dccList = pagedDcc.getContent();
-        System.out.println("Loaded " + dccList.size() + " DCC records for filtering");
-    } else {
-        Pageable pageable = PageRequest.of(page - 1, size, Sort.by(Sort.Direction.DESC, "recordNo"));
-        pagedDcc = (supplierId != null && !"0".equals(supplierId))
-                ? dccRepository.findAllBySupplierIdAndStatus(supplierId, onlyStatus, pageable)
-                : dccRepository.findAllByStatus(onlyStatus, pageable);
-        dccList = pagedDcc.getContent();
-        System.out.println("Loaded " + dccList.size() + " DCC records with pagination");
-    }
+if (hasFilters) {
+    Pageable unpaged = Pageable.unpaged();
+    pagedDcc = (supplierId != null && !"0".equals(supplierId.trim()))
+            ? dccRepository.findAllBySupplierVendorAndStatus(supplierId, onlyStatus, unpaged)
+            : dccRepository.findAllByStatus(onlyStatus, unpaged);
+    dccList = pagedDcc.getContent();
+    System.out.println("Loaded " + dccList.size() + " DCC records for filtering");
+} else {
+    Pageable pageable = PageRequest.of(page - 1, size, Sort.by(Sort.Direction.DESC, "recordNo"));
+    pagedDcc = (supplierId != null && !"0".equals(supplierId.trim()))
+            ? dccRepository.findAllBySupplierVendorAndStatus(supplierId, onlyStatus, pageable)
+            : dccRepository.findAllByStatus(onlyStatus, pageable);
+    dccList = pagedDcc.getContent();
+    System.out.println("Loaded " + dccList.size() + " DCC records with pagination");
+}
     
     if (dccList.isEmpty()) {
         Map<String, Object> emptyResponse = new HashMap<>();
@@ -830,7 +830,7 @@ private boolean matchesFilter(Map<String, Object> row, String columnName, String
         return true;
     }
     
-    ColumnInfo mapping = COLUMN_MAPPINGS.get(columnName);
+    ColumnInfo mapping = getColumnInfoInsensitive(columnName);
     String targetKey = (mapping != null && mapping.getFieldName() != null && !mapping.getFieldName().trim().isEmpty())
             ? mapping.getFieldName()
             : columnName;
@@ -886,5 +886,14 @@ private boolean matchesFilter(Map<String, Object> row, String columnName, String
     return containsMatch;
 }
 
-
+// case-insensitive lookup helper
+private ColumnInfo getColumnInfoInsensitive(String key) {
+    if (key == null) return null;
+    ColumnInfo info = COLUMN_MAPPINGS.get(key);
+    if (info != null) return info;
+    for (Map.Entry<String, ColumnInfo> e : COLUMN_MAPPINGS.entrySet()) {
+        if (e.getKey().equalsIgnoreCase(key)) return e.getValue();
+    }
+    return null;
+}
 }
