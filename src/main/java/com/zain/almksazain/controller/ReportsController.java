@@ -1804,7 +1804,7 @@ private String convertToSqlDate(String input) {
             String sql = "SELECT * FROM combinedPurchaseOrderView" + whereClause + paginationSql;
             result = jdbcTemplate.queryForList(sql, params.toArray());
         }
-
+        loggger.info("Fetch record query :  " + whereClause);
         Map<String, Object> response = new HashMap<>();
         response.put("data", result);
         response.put("totalRecords", totalRecords);
@@ -2900,6 +2900,10 @@ private String convertToSqlDate(String input) {
             if (filters.containsKey("currencyCode") && !filters.get("currencyCode").isEmpty()) {
                 baseWhereClause += " AND PO.currencyCode = ?";
                 baseParams.add(filters.get("currencyCode"));
+            }
+            if (filters.containsKey("supplierId") && !filters.get("supplierId").isEmpty()) {
+                baseWhereClause += " AND PO.vendorNumber = ?";
+                baseParams.add(filters.get("supplierId"));
             }
             try {
                 if (filters.containsKey("createdDateStart") && !filters.get("createdDateStart").isEmpty()) {

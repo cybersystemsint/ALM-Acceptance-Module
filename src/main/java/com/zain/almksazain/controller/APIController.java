@@ -1185,6 +1185,9 @@ public class APIController {
                     //lets do something here for upl based first loop through all the line items
                     Map<String, Double> uplTotalsPerLine = new HashMap<>();
                     Map<String, Double> raisedUpldetails = new HashMap<>();
+                    // Prior DCC value per (PO line, UPL) must be added once; repeating the same PO/UPL on
+                    // multiple serialized rows would otherwise multiply Totalraised by the row count.
+                    Set<String> priorRaisedCountedForPoLineUpl = new HashSet<>();
 
                     //INTERNAL UAT
                     for (int h = 0; h < dcclineRequest.length(); h++) {
@@ -1204,16 +1207,19 @@ public class APIController {
                             List<Integer> validRecordNos = dccrepo.findByPoNumberAndStatus(poNumber, allowedStatuses);
                             logger.info("Matching RecordNos UPLBASED: " + validRecordNos);
                             if (!validRecordNos.isEmpty()) {
-                                List<String> dccIdStrings = validRecordNos.stream()
-                                        .map(String::valueOf)
-                                        .collect(Collectors.toList());
-                                logger.info("Matching dccIdStrings: " + dccIdStrings);
+                                String priorKey = validatelineNumber + "|" + validateuplline;
+                                if (priorRaisedCountedForPoLineUpl.add(priorKey)) {
+                                    List<String> dccIdStrings = validRecordNos.stream()
+                                            .map(String::valueOf)
+                                            .collect(Collectors.toList());
+                                    logger.info("Matching dccIdStrings: " + dccIdStrings);
 
-                                Double totalDeliveredQty = dcclnrepo.sumDeliveredQtyByDccIdsAndPoLineInfo(dccIdStrings, poNumber, validatelineNumber, validateuplline);
+                                    Double totalDeliveredQty = dcclnrepo.sumDeliveredQtyByDccIdsAndPoLineInfo(dccIdStrings, poNumber, validatelineNumber, validateuplline);
 
-                                deliveredlineTotal = totalDeliveredQty * uplLineUnitPrice;
+                                    deliveredlineTotal = totalDeliveredQty * uplLineUnitPrice;
 
-                                raisedUpldetails.put(validatelineNumber, raisedUpldetails.getOrDefault(validatelineNumber, 0.0) + deliveredlineTotal);
+                                    raisedUpldetails.put(validatelineNumber, raisedUpldetails.getOrDefault(validatelineNumber, 0.0) + deliveredlineTotal);
+                                }
                             }
                         }
                     }
