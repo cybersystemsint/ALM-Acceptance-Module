@@ -7,6 +7,9 @@ package com.zain.almksazain.repo;
 import com.zain.almksazain.model.tb_Site;
 import org.springframework.data.jpa.repository.JpaRepository;
 
+import java.util.Collection;
+import java.util.List;
+
 /**
  *
  * @author jgithu
@@ -18,5 +21,7 @@ public interface tbSiteRepo extends JpaRepository<tb_Site, Long> {
  //   tb_Site findBySiteId(String siteId);
     
      tb_Site findFirstBySiteId(String siteId);
+
+    List<tb_Site> findBySiteIdIn(Collection<String> siteIds);
 
 }
