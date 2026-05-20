@@ -39,6 +39,10 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 /**
@@ -55,7 +59,10 @@ public class DccPOController {
     // Configuration constants for export optimization
     private static final int MAX_EXPORT_RECORDS = 250000; // Configurable limit
     private static final int MAX_CONCURRENT_EXPORTS = 3; // Prevent resource exhaustion
-    private static final long EXPORT_TIMEOUT_MS = 120000L; // 2 minutes
+    // 10 min matches the existing V1 endpoint timeout; large filtered exports
+    // commonly take 4-8 min, so the prior 2-min ceiling guaranteed a "network
+    // error" client-side even though the server was still working successfully.
+    private static final long EXPORT_TIMEOUT_MS = 600000L; // 10 minutes
     private static final int EXCEL_WINDOW_SIZE = 100; // SXSSF memory window
 
     // Throttling mechanism
@@ -1259,7 +1266,7 @@ public class DccPOController {
     public DeferredResult<ResponseEntity<byte[]>> exportDccPOCombinedViewToExcelV2(@RequestBody Map<String, Object> request) {
         DeferredResult<ResponseEntity<byte[]>> deferredResult = new DeferredResult<>(EXPORT_TIMEOUT_MS);
 
-        // Check concurrent export limit
+        // Throttle: bail fast if too many exports in flight
         if (!exportSemaphore.tryAcquire()) {
             logger.warn("Export request rejected - too many concurrent exports");
             deferredResult.setErrorResult(ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
@@ -1267,46 +1274,133 @@ public class DccPOController {
             return deferredResult;
         }
 
+        // Single-shot release so timeout + completion paths can't both release.
+        final AtomicBoolean released = new AtomicBoolean(false);
+        Runnable releaseOnce = () -> {
+            if (released.compareAndSet(false, true)) exportSemaphore.release();
+        };
+
+        final ExportParameters params;
         try {
-            // Extract and validate parameters
-            ExportParameters params = extractParameters(request);
-
-            logger.info("Starting export with filters: {}", params.fieldFilters.keySet());
-
-            // Fetch data with database-level filtering
-            CompletableFuture<List<DccPOCombinedViewDTO>> future =
-                    dccPOExportService.getAllDccPOForExportV2(
-                            params.supplierId,
-                            params.pendingApprovers,
-                            params.columnName,
-                            params.searchQuery,
-                            params.operator,
-                            params.fieldFilters,
-                            params.createdDateStart,
-                            params.createdDateEnd,
-                            params.approvedDateStart,
-                            params.approvedDateEnd,
-                            MAX_EXPORT_RECORDS // Pass limit to service
-                    );
-
-            future.thenAccept(data -> {
-                try {
-                    processExportData(data, params, deferredResult);
-                } finally {
-                    exportSemaphore.release(); // Always release permit
-                }
-            }).exceptionally(throwable -> {
-                exportSemaphore.release(); // Release on error
-                handleExportError(throwable, deferredResult);
-                return null;
-            });
-
+            params = extractParameters(request);
         } catch (Exception e) {
-            exportSemaphore.release(); // Release on validation error
+            releaseOnce.run();
             logger.error("Error validating export request", e);
             deferredResult.setErrorResult(ResponseEntity.status(HttpStatus.BAD_REQUEST)
                     .body(("Invalid request: " + e.getMessage()).getBytes()));
+            return deferredResult;
         }
+        logger.info("Starting streamed export with filters: {}", params.fieldFilters.keySet());
+
+        // Build the workbook up front; each batch consumer call appends rows
+        // directly so we never hold the full result set in memory.
+        final SXSSFWorkbook workbook = new SXSSFWorkbook(EXCEL_WINDOW_SIZE);
+        final AtomicBoolean disposed = new AtomicBoolean(false);
+        Runnable disposeOnce = () -> {
+            if (disposed.compareAndSet(false, true)) {
+                try { workbook.dispose(); } catch (Exception ignore) {}
+                try { workbook.close();   } catch (Exception ignore) {}
+            }
+        };
+
+        final Sheet sheet = workbook.createSheet("DCC PO Data");
+        final ExcelStyles styles = createExcelStyles(workbook);
+        final SimpleDateFormat dateFormatter = new SimpleDateFormat("d-MMM-yyyy", Locale.ENGLISH);
+        createHeaderRow(sheet, styles);
+
+        final AtomicInteger rowNum = new AtomicInteger(1);
+        final AtomicReference<Long> currentDccNo = new AtomicReference<>(null);
+        final AtomicReference<DccPOCombinedViewDTO> firstRecord = new AtomicReference<>(null);
+
+        // Cancel flag flipped by onTimeout; service polls between batches and exits cleanly.
+        final AtomicBoolean cancelFlag = new AtomicBoolean(false);
+
+        // Service emits each batch already sorted (dccRecordNo DESC,
+        // approvalCount DESC, lineNumber DESC); all DTOs for one DCC are
+        // contiguous within a batch and a DCC never splits across batches,
+        // so we can update firstRecord on every dccRecordNo transition.
+        Consumer<List<DccPOCombinedViewDTO>> batchConsumer = batch -> {
+            for (DccPOCombinedViewDTO dto : batch) {
+                Long dccNo = dto.getDccRecordNo();
+                if (!Objects.equals(currentDccNo.get(), dccNo)) {
+                    currentDccNo.set(dccNo);
+                    firstRecord.set(dto);
+                }
+                Row row = sheet.createRow(rowNum.getAndIncrement());
+                populateDataRow(row, firstRecord.get(), dto, styles, dateFormatter);
+            }
+        };
+
+        deferredResult.onTimeout(() -> {
+            logger.warn("Export timed out after {} ms -- cancelling job and releasing permit", EXPORT_TIMEOUT_MS);
+            cancelFlag.set(true);
+            releaseOnce.run();
+            if (!deferredResult.isSetOrExpired()) {
+                deferredResult.setErrorResult(ResponseEntity.status(HttpStatus.GATEWAY_TIMEOUT)
+                        .body("Export timed out. Please add filters to narrow the result set.".getBytes()));
+            }
+            // Defer workbook dispose to whenComplete -- service loop may still
+            // be mid-batch and writing to the sheet.
+        });
+
+        CompletableFuture<Integer> future = dccPOExportService.getAllDccPOForExportV2Streamed(
+                params.supplierId,
+                params.pendingApprovers,
+                params.columnName,
+                params.searchQuery,
+                params.operator,
+                params.fieldFilters,
+                params.createdDateStart,
+                params.createdDateEnd,
+                params.approvedDateStart,
+                params.approvedDateEnd,
+                MAX_EXPORT_RECORDS,
+                cancelFlag,
+                batchConsumer);
+
+        future.whenComplete((total, throwable) -> {
+            try {
+                if (cancelFlag.get()) {
+                    logger.info("Export cancelled -- discarding partial workbook");
+                    return;
+                }
+                if (throwable != null) {
+                    if (!deferredResult.isSetOrExpired()) {
+                        handleExportError(throwable, deferredResult);
+                    }
+                    return;
+                }
+                if (total == null || total == 0) {
+                    if (!deferredResult.isSetOrExpired()) {
+                        deferredResult.setErrorResult(ResponseEntity.status(HttpStatus.NO_CONTENT)
+                                .body("No data found matching the specified filters".getBytes()));
+                    }
+                    return;
+                }
+
+                ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                workbook.write(baos);
+                byte[] bytes = baos.toByteArray();
+
+                HttpHeaders responseHeaders = new HttpHeaders();
+                responseHeaders.add("Content-Disposition", "attachment; filename=dcc_po_export_v2.xlsx");
+                responseHeaders.add("X-Total-Records", String.valueOf(total));
+
+                if (!deferredResult.isSetOrExpired()) {
+                    deferredResult.setResult(new ResponseEntity<>(bytes, responseHeaders, HttpStatus.OK));
+                }
+                logger.info("Successfully streamed export of {} rows", total);
+            } catch (Exception ex) {
+                logger.error("Error finalising streamed export", ex);
+                if (!deferredResult.isSetOrExpired()) {
+                    deferredResult.setErrorResult(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                            .body(("Error generating Excel: " + ex.getMessage()).getBytes()));
+                }
+            } finally {
+                disposeOnce.run();
+                releaseOnce.run();
+            }
+        });
 
         return deferredResult;
     }
@@ -1359,111 +1453,6 @@ public class DccPOController {
         }
 
         return filters;
-    }
-
-    // Process and export data
-    private void processExportData(List<DccPOCombinedViewDTO> data,
-                                   ExportParameters params,
-                                   DeferredResult<ResponseEntity<byte[]>> deferredResult) {
-        try {
-            // Validate data size
-            if (data.isEmpty()) {
-                logger.warn("No data found for export with given filters");
-                deferredResult.setErrorResult(ResponseEntity.status(HttpStatus.NO_CONTENT)
-                        .body("No data found matching the specified filters".getBytes()));
-                return;
-            }
-
-            if (data.size() > MAX_EXPORT_RECORDS) {
-                logger.warn("Export would return {} records, exceeding limit of {}",
-                        data.size(), MAX_EXPORT_RECORDS);
-                deferredResult.setErrorResult(ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                        .body(String.format("Export would return %d records. Maximum allowed is %d. Please add more filters.",
-                                data.size(), MAX_EXPORT_RECORDS).getBytes()));
-                return;
-            }
-
-            logger.info("Processing {} records for export", data.size());
-
-            // Single-pass sort and group (data already filtered by database)
-            List<DccPOCombinedViewDTO> sortedData = data.stream()
-                    .sorted(Comparator
-                            .comparing(DccPOCombinedViewDTO::getDccRecordNo,
-                                    Comparator.nullsLast(Comparator.reverseOrder())) // Request No DESC
-                            .thenComparing(DccPOCombinedViewDTO::getApprovalCount,
-                                    Comparator.nullsLast(Comparator.reverseOrder())) // Approval Count DESC
-                            .thenComparing(DccPOCombinedViewDTO::getLineNumber,
-                                    Comparator.nullsLast(Comparator.reverseOrder())) // Line Number DESC
-                    )
-                    .collect(Collectors.toList());
-
-
-            // Group while preserving sort order
-            Map<Long, List<DccPOCombinedViewDTO>> groupedByDccRecordNo = sortedData.stream()
-                    .collect(Collectors.groupingBy(
-                            DccPOCombinedViewDTO::getDccRecordNo,
-                            LinkedHashMap::new,
-                            Collectors.toList()));
-
-            logger.info("Grouped into {} unique DCC records", groupedByDccRecordNo.size());
-
-            // Generate Excel file
-            byte[] excelBytes = generateExcelFile(groupedByDccRecordNo, sortedData.size());
-
-            // Return response
-            HttpHeaders responseHeaders = new HttpHeaders();
-            responseHeaders.add("Content-Disposition", "attachment; filename=dcc_po_export_v2.xlsx");
-            responseHeaders.add("X-Total-Records", String.valueOf(sortedData.size()));
-            responseHeaders.add("X-Total-Groups", String.valueOf(groupedByDccRecordNo.size()));
-
-            deferredResult.setResult(new ResponseEntity<>(excelBytes, responseHeaders, HttpStatus.OK));
-
-            logger.info("Successfully exported {} records in {} groups",
-                    sortedData.size(), groupedByDccRecordNo.size());
-
-        } catch (Exception ex) {
-            logger.error("Error processing export data", ex);
-            deferredResult.setErrorResult(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(("Error generating Excel: " + ex.getMessage()).getBytes()));
-        }
-    }
-
-    // Generate Excel file
-    private byte[] generateExcelFile(Map<Long, List<DccPOCombinedViewDTO>> groupedData,
-                                     int totalRows) throws Exception {
-        SXSSFWorkbook workbook = new SXSSFWorkbook(EXCEL_WINDOW_SIZE);
-        try {
-            Sheet sheet = workbook.createSheet("DCC PO Data");
-
-            // Create reusable styles
-            ExcelStyles styles = createExcelStyles(workbook);
-
-            // Date formatter (reused throughout)
-            SimpleDateFormat dateFormatter = new SimpleDateFormat("d-MMM-yyyy", Locale.ENGLISH);
-
-            // Create header row
-            createHeaderRow(sheet, styles);
-
-            // Populate data rows
-            int rowNum = 1;
-            for (Map.Entry<Long, List<DccPOCombinedViewDTO>> entry : groupedData.entrySet()) {
-                DccPOCombinedViewDTO firstRecord = entry.getValue().get(0);
-
-                for (DccPOCombinedViewDTO dto : entry.getValue()) {
-                    Row row = sheet.createRow(rowNum++);
-                    populateDataRow(row, firstRecord, dto, styles, dateFormatter);
-                }
-            }
-
-            // Write to byte array
-            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            workbook.write(baos);
-            return baos.toByteArray();
-
-        } finally {
-            workbook.dispose(); // Clean up temp files
-            workbook.close();
-        }
     }
 
     // Create Excel styles (reusable)

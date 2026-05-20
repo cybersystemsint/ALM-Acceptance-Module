@@ -7,6 +7,7 @@ import com.zain.almksazain.repo.*;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -19,6 +20,9 @@ import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -52,6 +56,137 @@ public class DccPOExportService {
 
     @Autowired
     private TbCategoryApprovalsRepository tbCategoryApprovalsRepository;
+
+    /**
+     * Same ThreadPoolTaskExecutor that powers {@link Async} on this class.
+     * Injected explicitly so the inner {@link CompletableFuture#supplyAsync}
+     * runs on the configured pool instead of {@link java.util.concurrent.ForkJoinPool#commonPool()}.
+     */
+    @Autowired
+    @Qualifier("taskExecutor")
+    private Executor taskExecutor;
+
+    /**
+     * Streaming variant of {@link #getAllDccPOForExportV2}. Emits each batch
+     * of DTOs to {@code batchConsumer} as soon as it is built, so the caller
+     * can write Excel rows on the fly instead of holding the entire result
+     * list (up to 250k DTOs) in heap.
+     *
+     * <p>Three differences from the buffered version:
+     * <ul>
+     *   <li>Runs on the configured {@code taskExecutor} (not commonPool).</li>
+     *   <li>Polls {@code cancelFlag} at every batch boundary; stops cleanly
+     *       when set by the controller's timeout/abort handler so ghost jobs
+     *       no longer pin semaphore permits, DB connections, or heap.</li>
+     *   <li>Returns the total DTO count instead of the list itself.</li>
+     * </ul>
+     */
+    public CompletableFuture<Integer> getAllDccPOForExportV2Streamed(
+            String supplierId,
+            String pendingApprovers,
+            String columnName,
+            String searchQuery,
+            String operator,
+            Map<String, String> fieldFilters,
+            String createdDateStart,
+            String createdDateEnd,
+            String approvedDateStart,
+            String approvedDateEnd,
+            int maxRecords,
+            AtomicBoolean cancelFlag,
+            Consumer<List<DccPOCombinedViewDTO>> batchConsumer) {
+
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                logger.info("Starting streamed export V2 - supplierId: {}, filters: {}, maxRecords: {}",
+                        supplierId, fieldFilters != null ? fieldFilters.keySet() : "none", maxRecords);
+
+                DccSpecification spec = new DccSpecification(
+                        supplierId, pendingApprovers, columnName, searchQuery, operator,
+                        fieldFilters, createdDateStart, createdDateEnd,
+                        approvedDateStart, approvedDateEnd);
+
+                int currentPage = 0;
+                int totalDtos = 0;
+                int totalDccProcessed = 0;
+                boolean shouldContinue = true;
+
+                while (shouldContinue && totalDtos < maxRecords) {
+                    if (cancelFlag != null && cancelFlag.get()) {
+                        logger.info("Streamed export V2 cancelled at page {} ({} DTOs written)",
+                                currentPage, totalDtos);
+                        break;
+                    }
+
+                    Pageable pageable = PageRequest.of(currentPage, BATCH_SIZE,
+                            Sort.by(Sort.Direction.DESC, "recordNo"));
+                    Page<DCC> dccPage = tbDccRepository.findAll(spec, pageable);
+                    List<DCC> dccBatch = dccPage.getContent();
+
+                    if (dccBatch.isEmpty()) {
+                        logger.info("No more DCC records found at page {}", currentPage);
+                        break;
+                    }
+
+                    List<DCC> invalidRecords = dccBatch.stream()
+                            .filter(dcc -> dcc.getPoNumber() == null || dcc.getPoNumber().isEmpty())
+                            .collect(Collectors.toList());
+                    if (!invalidRecords.isEmpty()) {
+                        logger.error("Found {} invalid DCC records in batch {} with missing poNumber",
+                                invalidRecords.size(), currentPage);
+                        throw new DccPOProcessingException("Invalid DCC records detected with missing poNumber");
+                    }
+
+                    List<DccPOCombinedViewDTO> batchResults = processDccBatch(dccBatch);
+
+                    // Respect maxRecords across batches; trim the last batch if needed.
+                    int remainingCapacity = maxRecords - totalDtos;
+                    if (batchResults.size() > remainingCapacity) {
+                        batchResults = batchResults.subList(0, remainingCapacity);
+                        shouldContinue = false;
+                        logger.warn("Reached maxRecords limit of {}. Stopping batch processing.", maxRecords);
+                    }
+
+                    // Sort within batch so rows are emitted in the same order the buffered
+                    // path produced: dccRecordNo DESC (already from page sort), then
+                    // approvalCount DESC, then lineNumber DESC within a DCC.
+                    batchResults.sort(Comparator
+                            .comparing(DccPOCombinedViewDTO::getDccRecordNo,
+                                    Comparator.nullsLast(Comparator.reverseOrder()))
+                            .thenComparing(DccPOCombinedViewDTO::getApprovalCount,
+                                    Comparator.nullsLast(Comparator.reverseOrder()))
+                            .thenComparing(DccPOCombinedViewDTO::getLineNumber,
+                                    Comparator.nullsLast(Comparator.reverseOrder())));
+
+                    batchConsumer.accept(batchResults);
+                    totalDtos += batchResults.size();
+                    totalDccProcessed += dccBatch.size();
+
+                    logger.info("Batch {} streamed: {} DTOs (total {}/{}, DCCs processed {})",
+                            currentPage, batchResults.size(), totalDtos, maxRecords, totalDccProcessed);
+
+                    if (!dccPage.hasNext()) {
+                        logger.info("No more pages available. Processed {} total DCC records.", totalDccProcessed);
+                        shouldContinue = false;
+                    }
+
+                    currentPage++;
+                    if (currentPage >= MAX_PAGES) {
+                        logger.warn("Reached maximum page limit of {}. Stopping for safety.", MAX_PAGES);
+                        break;
+                    }
+                }
+
+                logger.info("Streamed export V2 complete: {} DTOs from {} DCCs (max allowed: {})",
+                        totalDtos, totalDccProcessed, maxRecords);
+                return totalDtos;
+
+            } catch (Exception ex) {
+                logger.error("Error during streamed export V2 of DCC PO Combined View", ex);
+                throw new DccPOProcessingException("Failed to stream DCC PO Combined View V2", ex);
+            }
+        }, taskExecutor);
+    }
 
     /**
      * Optimized export with batch processing to prevent memory exhaustion.

@@ -163,7 +163,7 @@
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
                 <configuration>
-                    <mainClass>com.zain.almksazain.AlmZainKsaApplication</mainClass> <!-- Adjust to your main class -->
+                    <mainClass>com.zain.almksazain.AlmKSAZainApplication</mainClass>
                 </configuration>
             </plugin>
             <plugin>
