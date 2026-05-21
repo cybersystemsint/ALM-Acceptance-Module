@@ -29,6 +29,7 @@ public class DccSpecification implements Specification<DCC> {
     private final String createdDateEnd;
     private final String approvedDateStart;
     private final String approvedDateEnd;
+    private final Set<Long> allowedRecordNos;
 
     // Constructor 1: Full constructor with ALL filters (10 parameters)
     public DccSpecification(String supplierId, String pendingApprovers, String columnName, String searchQuery,
@@ -45,7 +46,30 @@ public class DccSpecification implements Specification<DCC> {
         this.createdDateEnd = createdDateEnd;
         this.approvedDateStart = approvedDateStart;
         this.approvedDateEnd = approvedDateEnd;
+        this.allowedRecordNos = null;
     }
+    public DccSpecification(String supplierId,
+                        String pendingApprovers,
+                        String columnName,
+                        String searchQuery,
+                        String operator,
+                        Set<Long> allowedRecordNos,
+                        Map<String, String> fieldFilters,
+                        String createdDateStart,
+                        String createdDateEnd) {
+
+    this.supplierId = supplierId;
+    this.pendingApprovers = pendingApprovers;
+    this.columnName = columnName;
+    this.searchQuery = searchQuery;
+    this.operator = operator;
+    this.allowedRecordNos = allowedRecordNos;
+    this.fieldFilters = fieldFilters;
+    this.createdDateStart = createdDateStart;
+    this.createdDateEnd = createdDateEnd;
+    this.approvedDateStart = null;
+    this.approvedDateEnd = null;
+}
 
     // Constructor 2: With field filters but no approved dates (8 parameters) - FOR SERVICE COMPATIBILITY
     public DccSpecification(String supplierId, String pendingApprovers, String columnName,

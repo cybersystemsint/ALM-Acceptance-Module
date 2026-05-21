@@ -1,7 +1,10 @@
 package com.zain.almksazain.repo;
 
 import com.zain.almksazain.model.TbCategoryApprovals;
+
+import org.springframework.data.jpa.repository.Query; 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
@@ -21,4 +24,27 @@ public interface TbCategoryApprovalsRepository extends JpaRepository<TbCategoryA
     List<TbCategoryApprovals> findByApprovedBy(String approvedBy);
     List<TbCategoryApprovals> findByApprovalRecordIdAndStatusAndApprovalStatus(Long approvalRecordId, String status, String approvalStatus);
     List<TbCategoryApprovals> findByApprovalRecordIdIn(List<Long> recordIds);
+    // Find DCC IDs where a specific approver is currently pending
+     @Query("""
+         SELECT DISTINCT r.acceptanceRequestRecordNo
+         FROM TbCategoryApprovalRequests r
+         JOIN TbCategoryApprovals a ON a.approvalRecordId = r.recordNo
+         WHERE LOWER(a.approverName) LIKE LOWER(CONCAT('%', :approverName, '%'))
+           AND a.status = 'pending'
+           AND a.approvalStatus IN ('pending', 'readyForApproval', 'request-info')
+           AND r.status IN ('pending', 'request-info')
+         """)
+     List<Long> findDccIdsByPendingApproverName(@Param("approverName") String approverName);
+
+
+@Query("""
+    SELECT COUNT(DISTINCT r.acceptanceRequestRecordNo)
+    FROM TbCategoryApprovalRequests r
+    JOIN TbCategoryApprovals a ON a.approvalRecordId = r.recordNo
+    WHERE LOWER(a.approverName) LIKE LOWER(CONCAT('%', :name, '%'))
+      AND a.status = 'pending'
+      AND a.approvalStatus IN ('pending', 'readyForApproval', 'request-info')
+      AND r.status IN ('pending', 'request-info')
+    """)
+long countDccIdsByPendingApproverName(@Param("name") String name);
 }
