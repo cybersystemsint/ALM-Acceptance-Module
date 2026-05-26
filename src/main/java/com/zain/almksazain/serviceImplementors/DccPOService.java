@@ -9,12 +9,14 @@ import com.zain.almksazain.model.TbCategoryApprovalRequests;
 import com.zain.almksazain.model.TbCategoryApprovals;
 import com.zain.almksazain.model.tbPurchaseOrder;
 import com.zain.almksazain.model.tb_PurchaseOrderUPL;
+import com.zain.almksazain.model.tb_Site;
 import com.zain.almksazain.repo.TbCategoryApprovalRequestsRepository;
 import com.zain.almksazain.repo.TbCategoryApprovalsRepository;
 import com.zain.almksazain.repo.TbDccLnRepository;
 import com.zain.almksazain.repo.TbDccRepository;
 import com.zain.almksazain.repo.TbPurchaseOrderRepository;
 import com.zain.almksazain.repo.TbPurchaseOrderUplRepository;
+import com.zain.almksazain.repo.tbSiteRepo;
 import com.zain.almksazain.serviceImplementors.DccSpecification;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -63,6 +65,9 @@ public class DccPOService {
 
     @Autowired
     private TbCategoryApprovalsRepository tbCategoryApprovalsRepository;
+
+    @Autowired
+    private tbSiteRepo tbSiteRepo;
 
     public CompletableFuture<DccPOFetchResult> getDccPOCombinedView(String supplierId, String pendingApprovers, int page, int size, String columnName, String searchQuery, boolean exporting, String operator) {
         try {
@@ -180,6 +185,7 @@ public class DccPOService {
                         .stream().collect(Collectors.groupingBy(tb_PurchaseOrderUPL::getPoNumber));
                 Map<Long, List<DCCLineItem>> dccLnMap = tbDccLnRepository.findByDccIdIn(dccIds.stream().map(String::valueOf).collect(Collectors.toList()))
                         .stream().collect(Collectors.groupingBy(dccLn -> Long.parseLong(dccLn.getDccId())));
+                Map<String, tb_Site> siteBySiteId = loadSiteBySiteIdMap(dccLnMap);
                 // Fetch latest approval request per DCC
                 Map<Long, TbCategoryApprovalRequests> approvalRequestMap = new HashMap<>();
                 for (Long dccId : dccIds) {
@@ -225,7 +231,7 @@ public class DccPOService {
                             }
 
                             return buildDccPOCombinedViewDTOs(dcc, purchaseOrder, uplList, dccLnList, latestApprovalRequest,
-                                    dccLnByUplLineNumber, dateFormat, loggedInvalidLinkIds, processedRecordNos).stream();
+                                    dccLnByUplLineNumber, siteBySiteId, dateFormat, loggedInvalidLinkIds, processedRecordNos).stream();
                         })
                         .collect(Collectors.toList());
             }
@@ -239,11 +245,37 @@ public class DccPOService {
         }
     }
 
+    private Map<String, tb_Site> loadSiteBySiteIdMap(Map<Long, List<DCCLineItem>> dccLnMap) {
+        List<String> siteIds = dccLnMap.values().stream()
+                .flatMap(List::stream)
+                .map(DCCLineItem::getLocationName)
+                .filter(locationName -> locationName != null && !locationName.isEmpty())
+                .distinct()
+                .collect(Collectors.toList());
+        if (siteIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        return tbSiteRepo.findBySiteIdIn(siteIds).stream()
+                .filter(site -> site.getSiteId() != null)
+                .collect(Collectors.toMap(tb_Site::getSiteId, site -> site, (first, duplicate) -> first));
+    }
+
+    private String resolveRegion(Map<String, tb_Site> siteBySiteId, String locationName) {
+        if (locationName == null || locationName.isEmpty()) {
+            return null;
+        }
+        tb_Site site = siteBySiteId.get(locationName);
+        if (site == null || site.getRegionId() == null) {
+            return null;
+        }
+        return "R" + site.getRegionId();
+    }
+
     private List<DccPOCombinedViewDTO> buildDccPOCombinedViewDTOs(
             DCC dcc, tbPurchaseOrder purchaseOrder, List<tb_PurchaseOrderUPL> uplList,
             List<DCCLineItem> dccLnList, TbCategoryApprovalRequests latestApprovalRequest,
-            Map<String, List<DCCLineItem>> dccLnByUplLineNumber, SimpleDateFormat dateFormat,
-            Set<Long> loggedInvalidLinkIds, Set<Long> processedRecordNos) {
+            Map<String, List<DCCLineItem>> dccLnByUplLineNumber, Map<String, tb_Site> siteBySiteId,
+            SimpleDateFormat dateFormat, Set<Long> loggedInvalidLinkIds, Set<Long> processedRecordNos) {
         List<DccPOCombinedViewDTO> dtos = new ArrayList<>();
 
         for (DCCLineItem dccLn : dccLnList) {
@@ -262,7 +294,7 @@ public class DccPOService {
 
                 DccPOCombinedViewDTO dto = new DccPOCombinedViewDTO();
                 populateDccFields(dto, dcc, dateFormat, latestApprovalRequest);
-                populateLineItemFields(dto, dccLn, dateFormat, loggedInvalidLinkIds);
+                populateLineItemFields(dto, dccLn, siteBySiteId, dateFormat, loggedInvalidLinkIds);
                 populatePurchaseOrderAndUplFields(dto, dccLn, purchaseOrder, upl);
                 calculateQuantitiesAndApprovals(dto, dcc, purchaseOrder, upl, dccLnByUplLineNumber, latestApprovalRequest);
 
@@ -297,13 +329,14 @@ public class DccPOService {
         }
     }
 
-    private void populateLineItemFields(DccPOCombinedViewDTO dto, DCCLineItem dccLn, SimpleDateFormat dateFormat,
-                                        Set<Long> loggedInvalidLinkIds) {
+    private void populateLineItemFields(DccPOCombinedViewDTO dto, DCCLineItem dccLn, Map<String, tb_Site> siteBySiteId,
+                                        SimpleDateFormat dateFormat, Set<Long> loggedInvalidLinkIds) {
         dto.setLnRecordNo(dccLn.getRecordNo());
         dto.setLnProductName(dccLn.getProductName());
         dto.setLnProductSerialNo(dccLn.getSerialNumber());
         dto.setLnDeliveredQty(dccLn.getDeliveredQty());
         dto.setLnLocationName(dccLn.getLocationName());
+        dto.setRegion(resolveRegion(siteBySiteId, dccLn.getLocationName()));
         dto.setLnInserviceDate(dccLn.getDateInService() != null ? dateFormat.format(dccLn.getDateInService()) : null);
         dto.setLnUnitPrice(dccLn.getUnitPrice() != null ? dccLn.getUnitPrice() : 0.0);
         dto.setLnScopeOfWork(dccLn.getScopeOfWork());
@@ -872,7 +905,7 @@ public class DccPOService {
                             }
 
                             return buildDccPOCombinedViewDTOs(dcc, purchaseOrder, uplList, dccLnList, latestApprovalRequest,
-                                    dccLnByUplLineNumber, dateFormat, loggedInvalidLinkIds, processedRecordNos).stream();
+                                    dccLnByUplLineNumber, Collections.emptyMap(), dateFormat, loggedInvalidLinkIds, processedRecordNos).stream();
                         })
                         .collect(Collectors.toList());
             }

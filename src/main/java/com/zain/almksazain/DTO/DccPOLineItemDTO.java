@@ -8,6 +8,7 @@ public class DccPOLineItemDTO {
     private String serialNumber;
     private Double deliveredQty;
     private String locationName;
+    private String region;
     private String dateInService;
     private Double lnUnitPrice;
     private String scopeOfWork;
@@ -75,6 +76,14 @@ public class DccPOLineItemDTO {
 
     public void setLocationName(String locationName) {
         this.locationName = locationName;
+    }
+
+    public String getRegion() {
+        return region;
+    }
+
+    public void setRegion(String region) {
+        this.region = region;
     }
 
     public String getDateInService() {

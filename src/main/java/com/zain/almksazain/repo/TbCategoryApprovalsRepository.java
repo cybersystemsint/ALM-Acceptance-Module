@@ -18,7 +18,7 @@ public interface TbCategoryApprovalsRepository extends JpaRepository<TbCategoryA
     List<TbCategoryApprovals> findByApprovalRecordId(Long approvalRecordId);
 
     List<TbCategoryApprovals> findByApproverName(String approverName);
-    List<TbCategoryApprovals> findByApprovedBy(String approvedBy);
+    List<TbCategoryApprovals> findByApprovedBy(Integer approvedBy);
     List<TbCategoryApprovals> findByApprovalRecordIdAndStatusAndApprovalStatus(Long approvalRecordId, String status, String approvalStatus);
     List<TbCategoryApprovals> findByApprovalRecordIdIn(List<Long> recordIds);
 }

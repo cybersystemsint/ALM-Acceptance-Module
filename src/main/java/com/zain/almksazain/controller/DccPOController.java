@@ -152,6 +152,7 @@ public class DccPOController {
                                         lineItem.setSerialNumber(dto.getLnProductSerialNo());
                                         lineItem.setDeliveredQty(dto.getLnDeliveredQty());
                                         lineItem.setLocationName(dto.getLnLocationName());
+                                        lineItem.setRegion(dto.getRegion());
                                         lineItem.setDateInService(dto.getLnInserviceDate());
                                         lineItem.setLnUnitPrice(dto.getLnUnitPrice());
                                         lineItem.setScopeOfWork(dto.getLnScopeOfWork());
@@ -834,7 +835,7 @@ public class DccPOController {
             String[] filterableFields = {
                     "dccPoNumber", "newProjectName", "dccStatus", "dccAcceptanceType",
                     "vendorName", "vendorNumber", "createdByName", "createdBy",
-                    "recordNo", "dccRecordNo", "approvalCount", "supplierId"
+                    "recordNo", "dccRecordNo", "approvalCount"
             };
 
             for (String field : filterableFields) {
@@ -1034,7 +1035,7 @@ public class DccPOController {
                     "projectName", "newProjectName", "dccAcceptanceType", "acceptanceType",
                     "dccStatus", "status", "vendorName", "vendorNumber", "vendorEmail",
                     "dccEmail", "createdBy", "createdByName", "vendorComment", "vendorComments",
-                    "approverComment", "approvalCount", "dccCurrency", "currency", "supplierId"
+                    "approverComment", "approvalCount", "dccCurrency", "currency"
                     // NOTE: pendingApprovers is NOT in this array - handled separately below
             };
 
