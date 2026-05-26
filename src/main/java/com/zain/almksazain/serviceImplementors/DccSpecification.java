@@ -29,6 +29,7 @@ public class DccSpecification implements Specification<DCC> {
     private final String createdDateEnd;
     private final String approvedDateStart;
     private final String approvedDateEnd;
+    private final Set<Long> allowedRecordNos;
 
     // Constructor 1: Full constructor with ALL filters (10 parameters)
     public DccSpecification(String supplierId, String pendingApprovers, String columnName, String searchQuery,
@@ -45,7 +46,30 @@ public class DccSpecification implements Specification<DCC> {
         this.createdDateEnd = createdDateEnd;
         this.approvedDateStart = approvedDateStart;
         this.approvedDateEnd = approvedDateEnd;
+        this.allowedRecordNos = null;
     }
+    public DccSpecification(String supplierId,
+                        String pendingApprovers,
+                        String columnName,
+                        String searchQuery,
+                        String operator,
+                        Set<Long> allowedRecordNos,
+                        Map<String, String> fieldFilters,
+                        String createdDateStart,
+                        String createdDateEnd) {
+
+    this.supplierId = supplierId;
+    this.pendingApprovers = pendingApprovers;
+    this.columnName = columnName;
+    this.searchQuery = searchQuery;
+    this.operator = operator;
+    this.allowedRecordNos = allowedRecordNos;
+    this.fieldFilters = fieldFilters;
+    this.createdDateStart = createdDateStart;
+    this.createdDateEnd = createdDateEnd;
+    this.approvedDateStart = null;
+    this.approvedDateEnd = null;
+}
 
     // Constructor 2: With field filters but no approved dates (8 parameters) - FOR SERVICE COMPATIBILITY
     public DccSpecification(String supplierId, String pendingApprovers, String columnName,
@@ -174,24 +198,12 @@ public class DccSpecification implements Specification<DCC> {
                 else if (field.equals("approvalCount")) {
                     // approvalCount is calculated, not in DCC table - skip
                 }
-                // supplierId maps to vendorNumber
-                else if (field.equals("supplierId")) {
-                    predicates.add(cb.equal(root.get("vendorNumber"), value));
-                }
-// EXACT match for status/type/id fields
-                else if (field.equals("dccStatus") || field.equals("dccAcceptanceType") ||
-                        field.equals("vendorNumber")) {
-                    predicates.add(cb.equal(
-                            cb.lower(root.get(dbField).as(String.class)),
-                            value.toLowerCase()
-                    ));
-                }
-// CONTAINS match for vendorName, createdByName, dccPoNumber, projectName etc.
+                // EXACT match for string fields (case-insensitive)
                 else {
                     try {
-                        predicates.add(cb.like(
+                        predicates.add(cb.equal(
                                 cb.lower(root.get(dbField).as(String.class)),
-                                "%" + value.toLowerCase() + "%"
+                                value.toLowerCase()
                         ));
                     } catch (Exception e) {
                         // Skip if field doesn't support string operations
@@ -312,7 +324,7 @@ public class DccSpecification implements Specification<DCC> {
             case "dcccurrency":
             case "currency": return "currency";
             case "vendoremail": return "vendorEmail";
-            case "supplierid": return "vendorNumber";
+            case "supplierid": return "supplierId";
             default: return null;
         }
     }
