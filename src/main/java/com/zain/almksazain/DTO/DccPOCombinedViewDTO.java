@@ -22,6 +22,7 @@ public class DccPOCombinedViewDTO {
     private String lnProductSerialNo;
     private Double lnDeliveredQty;
     private String lnLocationName;
+    private String region;
     private String lnInserviceDate;
     private Double lnUnitPrice;
     private String lnScopeOfWork;
@@ -213,6 +214,14 @@ public class DccPOCombinedViewDTO {
 
     public void setLnLocationName(String lnLocationName) {
         this.lnLocationName = lnLocationName;
+    }
+
+    public String getRegion() {
+        return region;
+    }
+
+    public void setRegion(String region) {
+        this.region = region;
     }
 
     public String getLnInserviceDate() {

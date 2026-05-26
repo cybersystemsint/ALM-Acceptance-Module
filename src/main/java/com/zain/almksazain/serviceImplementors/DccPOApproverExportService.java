@@ -80,7 +80,8 @@ public class DccPOApproverExportService {
                 }
 
                 // Get approvals for this user (SAME LOGIC AS DccPOApproverService)
-                List<TbCategoryApprovals> approvals = tbCategoryApprovalsRepository.findByApprovedBy(pendingApprovers).stream()
+                List<TbCategoryApprovals> approvals = tbCategoryApprovalsRepository
+                        .findByApprovedBy(approverIdAsInt).stream()
                         .filter(a -> {
                             if ("pending".equals(a.getStatus())) {
                                 return "request-info".equals(a.getApprovalStatus());
@@ -219,16 +220,16 @@ public class DccPOApproverExportService {
                                         projectName.toLowerCase().contains(value);
                                 break;
 
-                            case "dccacceptancetype":
-                            case "acceptancetype":
-                                fieldMatches = dcc.getAcceptanceType() != null &&
-                                        dcc.getAcceptanceType().toLowerCase().contains(value);
-                                break;
-
                             case "dccstatus":
                             case "status":
                                 fieldMatches = dcc.getStatus() != null &&
-                                        dcc.getStatus().toLowerCase().contains(value);
+                                        dcc.getStatus().equalsIgnoreCase(value); // ← EXACT
+                                break;
+
+                            case "dccacceptancetype":
+                            case "acceptancetype":
+                                fieldMatches = dcc.getAcceptanceType() != null &&
+                                        dcc.getAcceptanceType().equalsIgnoreCase(value); // ← EXACT
                                 break;
 
                             case "vendorname":
