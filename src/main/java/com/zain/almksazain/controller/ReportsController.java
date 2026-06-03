@@ -41,6 +41,7 @@ import com.zain.almksazain.repo.dccpoviewrepo;
 import com.zain.almksazain.repo.poviewrepo;
 import com.zain.almksazain.repo.tbChargeAccountRepo;
 import com.zain.almksazain.repo.uplrepo;
+import com.zain.almksazain.services.PoUplPerSupplierService;
 import com.zain.almksazain.specs.QueryFilterBuilder;
 import com.zain.almzainksa.helper.helper;
 
@@ -63,6 +64,9 @@ public class ReportsController {
 
     @Autowired
     tbChargeAccountRepo chargeAccountRepo;
+
+    @Autowired
+    PoUplPerSupplierService poUplPerSupplierService;
 
     @Autowired
     public ReportsController(JdbcTemplate jdbcTemplate) {
@@ -1740,80 +1744,109 @@ private String convertToSqlDate(String input) {
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
     // public List<Map<String, Object>> poUplPerSupplierAndPoNumber(@RequestBody String req) {
     public Map<String, Object> poUplPerSupplierAndPoNumber(@RequestBody String req) {
-        JsonObject obj = new JsonParser().parse(req).getAsJsonObject();
-        String supplierId = obj.get("supplierId").getAsString();
-        String poID = obj.get("poId").getAsString();
-        String columnName = obj.has("columnName") ? obj.get("columnName").getAsString() : "";
-        String searchQuery = obj.has("searchQuery") ? obj.get("searchQuery").getAsString() : "";
-        String dateFrom = obj.has("dateFrom") ? obj.get("dateFrom").getAsString() : "";
-        String dateTo = obj.has("dateTo") ? obj.get("dateTo").getAsString() : "";
+        try {
+            JsonObject obj = new JsonParser().parse(req).getAsJsonObject();
+            String supplierId = obj.get("supplierId").getAsString();
+            String poID = obj.get("poId").getAsString();
+            String columnName = obj.has("columnName") ? obj.get("columnName").getAsString() : "";
+            String searchQuery = obj.has("searchQuery") ? obj.get("searchQuery").getAsString() : "";
+            String dateFrom = obj.has("dateFrom") ? obj.get("dateFrom").getAsString() : "";
+            String dateTo = obj.has("dateTo") ? obj.get("dateTo").getAsString() : "";
 
-        // ONLY_FULL_GROUP_BY is disabled via datasource connection-init-sql in application.properties
+            // ONLY_FULL_GROUP_BY is disabled via datasource connection-init-sql in application.properties
 
-        int page = obj.has("page") ? obj.get("page").getAsInt() : 1;
-        int size = obj.has("size") ? obj.get("size").getAsInt() : 20000;
+            int page = obj.has("page") ? obj.get("page").getAsInt() : 1;
+            int size = obj.has("size") ? obj.get("size").getAsInt() : 20000;
 
-        page = Math.max(page, 0);
-        size = Math.max(size, 0);
+            page = Math.max(page, 0);
+            size = Math.max(size, 0);
 
-        String paginationSql = "";
-        List<Object> params = new ArrayList<>();
-        String whereClause = " WHERE 1=1";
+            String paginationSql = "";
+            List<Object> params = new ArrayList<>();
+            String whereClause = " WHERE 1=1";
 
-        if (!supplierId.equalsIgnoreCase("0")) {
-            whereClause += " AND poVendorNumber = ?";
-            params.add(supplierId);
-        }
-        if (!poID.equalsIgnoreCase("0")) {
-            whereClause += " AND poNumber = ?";
-            params.add(poID);
-        }
-        if (!dateFrom.isEmpty() && !dateTo.isEmpty()) {
-            whereClause += " AND recordDateTime BETWEEN ? AND ?";
-            params.add(dateFrom);
-            params.add(dateTo);
-        }
-        if (!columnName.isEmpty() && !searchQuery.isEmpty()) {
-            whereClause += " AND " + columnName + " LIKE ?";
-            params.add("%" + searchQuery + "%");
-        }
-
-        int totalRecords;
-        List<Map<String, Object>> result;
-
-        if (page == 1 && size == 20000) {
-            // Fetch-all mode: single query, no COUNT needed
-            String sql = "SELECT * FROM combinedPurchaseOrderView" + whereClause;
-            result = jdbcTemplate.queryForList(sql, params.toArray());
-            totalRecords = result.size();
-            page = 1;
-            size = Math.max(totalRecords, 1);
-        } else {
-            String countSql = "SELECT COUNT(*) FROM combinedPurchaseOrderView" + whereClause;
-            totalRecords = jdbcTemplate.queryForObject(countSql, Integer.class, params.toArray());
-
-            if (page == 0 && size == 0) {
-                paginationSql = "";
-            } else {
-                page = Math.max(page, 1);
-                size = Math.max(size, 1);
-                int offset = (page - 1) * size;
-                paginationSql = " LIMIT " + size + " OFFSET " + offset;
+            if (!supplierId.equalsIgnoreCase("0")) {
+                whereClause += " AND poVendorNumber = ?";
+                params.add(supplierId);
+            }
+            if (!poID.equalsIgnoreCase("0")) {
+                whereClause += " AND poNumber = ?";
+                params.add(poID);
+            }
+            if (!dateFrom.isEmpty() && !dateTo.isEmpty()) {
+                whereClause += " AND recordDateTime BETWEEN ? AND ?";
+                params.add(dateFrom);
+                params.add(dateTo);
+            }
+            if (!columnName.isEmpty() && !searchQuery.isEmpty()) {
+                whereClause += " AND " + columnName + " LIKE ?";
+                params.add("%" + searchQuery + "%");
             }
 
-            String sql = "SELECT * FROM combinedPurchaseOrderView" + whereClause + paginationSql;
-            result = jdbcTemplate.queryForList(sql, params.toArray());
+            int totalRecords;
+            List<Map<String, Object>> result;
+
+            if (page == 1 && size == 20000) {
+                // Fetch-all mode: single query, no COUNT needed
+                String sql = "SELECT * FROM combinedPurchaseOrderView" + whereClause;
+                result = jdbcTemplate.queryForList(sql, params.toArray());
+                totalRecords = result.size();
+                page = 1;
+                size = Math.max(totalRecords, 1);
+            } else {
+                String countSql = "SELECT COUNT(*) FROM combinedPurchaseOrderView" + whereClause;
+                totalRecords = jdbcTemplate.queryForObject(countSql, Integer.class, params.toArray());
+
+                if (page == 0 && size == 0) {
+                    paginationSql = "";
+                } else {
+                    page = Math.max(page, 1);
+                    size = Math.max(size, 1);
+                    int offset = (page - 1) * size;
+                    paginationSql = " LIMIT " + size + " OFFSET " + offset;
+                }
+
+                String sql = "SELECT * FROM combinedPurchaseOrderView" + whereClause + paginationSql;
+                result = jdbcTemplate.queryForList(sql, params.toArray());
+            }
+            loggger.info("Fetch record query :  " + whereClause);
+            Map<String, Object> response = new HashMap<>();
+            response.put("data", result);
+            response.put("totalRecords", totalRecords);
+            response.put("currentPage", page);
+            response.put("pageSize", size);
+            response.put("totalPages", (int) Math.ceil((double) totalRecords / size));
+            return response;
+        } catch (Exception e) {
+            loggger.error("Error searching PO", e);
+            Map<String, Object> response = new HashMap<>();
+            response.put("Error", e);
+            return response;
         }
-        loggger.info("Fetch record query :  " + whereClause);
-        Map<String, Object> response = new HashMap<>();
-        response.put("data", result);
-        response.put("totalRecords", totalRecords);
-        response.put("currentPage", page);
-        response.put("pageSize", size);
-        response.put("totalPages", (int) Math.ceil((double) totalRecords / size));
+    }
 
-        return response;
+    @PostMapping(value = "/reports/v2/poUplPerSupplierAndPoNumber", produces = "application/json")
+    @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
+    public Map<String, Object> poUplPerSupplierAndPoNumberV2(@RequestBody String req) {
+        try {
+            JsonObject obj = new JsonParser().parse(req).getAsJsonObject();
+            String supplierId = obj.get("supplierId").getAsString();
+            String poID = obj.get("poId").getAsString();
+            String columnName = obj.has("columnName") ? obj.get("columnName").getAsString() : "";
+            String searchQuery = obj.has("searchQuery") ? obj.get("searchQuery").getAsString() : "";
+            String dateFrom = obj.has("dateFrom") ? obj.get("dateFrom").getAsString() : "";
+            String dateTo = obj.has("dateTo") ? obj.get("dateTo").getAsString() : "";
+            int page = obj.has("page") ? obj.get("page").getAsInt() : 1;
+            int size = obj.has("size") ? obj.get("size").getAsInt() : 20000;
 
+            return poUplPerSupplierService.getPoUplPerSupplierAndPoNumber(
+                    supplierId, poID, columnName, searchQuery, dateFrom, dateTo, page, size);
+        } catch (Exception e) {
+            loggger.error("Error searching PO", e);
+            Map<String, Object> response = new HashMap<>();
+            response.put("Error", e);
+            return response;
+        }
     }
 
     //==================GET NEW UPLS CREATED  =====    

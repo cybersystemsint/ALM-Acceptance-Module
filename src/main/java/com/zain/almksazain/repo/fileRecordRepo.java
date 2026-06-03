@@ -17,4 +17,6 @@ public interface fileRecordRepo extends JpaRepository<FileRecord, Long> {
     FileRecord findByRecordNo(long recordNo);
 
     List<FileRecord> findByPoNumberAndDccId(String poNumber, int dccId);
+
+    FileRecord findByFileName(String fileName);
 }
