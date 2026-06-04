@@ -185,7 +185,7 @@ public class DccPOService {
                         .stream().collect(Collectors.groupingBy(tb_PurchaseOrderUPL::getPoNumber));
                 Map<Long, List<DCCLineItem>> dccLnMap = tbDccLnRepository.findByDccIdIn(dccIds.stream().map(String::valueOf).collect(Collectors.toList()))
                         .stream().collect(Collectors.groupingBy(dccLn -> Long.parseLong(dccLn.getDccId())));
-                Map<String, tb_Site> siteBySiteId = loadSiteBySiteIdMap(dccLnMap);
+                Map<String, tb_Site> siteBySiteId = DccSiteRegionResolver.loadSiteBySiteIdMap(dccLnMap, tbSiteRepo);
                 // Fetch latest approval request per DCC
                 Map<Long, TbCategoryApprovalRequests> approvalRequestMap = new HashMap<>();
                 for (Long dccId : dccIds) {
@@ -243,32 +243,6 @@ public class DccPOService {
                     supplierId, pendingApprovers, page, size, columnName, searchQuery, ex);
             throw new DccPOProcessingException("Failed to fetch DCC PO Combined View", ex);
         }
-    }
-
-    private Map<String, tb_Site> loadSiteBySiteIdMap(Map<Long, List<DCCLineItem>> dccLnMap) {
-        List<String> siteIds = dccLnMap.values().stream()
-                .flatMap(List::stream)
-                .map(DCCLineItem::getLocationName)
-                .filter(locationName -> locationName != null && !locationName.isEmpty())
-                .distinct()
-                .collect(Collectors.toList());
-        if (siteIds.isEmpty()) {
-            return Collections.emptyMap();
-        }
-        return tbSiteRepo.findBySiteIdIn(siteIds).stream()
-                .filter(site -> site.getSiteId() != null)
-                .collect(Collectors.toMap(tb_Site::getSiteId, site -> site, (first, duplicate) -> first));
-    }
-
-    private String resolveRegion(Map<String, tb_Site> siteBySiteId, String locationName) {
-        if (locationName == null || locationName.isEmpty()) {
-            return null;
-        }
-        tb_Site site = siteBySiteId.get(locationName);
-        if (site == null || site.getRegionId() == null) {
-            return null;
-        }
-        return "R" + site.getRegionId();
     }
 
     private List<DccPOCombinedViewDTO> buildDccPOCombinedViewDTOs(
@@ -336,7 +310,7 @@ public class DccPOService {
         dto.setLnProductSerialNo(dccLn.getSerialNumber());
         dto.setLnDeliveredQty(dccLn.getDeliveredQty());
         dto.setLnLocationName(dccLn.getLocationName());
-        dto.setRegion(resolveRegion(siteBySiteId, dccLn.getLocationName()));
+        dto.setRegion(DccSiteRegionResolver.resolveRegion(siteBySiteId, dccLn.getLocationName(), tbSiteRepo));
         dto.setLnInserviceDate(dccLn.getDateInService() != null ? dateFormat.format(dccLn.getDateInService()) : null);
         dto.setLnUnitPrice(dccLn.getUnitPrice() != null ? dccLn.getUnitPrice() : 0.0);
         dto.setLnScopeOfWork(dccLn.getScopeOfWork());
@@ -866,6 +840,7 @@ public class DccPOService {
                         .stream().collect(Collectors.groupingBy(tb_PurchaseOrderUPL::getPoNumber));
                 Map<Long, List<DCCLineItem>> dccLnMap = tbDccLnRepository.findByDccIdIn(dccIds.stream().map(String::valueOf).collect(Collectors.toList()))
                         .stream().collect(Collectors.groupingBy(dccLn -> Long.parseLong(dccLn.getDccId())));
+                Map<String, tb_Site> siteBySiteId = DccSiteRegionResolver.loadSiteBySiteIdMap(dccLnMap, tbSiteRepo);
 
                 Map<Long, TbCategoryApprovalRequests> approvalRequestMap = new HashMap<>();
                 for (Long dccId : dccIds) {
@@ -905,7 +880,7 @@ public class DccPOService {
                             }
 
                             return buildDccPOCombinedViewDTOs(dcc, purchaseOrder, uplList, dccLnList, latestApprovalRequest,
-                                    dccLnByUplLineNumber, Collections.emptyMap(), dateFormat, loggedInvalidLinkIds, processedRecordNos).stream();
+                                    dccLnByUplLineNumber, siteBySiteId, dateFormat, loggedInvalidLinkIds, processedRecordNos).stream();
                         })
                         .collect(Collectors.toList());
             }

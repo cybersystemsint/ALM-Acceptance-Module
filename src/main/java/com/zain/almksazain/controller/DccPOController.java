@@ -413,6 +413,7 @@ public class DccPOController {
                                         lineItem.setSerialNumber(dto.getLnProductSerialNo());
                                         lineItem.setDeliveredQty(dto.getLnDeliveredQty());
                                         lineItem.setLocationName(dto.getLnLocationName());
+                                        lineItem.setRegion(dto.getRegion());
                                         lineItem.setDateInService(dto.getLnInserviceDate());
                                         lineItem.setLnUnitPrice(dto.getLnUnitPrice());
                                         lineItem.setScopeOfWork(dto.getLnScopeOfWork());

@@ -9,6 +9,7 @@ import com.zain.almksazain.exception.DccPOProcessingException;
 import com.zain.almksazain.model.*;
 import com.zain.almksazain.repo.*;
 import com.zain.almksazain.service.DccPOV2Service;
+import com.zain.almksazain.serviceImplementors.DccSiteRegionResolver;
 import com.zain.almksazain.serviceImplementors.DccSpecification;
 
 import org.apache.logging.log4j.LogManager;
@@ -40,6 +41,7 @@ public class DccPOV2ServiceImpl implements DccPOV2Service {
     @Autowired private TbPurchaseOrderUplRepository tbPurchaseOrderUplRepository;
     @Autowired private TbCategoryApprovalRequestsRepository approvalRequestsRepository;
     @Autowired private TbCategoryApprovalsRepository approvalsRepository;
+    @Autowired private tbSiteRepo tbSiteRepo;
 
     // ─── PUBLIC API ───────────────────────────────────────────────────────────
 
@@ -156,17 +158,19 @@ public class DccPOV2ServiceImpl implements DccPOV2Service {
 
         Map<String, List<tb_PurchaseOrderUPL>> uplMap = null;
         Map<Long,   List<DCCLineItem>>         lnMap  = null;
+        Map<String, tb_Site>                   siteBySiteId = null;
         QuantityContext                         qtyCtx = null;
 
         if (!fetchParentOnly) {
             uplMap = batchLoadUplMap(poNumbers);
             lnMap  = batchLoadDccLineItems(dccIds);
+            siteBySiteId = DccSiteRegionResolver.loadSiteBySiteIdMap(lnMap, tbSiteRepo);
             // ── Pre-compute all quantity data in bulk (eliminates N+1 in calculateQuantities) ──
             qtyCtx = buildQuantityContext(poNumbers, dccList, uplMap, lnMap);
         }
 
         return new FetchContext(dccList, totalFiltered, approverFilteredTotal, fetchParentOnly,
-                poMap, latestReqs, allReqs, approvMap, uplMap, lnMap, qtyCtx);
+                poMap, latestReqs, allReqs, approvMap, uplMap, lnMap, siteBySiteId, qtyCtx);
     }
 
     // ─── QUANTITY CONTEXT (eliminates N+1) ────────────────────────────────────
@@ -407,7 +411,7 @@ public class DccPOV2ServiceImpl implements DccPOV2Service {
             List<TbCategoryApprovals> allA = collectApprovals(allR, ctx.approvMap);
 
             result.addAll(buildLineRows(dcc, pos.get(0), uplList, lnList,
-                    latestReq, allR, allA, fmt, ctx.qtyCtx));
+                    latestReq, allR, allA, fmt, ctx.qtyCtx, ctx.siteBySiteId));
             processed.add(dcc.getRecordNo());
         }
         return result;
@@ -418,7 +422,7 @@ public class DccPOV2ServiceImpl implements DccPOV2Service {
             List<tb_PurchaseOrderUPL> uplList, List<DCCLineItem> lnList,
             TbCategoryApprovalRequests latestReq,
             List<TbCategoryApprovalRequests> allReqs, List<TbCategoryApprovals> allApprovals,
-            SimpleDateFormat fmt, QuantityContext qtyCtx) {
+            SimpleDateFormat fmt, QuantityContext qtyCtx, Map<String, tb_Site> siteBySiteId) {
 
         List<DccPOCombinedViewDTO> dtos = new ArrayList<>();
 
@@ -434,7 +438,7 @@ public class DccPOV2ServiceImpl implements DccPOV2Service {
 
                 DccPOCombinedViewDTO dto = new DccPOCombinedViewDTO();
                 populateDccFields(dto, dcc, fmt, latestReq);
-                populateLineItemFields(dto, ln, fmt);
+                populateLineItemFields(dto, ln, siteBySiteId, fmt);
                 populatePoAndUplFields(dto, ln, po, upl);
                 // ── Zero DB calls — uses pre-computed QuantityContext ──────────
                 calculateQuantitiesFromContext(dto, upl, qtyCtx);
@@ -501,6 +505,7 @@ public class DccPOV2ServiceImpl implements DccPOV2Service {
         li.setSerialNumber(dto.getLnProductSerialNo());
         li.setDeliveredQty(dto.getLnDeliveredQty());
         li.setLocationName(dto.getLnLocationName());
+        li.setRegion(dto.getRegion());
         li.setDateInService(dto.getLnInserviceDate());
         li.setLnUnitPrice(dto.getLnUnitPrice());
         li.setScopeOfWork(dto.getLnScopeOfWork());
@@ -612,12 +617,13 @@ public class DccPOV2ServiceImpl implements DccPOV2Service {
     }
 
     private void populateLineItemFields(DccPOCombinedViewDTO dto, DCCLineItem ln,
-                                        SimpleDateFormat fmt) {
+                                        Map<String, tb_Site> siteBySiteId, SimpleDateFormat fmt) {
         dto.setLnRecordNo(ln.getRecordNo());
         dto.setLnProductName(ln.getProductName());
         dto.setLnProductSerialNo(ln.getSerialNumber());
         dto.setLnDeliveredQty(ln.getDeliveredQty());
         dto.setLnLocationName(ln.getLocationName());
+        dto.setRegion(DccSiteRegionResolver.resolveRegion(siteBySiteId, ln.getLocationName(), tbSiteRepo));
         dto.setLnInserviceDate(ln.getDateInService() != null ? fmt.format(ln.getDateInService()) : null);
         dto.setLnUnitPrice(ln.getUnitPrice() != null ? ln.getUnitPrice() : 0.0);
         dto.setLnScopeOfWork(ln.getScopeOfWork());
@@ -850,6 +856,7 @@ public class DccPOV2ServiceImpl implements DccPOV2Service {
         final Map<Long,   List<TbCategoryApprovals>>        approvMap;
         final Map<String, List<tb_PurchaseOrderUPL>>        uplMap;
         final Map<Long,   List<DCCLineItem>>                lnMap;
+        final Map<String, tb_Site>                          siteBySiteId;
         final QuantityContext                               qtyCtx;  // null for parent-only
 
         FetchContext(List<DCC> dccList, long totalFiltered, long approverFilteredTotal,
@@ -860,6 +867,7 @@ public class DccPOV2ServiceImpl implements DccPOV2Service {
                      Map<Long, List<TbCategoryApprovals>> approvMap,
                      Map<String, List<tb_PurchaseOrderUPL>> uplMap,
                      Map<Long, List<DCCLineItem>> lnMap,
+                     Map<String, tb_Site> siteBySiteId,
                      QuantityContext qtyCtx) {
             this.isEmpty               = false;
             this.dccList               = dccList;
@@ -872,12 +880,13 @@ public class DccPOV2ServiceImpl implements DccPOV2Service {
             this.approvMap             = approvMap;
             this.uplMap                = uplMap;
             this.lnMap                 = lnMap;
+            this.siteBySiteId          = siteBySiteId;
             this.qtyCtx                = qtyCtx;
         }
 
         static FetchContext empty() {
             return new FetchContext(List.of(), 0L, 0L, true,
-                    Map.of(), Map.of(), Map.of(), Map.of(), null, null, null) {
+                    Map.of(), Map.of(), Map.of(), Map.of(), null, null, null, null) {
                 @Override boolean isEmpty() { return true; }
             };
         }

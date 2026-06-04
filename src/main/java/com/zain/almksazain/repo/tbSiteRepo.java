@@ -22,6 +22,8 @@ public interface tbSiteRepo extends JpaRepository<tb_Site, Long> {
     
      tb_Site findFirstBySiteId(String siteId);
 
+    tb_Site findFirstBySiteIdIgnoreCase(String siteId);
+
     List<tb_Site> findBySiteIdIn(Collection<String> siteIds);
 
 }
