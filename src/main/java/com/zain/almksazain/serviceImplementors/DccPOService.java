@@ -80,6 +80,21 @@ public class DccPOService {
         }
     }
 
+    /**
+     * Optimised combined-view fetch for POST /dcc-po/v3/combined-view.
+     * Same behaviour and response as {@link #getDccPOCombinedView} with faster DB and approval loading.
+     */
+    public CompletableFuture<DccPOFetchResult> getDccPOCombinedViewV3(String supplierId, String pendingApprovers, int page, int size, String columnName, String searchQuery, boolean exporting, String operator) {
+        try {
+            logger.info("Starting V3 retrieval of DCC PO Combined View with supplierId: {}, pendingApprovers: {}, page: {}, size: {}",
+                    supplierId, pendingApprovers, page, size);
+            return CompletableFuture.supplyAsync(() -> fetchDccPOCombinedViewOptimized(supplierId, pendingApprovers, page, size, columnName, searchQuery, exporting, operator));
+        } catch (Exception ex) {
+            logger.error("Error initiating V3 DCC PO Combined View retrieval", ex);
+            throw new DccPOProcessingException("Failed to initiate DCC PO Combined View retrieval", ex);
+        }
+    }
+
     @Async("taskExecutor")
     @Cacheable(value = "dccPOCombinedViewCache",
             key = "{#supplierId, #pendingApprovers, #page, #size, #columnName, #searchQuery, #exporting, #operator}",
@@ -245,11 +260,195 @@ public class DccPOService {
         }
     }
 
+    private DccPOFetchResult fetchDccPOCombinedViewOptimized(String supplierId, String pendingApprovers, int page, int size, String columnName, String searchQuery, boolean exporting, String operator) {
+        try {
+            if (page < 1 || size < 1) {
+                logger.error("Invalid pagination parameters: page={}, size={}", page, size);
+                throw new IllegalArgumentException("Page and size must be positive");
+            }
+
+            Set<Long> allowedRecordNos = resolveApproverFilter(pendingApprovers);
+            if (allowedRecordNos != null && allowedRecordNos.isEmpty()) {
+                logger.info("No DCC records match pendingApprovers filter '{}'", pendingApprovers);
+                return new DccPOFetchResult(new ArrayList<>(), 0L, 0L);
+            }
+
+            Pageable pageable = PageRequest.of(page - 1, size, Sort.by(Sort.Direction.DESC, "recordNo"));
+            DccSpecification spec = allowedRecordNos != null
+                    ? new DccSpecification(supplierId, null, columnName, searchQuery, operator, allowedRecordNos, null, null, null)
+                    : new DccSpecification(supplierId, null, columnName, searchQuery, operator);
+
+            Page<DCC> dccPage = tbDccRepository.findAll(spec, pageable);
+            List<DCC> dccList = dccPage.getContent();
+            long totalFilteredRecords = dccPage.getTotalElements();
+            logger.info("V3 total filtered valid dccRecordNo: {}", totalFilteredRecords);
+
+            if (dccList.isEmpty()) {
+                return new DccPOFetchResult(new ArrayList<>(), totalFilteredRecords, totalFilteredRecords);
+            }
+
+            List<DCC> invalidDccRecords = dccList.stream()
+                    .filter(dcc -> dcc.getPoNumber() == null || dcc.getPoNumber().isEmpty())
+                    .collect(Collectors.toList());
+            if (!invalidDccRecords.isEmpty()) {
+                logger.error("Found {} DCC records with missing or invalid poNumber: {}",
+                        invalidDccRecords.size(),
+                        invalidDccRecords.stream().map(DCC::getRecordNo).collect(Collectors.toList()));
+                throw new DccPOProcessingException("Invalid DCC records detected with missing poNumber");
+            }
+
+            List<DccPOCombinedViewDTO> result = new ArrayList<>();
+            SimpleDateFormat dateFormat = new SimpleDateFormat("d-MMM-yyyy");
+            boolean fetchParentOnly = !exporting && !(columnName != null && columnName.equalsIgnoreCase("recordNo") && searchQuery != null && !searchQuery.isEmpty());
+
+            Set<String> poNumbersSet = dccList.stream().map(DCC::getPoNumber).collect(Collectors.toSet());
+            List<String> poNumbers = new ArrayList<>(poNumbersSet);
+            List<Long> dccIds = dccList.stream().map(DCC::getRecordNo).collect(Collectors.toList());
+
+            Map<String, List<tbPurchaseOrder>> purchaseOrderMap = tbPurchaseOrderRepository.findByPoNumberIn(poNumbers)
+                    .stream().collect(Collectors.groupingBy(tbPurchaseOrder::getPoNumber));
+            Map<Long, List<TbCategoryApprovalRequests>> allReqsByDcc = batchLoadAllRequestsByDcc(dccIds);
+            Map<Long, List<TbCategoryApprovals>> approvMap = batchLoadApprovals(allReqsByDcc);
+
+            if (fetchParentOnly) {
+                for (DCC dcc : dccList) {
+                    List<tbPurchaseOrder> purchaseOrderList = purchaseOrderMap.getOrDefault(dcc.getPoNumber(), Collections.emptyList());
+                    if (purchaseOrderList.isEmpty()) {
+                        throw new DccPOProcessingException("Missing Purchase Order for DCC record: " + dcc.getRecordNo());
+                    }
+                    tbPurchaseOrder purchaseOrder = purchaseOrderList.get(0);
+                    List<TbCategoryApprovalRequests> requests = allReqsByDcc.getOrDefault(dcc.getRecordNo(), Collections.emptyList());
+                    TbCategoryApprovalRequests latestApprovalRequest = requests.isEmpty() ? null : requests.get(0);
+
+                    DccPOCombinedViewDTO dto = new DccPOCombinedViewDTO();
+                    populateDccFields(dto, dcc, dateFormat, latestApprovalRequest);
+                    dto.setPoId(purchaseOrder.getPoNumber());
+                    dto.setProjectName(
+                            purchaseOrder.getNewProjectName() != null && !purchaseOrder.getNewProjectName().isEmpty()
+                                    ? purchaseOrder.getNewProjectName()
+                                    : purchaseOrder.getProjectName()
+                    );
+                    dto.setSupplierId(purchaseOrder.getVendorNumber());
+                    dto.setVendorNumber(purchaseOrder.getVendorNumber());
+                    dto.setVendorName(purchaseOrder.getVendorName());
+
+                    if (latestApprovalRequest != null) {
+                        calculateApprovalFields(dto, latestApprovalRequest, requests, collectApprovals(requests, approvMap));
+                    } else {
+                        dto.setApprovalCount(0L);
+                        dto.setPendingApprovers(null);
+                        dto.setApproverComment(null);
+                        dto.setUserAging("0 days 0 hrs 0 mins");
+                        dto.setTotalAging("0 days 0 hrs 0 mins");
+                    }
+                    result.add(dto);
+                }
+            } else {
+                Map<String, List<tb_PurchaseOrderUPL>> uplMap = tbPurchaseOrderUplRepository.findByPoNumberIn(poNumbers)
+                        .stream().collect(Collectors.groupingBy(tb_PurchaseOrderUPL::getPoNumber));
+                Map<Long, List<DCCLineItem>> dccLnMap = tbDccLnRepository.findByDccIdIn(dccIds.stream().map(String::valueOf).collect(Collectors.toList()))
+                        .stream().collect(Collectors.groupingBy(dccLn -> Long.parseLong(dccLn.getDccId())));
+                Map<String, tb_Site> siteBySiteId = DccSiteRegionResolver.loadSiteBySiteIdMap(dccLnMap, tbSiteRepo);
+
+                Map<Long, TbCategoryApprovalRequests> approvalRequestMap = new HashMap<>();
+                for (Long dccId : dccIds) {
+                    List<TbCategoryApprovalRequests> requests = allReqsByDcc.getOrDefault(dccId, Collections.emptyList());
+                    if (!requests.isEmpty()) {
+                        approvalRequestMap.put(dccId, requests.get(0));
+                    }
+                }
+
+                Map<String, List<DCCLineItem>> dccLnByUplLineNumber = dccLnMap.values().stream()
+                        .flatMap(List::stream)
+                        .collect(Collectors.groupingBy(dccLn -> dccLn.getUplLineNumber() + "-" + dccLn.getLineNumber() + "-" + dccLn.getPoId()));
+
+                Set<Long> processedRecordNos = ConcurrentHashMap.newKeySet();
+                Set<Long> loggedInvalidLinkIds = ConcurrentHashMap.newKeySet();
+
+                result = dccList.parallelStream()
+                        .filter(dcc -> !processedRecordNos.contains(dcc.getRecordNo()))
+                        .flatMap(dcc -> {
+                            List<tbPurchaseOrder> purchaseOrderList = purchaseOrderMap.getOrDefault(dcc.getPoNumber(), Collections.emptyList());
+                            if (purchaseOrderList.isEmpty()) {
+                                throw new DccPOProcessingException("Missing Purchase Order for DCC record: " + dcc.getRecordNo());
+                            }
+                            tbPurchaseOrder purchaseOrder = purchaseOrderList.get(0);
+                            List<tb_PurchaseOrderUPL> uplList = uplMap.getOrDefault(dcc.getPoNumber(), Collections.emptyList());
+                            List<DCCLineItem> dccLnList = dccLnMap.getOrDefault(dcc.getRecordNo(), Collections.emptyList());
+                            TbCategoryApprovalRequests latestApprovalRequest = approvalRequestMap.getOrDefault(dcc.getRecordNo(), null);
+                            List<TbCategoryApprovalRequests> allRelatedRequests = allReqsByDcc.getOrDefault(dcc.getRecordNo(), Collections.emptyList());
+                            List<TbCategoryApprovals> allRelatedApprovals = collectApprovals(allRelatedRequests, approvMap);
+
+                            if (dccLnList.isEmpty() || uplList.isEmpty()) {
+                                processedRecordNos.add(dcc.getRecordNo());
+                                return Stream.empty();
+                            }
+
+                            return buildDccPOCombinedViewDTOs(dcc, purchaseOrder, uplList, dccLnList, latestApprovalRequest,
+                                    dccLnByUplLineNumber, siteBySiteId, dateFormat, loggedInvalidLinkIds, processedRecordNos,
+                                    allRelatedRequests, allRelatedApprovals).stream();
+                        })
+                        .collect(Collectors.toList());
+            }
+
+            logger.info("V3 retrieved {} records for page {}, size {}", result.size(), page, size);
+            return new DccPOFetchResult(result, totalFilteredRecords, totalFilteredRecords);
+        } catch (Exception ex) {
+            logger.error("Error in V3 fetchDccPOCombinedView for supplierId: {}, pendingApprovers: {}", supplierId, pendingApprovers, ex);
+            throw new DccPOProcessingException("Failed to fetch DCC PO Combined View", ex);
+        }
+    }
+
+    private Set<Long> resolveApproverFilter(String pendingApprovers) {
+        if (pendingApprovers == null || pendingApprovers.trim().isEmpty()) {
+            return null;
+        }
+        return new HashSet<>(tbCategoryApprovalsRepository.findDccIdsByReadyForApprovalApproverName(pendingApprovers.trim()));
+    }
+
+    private Map<Long, List<TbCategoryApprovalRequests>> batchLoadAllRequestsByDcc(List<Long> dccIds) {
+        return tbCategoryApprovalRequestsRepository.findByAcceptanceRequestRecordNoInOrderByRecordDateTimeDesc(dccIds)
+                .stream()
+                .collect(Collectors.groupingBy(TbCategoryApprovalRequests::getAcceptanceRequestRecordNo));
+    }
+
+    private Map<Long, List<TbCategoryApprovals>> batchLoadApprovals(Map<Long, List<TbCategoryApprovalRequests>> byDcc) {
+        List<Long> requestIds = byDcc.values().stream()
+                .flatMap(List::stream)
+                .map(TbCategoryApprovalRequests::getRecordNo)
+                .distinct()
+                .collect(Collectors.toList());
+        if (requestIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        return tbCategoryApprovalsRepository.findByApprovalRecordIdIn(requestIds).stream()
+                .collect(Collectors.groupingBy(TbCategoryApprovals::getApprovalRecordId));
+    }
+
+    private List<TbCategoryApprovals> collectApprovals(List<TbCategoryApprovalRequests> requests,
+                                                         Map<Long, List<TbCategoryApprovals>> approvMap) {
+        return requests.stream()
+                .map(TbCategoryApprovalRequests::getRecordNo)
+                .flatMap(id -> approvMap.getOrDefault(id, Collections.emptyList()).stream())
+                .collect(Collectors.toList());
+    }
+
     private List<DccPOCombinedViewDTO> buildDccPOCombinedViewDTOs(
             DCC dcc, tbPurchaseOrder purchaseOrder, List<tb_PurchaseOrderUPL> uplList,
             List<DCCLineItem> dccLnList, TbCategoryApprovalRequests latestApprovalRequest,
             Map<String, List<DCCLineItem>> dccLnByUplLineNumber, Map<String, tb_Site> siteBySiteId,
             SimpleDateFormat dateFormat, Set<Long> loggedInvalidLinkIds, Set<Long> processedRecordNos) {
+        return buildDccPOCombinedViewDTOs(dcc, purchaseOrder, uplList, dccLnList, latestApprovalRequest,
+                dccLnByUplLineNumber, siteBySiteId, dateFormat, loggedInvalidLinkIds, processedRecordNos,
+                null, null);
+    }
+
+    private List<DccPOCombinedViewDTO> buildDccPOCombinedViewDTOs(
+            DCC dcc, tbPurchaseOrder purchaseOrder, List<tb_PurchaseOrderUPL> uplList,
+            List<DCCLineItem> dccLnList, TbCategoryApprovalRequests latestApprovalRequest,
+            Map<String, List<DCCLineItem>> dccLnByUplLineNumber, Map<String, tb_Site> siteBySiteId,
+            SimpleDateFormat dateFormat, Set<Long> loggedInvalidLinkIds, Set<Long> processedRecordNos,
+            List<TbCategoryApprovalRequests> allRelatedRequests, List<TbCategoryApprovals> allRelatedApprovals) {
         List<DccPOCombinedViewDTO> dtos = new ArrayList<>();
 
         for (DCCLineItem dccLn : dccLnList) {
@@ -270,7 +469,12 @@ public class DccPOService {
                 populateDccFields(dto, dcc, dateFormat, latestApprovalRequest);
                 populateLineItemFields(dto, dccLn, siteBySiteId, dateFormat, loggedInvalidLinkIds);
                 populatePurchaseOrderAndUplFields(dto, dccLn, purchaseOrder, upl);
-                calculateQuantitiesAndApprovals(dto, dcc, purchaseOrder, upl, dccLnByUplLineNumber, latestApprovalRequest);
+                if (allRelatedRequests != null) {
+                    calculateQuantitiesAndApprovals(dto, dcc, purchaseOrder, upl, dccLnByUplLineNumber,
+                            latestApprovalRequest, allRelatedRequests, allRelatedApprovals);
+                } else {
+                    calculateQuantitiesAndApprovals(dto, dcc, purchaseOrder, upl, dccLnByUplLineNumber, latestApprovalRequest);
+                }
 
                 dtos.add(dto);
             }
@@ -423,21 +627,73 @@ public class DccPOService {
         }
     }
 
+    private void calculateQuantitiesAndApprovals(DccPOCombinedViewDTO dto, DCC dcc, tbPurchaseOrder purchaseOrder,
+                                                 tb_PurchaseOrderUPL upl, Map<String, List<DCCLineItem>> dccLnByUplLineNumber,
+                                                 TbCategoryApprovalRequests latestApprovalRequest,
+                                                 List<TbCategoryApprovalRequests> allRelatedRequests,
+                                                 List<TbCategoryApprovals> allRelatedApprovals) {
+        double totalDelivered = upl.getUplLine() != null && !upl.getUplLine().isEmpty()
+                ? tbDccLnRepository.findByPoIdAndLineNumberAndUplLineNumber(
+                        upl.getPoNumber(), upl.getPoLineNumber(), upl.getUplLine()).stream()
+                .filter(d -> d.getDeliveredQty() != null)
+                .filter(d -> {
+                    DCC dccForLine = tbDccRepository.findByRecordNo(Long.parseLong(d.getDccId())).orElse(null);
+                    return dccForLine != null && !Arrays.asList("incomplete", "rejected").contains(dccForLine.getStatus());
+                })
+                .mapToDouble(DCCLineItem::getDeliveredQty)
+                .sum()
+                : 0.0;
+        dto.setUPLACPTRequestValue(totalDelivered);
 
+        List<tb_PurchaseOrderUPL> allUplForPoLine = tbPurchaseOrderUplRepository.findByPoNumberAndPoLineNumber(
+                upl.getPoNumber(), upl.getPoLineNumber());
+        double poLineAcceptanceQty = allUplForPoLine.stream()
+                .filter(u -> u.getUplLineQuantity() != null && u.getUplLineQuantity() > 0)
+                .filter(u -> u.getPoLineQuantity() != null && u.getPoLineUnitPrice() != null)
+                .mapToDouble(u -> {
+                    double denominator = u.getPoLineQuantity() * u.getPoLineUnitPrice();
+                    if (denominator == 0) {
+                        return 0.0;
+                    }
+                    double numerator = u.getUplLineQuantity() * u.getPoLineQuantity();
+                    return numerator / denominator;
+                })
+                .sum();
+        dto.setPOLineAcceptanceQty(poLineAcceptanceQty);
 
+        boolean exists = tbDccLnRepository.existsByPoIdAndLineNumberAndUplLineNumber(
+                upl.getPoNumber(), upl.getPoLineNumber(), upl.getUplLine());
+        double poPendingQuantity = exists ? poLineAcceptanceQty : (upl.getPoLineQuantity() != null ? upl.getPoLineQuantity() : 0.0);
+        dto.setPoPendingQuantity(poPendingQuantity);
+
+        double uplPending = upl.getUplLineQuantity() != null ? upl.getUplLineQuantity() - totalDelivered : 0.0;
+        dto.setUplPendingQuantity(uplPending > 0 ? uplPending : 0.0);
+
+        if (latestApprovalRequest != null) {
+            calculateApprovalFields(dto, latestApprovalRequest, allRelatedRequests, allRelatedApprovals);
+        } else {
+            dto.setApprovalCount(0L);
+            dto.setPendingApprovers(null);
+            dto.setApproverComment(null);
+            dto.setUserAging("0 days 0 hrs 0 mins");
+            dto.setTotalAging("0 days 0 hrs 0 mins");
+        }
+    }
 
     private void calculateApprovalFields(DccPOCombinedViewDTO dto, TbCategoryApprovalRequests latestApprovalRequest) {
-        List<String> validRequestStatuses = Arrays.asList("pending", "returned");
-        List<String> validApprovalStatuses = Arrays.asList("pending", "readyForApproval", "request-info");
-        ZonedDateTime now = ZonedDateTime.now();
-        LocalDateTime nowLocal = now.toLocalDateTime();
-
-        // Step 1: Fetch all related requests and approvals without initial filtering
         List<TbCategoryApprovalRequests> allRelatedRequests = tbCategoryApprovalRequestsRepository
                 .findByAcceptanceRequestRecordNoOrderByRecordDateTimeDesc(latestApprovalRequest.getAcceptanceRequestRecordNo());
         List<TbCategoryApprovals> allRelatedApprovals = allRelatedRequests.stream()
                 .flatMap(request -> tbCategoryApprovalsRepository.findByApprovalRecordId(request.getRecordNo()).stream())
                 .collect(Collectors.toList());
+        calculateApprovalFields(dto, latestApprovalRequest, allRelatedRequests, allRelatedApprovals);
+    }
+
+    private void calculateApprovalFields(DccPOCombinedViewDTO dto, TbCategoryApprovalRequests latestApprovalRequest,
+                                           List<TbCategoryApprovalRequests> allRelatedRequests,
+                                           List<TbCategoryApprovals> allRelatedApprovals) {
+        List<String> validApprovalStatuses = Arrays.asList("pending", "readyForApproval", "request-info");
+        LocalDateTime nowLocal = ZonedDateTime.now().toLocalDateTime();
 
         // Shared calculations
         String totalAging = calculateTotalAging(allRelatedApprovals, latestApprovalRequest, nowLocal);

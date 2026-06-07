@@ -46,4 +46,24 @@ public interface TbCategoryApprovalsRepository extends JpaRepository<TbCategoryA
       AND r.status IN ('pending', 'request-info')
     """)
 long countDccIdsByPendingApproverName(@Param("name") String name);
+
+    /**
+     * Matches V1 DccSpecification pendingApprovers filter semantics:
+     * latest pending approval request per DCC + approver readyForApproval (exact name).
+     */
+    @Query("""
+        SELECT DISTINCT r.acceptanceRequestRecordNo
+        FROM TbCategoryApprovalRequests r
+        JOIN TbCategoryApprovals a ON a.approvalRecordId = r.recordNo
+        WHERE r.status = 'pending'
+          AND LOWER(a.approverName) = LOWER(:approverName)
+          AND a.approvalStatus = 'readyForApproval'
+          AND r.recordDateTime = (
+              SELECT MAX(r2.recordDateTime)
+              FROM TbCategoryApprovalRequests r2
+              WHERE r2.acceptanceRequestRecordNo = r.acceptanceRequestRecordNo
+                AND r2.status = 'pending'
+          )
+        """)
+    List<Long> findDccIdsByReadyForApprovalApproverName(@Param("approverName") String approverName);
 }

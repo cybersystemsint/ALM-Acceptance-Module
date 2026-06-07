@@ -98,8 +98,14 @@ public class DccSpecification implements Specification<DCC> {
             predicates.add(cb.equal(root.get("vendorNumber"), supplierId));
         }
 
-        // Filter by pendingApprovers if provided
-        if (pendingApprovers != null && !pendingApprovers.isEmpty()) {
+        // Pre-resolved approver filter (V3 optimisation — avoids correlated subqueries)
+        if (allowedRecordNos != null) {
+            if (allowedRecordNos.isEmpty()) {
+                predicates.add(cb.isFalse(cb.literal(true)));
+            } else {
+                predicates.add(root.get("recordNo").in(allowedRecordNos));
+            }
+        } else if (pendingApprovers != null && !pendingApprovers.isEmpty()) {
             // Subquery to get the latest TbCategoryApprovalRequests.recordNo for each DCC
             Subquery<Long> approvalRequestSubquery = query.subquery(Long.class);
             Root<TbCategoryApprovalRequests> approvalRequestRoot = approvalRequestSubquery.from(TbCategoryApprovalRequests.class);
