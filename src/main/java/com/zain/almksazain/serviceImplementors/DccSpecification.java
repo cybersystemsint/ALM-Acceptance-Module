@@ -93,6 +93,10 @@ public class DccSpecification implements Specification<DCC> {
         // Ensure poNumber is not null
         predicates.add(cb.isNotNull(root.get("poNumber")));
 
+       if (allowedRecordNos != null && !allowedRecordNos.isEmpty()) {
+           predicates.add(root.get("recordNo").in(allowedRecordNos));
+       }
+
         // Filter by supplierId if not "0"
         if (!"0".equals(supplierId)) {
             predicates.add(cb.equal(root.get("vendorNumber"), supplierId));

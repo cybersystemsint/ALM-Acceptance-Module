@@ -23,27 +23,20 @@ public interface TbCategoryApprovalsRepository extends JpaRepository<TbCategoryA
     List<TbCategoryApprovals> findByApprovedBy(Integer approvedBy);
     List<TbCategoryApprovals> findByApprovalRecordIdAndStatusAndApprovalStatus(Long approvalRecordId, String status, String approvalStatus);
     List<TbCategoryApprovals> findByApprovalRecordIdIn(List<Long> recordIds);
-        // Find DCC IDs where a specific approver is currently pending
-     @Query("""
-         SELECT DISTINCT r.acceptanceRequestRecordNo
-         FROM TbCategoryApprovalRequests r
-         JOIN TbCategoryApprovals a ON a.approvalRecordId = r.recordNo
-         WHERE LOWER(a.approverName) LIKE LOWER(CONCAT('%', :approverName, '%'))
-           AND a.status = 'pending'
-           AND a.approvalStatus IN ('pending', 'readyForApproval', 'request-info')
-           AND r.status IN ('pending', 'request-info')
-         """)
-     List<Long> findDccIdsByPendingApproverName(@Param("approverName") String approverName);
-
 
 @Query("""
-    SELECT COUNT(DISTINCT r.acceptanceRequestRecordNo)
+    SELECT DISTINCT r.acceptanceRequestRecordNo
     FROM TbCategoryApprovalRequests r
     JOIN TbCategoryApprovals a ON a.approvalRecordId = r.recordNo
-    WHERE LOWER(a.approverName) LIKE LOWER(CONCAT('%', :name, '%'))
-      AND a.status = 'pending'
-      AND a.approvalStatus IN ('pending', 'readyForApproval', 'request-info')
-      AND r.status IN ('pending', 'request-info')
+    WHERE LOWER(a.approverName) = LOWER(:approverName)
+      AND a.approvalStatus = 'readyForApproval'
+      AND r.status = 'pending'
+      AND r.recordDateTime = (
+          SELECT MAX(r2.recordDateTime)
+          FROM TbCategoryApprovalRequests r2
+          WHERE r2.acceptanceRequestRecordNo = r.acceptanceRequestRecordNo
+            AND r2.status = 'pending'
+      )
     """)
-long countDccIdsByPendingApproverName(@Param("name") String name);
+List<Long> findDccIdsByPendingApproverName(@Param("approverName") String approverName);
 }
