@@ -45,133 +45,138 @@ public class DccPOV2ServiceImpl implements DccPOV2Service {
 
     // ─── PUBLIC API ───────────────────────────────────────────────────────────
 
-    @Override
-    @Async("taskExecutor")
-    public CompletableFuture<DccPOResponseDTO> getCombinedView(DccPORequest request) {
-        return CompletableFuture.supplyAsync(() -> {
-            int page = Math.max(request.getPage(), 1);
-            int size = Math.max(request.getSize(), 1);
+@Override
+@Async("taskExecutor")
+public CompletableFuture<DccPOResponseDTO> getCombinedView(DccPORequest request) {
+    // No supplyAsync wrapper needed — @Async wraps this automatically
+    int page = Math.max(request.getPage(), 1);
+    int size = Math.max(request.getSize(), 1);
 
-            FetchContext ctx = buildFetchContext(request, page, size, false);
-            List<DccPOCombinedViewDTO> rows = fetchRows(ctx);
-            rows = applyInMemoryFilters(rows, request);
+    FetchContext ctx = buildFetchContext(request, page, size, false);
+    List<DccPOCombinedViewDTO> rows = fetchRows(ctx);
+    rows = applyInMemoryFilters(rows, request);
 
-            List<DccPOParentDTO> parents = groupIntoParents(rows, ctx.fetchParentOnly);
+    List<DccPOParentDTO> parents = groupIntoParents(rows, ctx.fetchParentOnly);
 
-            long totalRecords = ctx.approverFilteredTotal >= 0
-                    ? ctx.approverFilteredTotal
-                    : ctx.totalFiltered;
+    // long totalRecords = ctx.approverFilteredTotal >= 0
+    //         ? ctx.approverFilteredTotal
+    //         : ctx.totalFiltered;
+    long totalRecords = ctx.totalFiltered;
 
-            DccPOResponseDTO resp = new DccPOResponseDTO();
-            resp.setTotalRecords(totalRecords);
-            resp.setData(parents);
-            resp.setTotalPages((int) Math.ceil((double) totalRecords / size));
-            resp.setPageSize(size);
-            resp.setCurrentPage(page);
-            logger.info("getCombinedView — {} parents, totalRecords={}", parents.size(), totalRecords);
-            return resp;
-        });
-    }
+    DccPOResponseDTO resp = new DccPOResponseDTO();
+    resp.setTotalRecords(totalRecords);
+    resp.setData(parents);
+    resp.setTotalPages((int) Math.ceil((double) totalRecords / size));
+    resp.setPageSize(size);
+    resp.setCurrentPage(page);
+    logger.info("getCombinedView — {} parents, totalRecords={}", parents.size(), totalRecords);
+    return CompletableFuture.completedFuture(resp);
+}
 
-    @Override
-    @Async("taskExecutor")
-    public CompletableFuture<List<DccPOCombinedViewDTO>> getExportData(DccPORequest request) {
-        return CompletableFuture.supplyAsync(() -> {
-            FetchContext ctx = buildFetchContext(request, 1, Integer.MAX_VALUE, true);
-            List<DccPOCombinedViewDTO> rows = fetchRows(ctx);
-            rows = applyInMemoryFilters(rows, request);
-            logger.info("getExportData — {} rows", rows.size());
-            return rows;
-        });
-    }
+@Override
+@Async("taskExecutor")
+public CompletableFuture<List<DccPOCombinedViewDTO>> getExportData(DccPORequest request) {
+    FetchContext ctx = buildFetchContext(request, 1, Integer.MAX_VALUE, true);
+    List<DccPOCombinedViewDTO> rows = fetchRows(ctx);
+    rows = applyInMemoryFilters(rows, request);
+    logger.info("getExportData — {} rows", rows.size());
+    return CompletableFuture.completedFuture(rows);
+}
 
     // ─── FETCH CONTEXT ────────────────────────────────────────────────────────
 
-    private FetchContext buildFetchContext(DccPORequest req, int page, int size, boolean exporting) {
+ private FetchContext buildFetchContext(DccPORequest req, int page, int size, boolean exporting) {
 
-        // ── Approver pre-filter ────────────────────────────────────────────────
-        Set<Long> allowedIds = null;
-        long approverFilteredTotal = -1L;
+    // ── Approver pre-filter ────────────────────────────────────────────────
+    Set<Long> allowedIds = null;
+    long approverFilteredTotal = -1L;
 
-        if (hasValue(req.getPendingApprovers())) {
-            List<Long> matched = approvalsRepository
-                    .findDccIdsByPendingApproverName(req.getPendingApprovers().trim());
-            if (matched.isEmpty()) {
-                logger.info("No DCCs for pending approver '{}'", req.getPendingApprovers());
-                return FetchContext.empty();
-            }
-            allowedIds = new HashSet<>(matched);
-            approverFilteredTotal = approvalsRepository
-                    .countDccIdsByPendingApproverName(req.getPendingApprovers().trim());
-            logger.info("Approver pre-filter matched {} DCC IDs, approverFilteredTotal={}",
-                    allowedIds.size(), approverFilteredTotal);
+    if (hasValue(req.getPendingApprovers())) {
+        List<Long> matched = approvalsRepository
+                .findDccIdsByPendingApproverName(req.getPendingApprovers().trim());
+        if (matched.isEmpty()) {
+            logger.info("No DCCs for pending approver '{}'", req.getPendingApprovers());
+            return FetchContext.empty();
         }
-
-        // ── Build filterMap ────────────────────────────────────────────────────
-        Map<String, String> filterMap = new HashMap<>();
-        if (req.getFilterBy() != null) {
-            for (DccPORequest.FilterCriteria f : req.getFilterBy()) {
-                if (f.getColumn() != null && f.getValue() != null && !f.getValue().trim().isEmpty()) {
-                    filterMap.put(f.getColumn(), f.getValue());
-                }
-            }
-        }
-
-        // ── Build spec & fetch DCCs ────────────────────────────────────────────
-        DccSpecification spec = (allowedIds != null)
-                ? new DccSpecification(req.getSupplierId(), null, req.getColumnName(),
-                        req.getSearchQuery(), req.getOperator(), allowedIds, filterMap,
-                        req.getCreatedDateStart(), req.getCreatedDateEnd())
-                : new DccSpecification(req.getSupplierId(), null, req.getColumnName(),
-                        req.getSearchQuery(), req.getOperator(), filterMap,
-                        req.getCreatedDateStart(), req.getCreatedDateEnd());
-
-        Page<DCC> dccPage;
-        if (exporting) {
-            List<DCC> all = tbDccRepository.findAll(spec, Sort.by(Sort.Direction.DESC, "recordNo"));
-            dccPage = new org.springframework.data.domain.PageImpl<>(all);
-        } else {
-            Pageable pageable = PageRequest.of(page - 1, size, Sort.by(Sort.Direction.DESC, "recordNo"));
-            dccPage = tbDccRepository.findAll(spec, pageable);
-        }
-
-        List<DCC> dccList = dccPage.getContent();
-        long totalFiltered = exporting ? dccList.size() : dccPage.getTotalElements();
-        logger.info("DB returned {} DCC records (totalFiltered={})", dccList.size(), totalFiltered);
-
-        if (dccList.isEmpty()) return FetchContext.empty();
-        validatePoNumbers(dccList);
-
-        boolean fetchParentOnly = !exporting
-                && !(hasValue(req.getColumnName())
-                        && req.getColumnName().equalsIgnoreCase("recordNo")
-                        && hasValue(req.getSearchQuery()));
-
-        List<Long>   dccIds    = dccList.stream().map(DCC::getRecordNo).collect(Collectors.toList());
-        List<String> poNumbers = dccList.stream().map(DCC::getPoNumber).distinct().collect(Collectors.toList());
-
-        // ── Batch load all reference data ──────────────────────────────────────
-        Map<String, List<tbPurchaseOrder>>            poMap      = batchLoadPurchaseOrders(poNumbers);
-        Map<Long,   TbCategoryApprovalRequests>       latestReqs = batchLoadLatestApprovalRequests(dccIds);
-        Map<Long,   List<TbCategoryApprovalRequests>> allReqs    = batchLoadAllRequestsByDcc(dccIds);
-        Map<Long,   List<TbCategoryApprovals>>        approvMap  = batchLoadApprovals(allReqs);
-
-        Map<String, List<tb_PurchaseOrderUPL>> uplMap = null;
-        Map<Long,   List<DCCLineItem>>         lnMap  = null;
-        Map<String, tb_Site>                   siteBySiteId = null;
-        QuantityContext                         qtyCtx = null;
-
-        if (!fetchParentOnly) {
-            uplMap = batchLoadUplMap(poNumbers);
-            lnMap  = batchLoadDccLineItems(dccIds);
-            siteBySiteId = DccSiteRegionResolver.loadSiteBySiteIdMap(lnMap, tbSiteRepo);
-            // ── Pre-compute all quantity data in bulk (eliminates N+1 in calculateQuantities) ──
-            qtyCtx = buildQuantityContext(poNumbers, dccList, uplMap, lnMap);
-        }
-
-        return new FetchContext(dccList, totalFiltered, approverFilteredTotal, fetchParentOnly,
-                poMap, latestReqs, allReqs, approvMap, uplMap, lnMap, siteBySiteId, qtyCtx);
+        allowedIds = new HashSet<>(matched);
+        approverFilteredTotal = matched.size();  // exact count, not a separate DB call
+        logger.info("Approver pre-filter matched {} DCC IDs", allowedIds.size());
     }
+
+    // ── Build filterMap ────────────────────────────────────────────────────
+    Map<String, String> filterMap = new HashMap<>();
+    if (req.getFilterBy() != null) {
+        for (DccPORequest.FilterCriteria f : req.getFilterBy()) {
+            if (f.getColumn() != null && f.getValue() != null && !f.getValue().trim().isEmpty()) {
+                filterMap.put(f.getColumn(), f.getValue());
+            }
+        }
+    }
+
+    // ── Build spec ────────────────────────────────────────────────────────
+    // Pass allowedIds always — DccSpecification must add "record_no IN (...)"
+    // when allowedIds is non-null and non-empty.
+    DccSpecification spec = new DccSpecification(
+            req.getSupplierId(),
+            null,                      // pendingApprovers handled above
+            req.getColumnName(),
+            req.getSearchQuery(),
+            req.getOperator(),
+            allowedIds,                // null == no restriction; non-null == hard IN filter
+            filterMap,
+            req.getCreatedDateStart(),
+            req.getCreatedDateEnd());
+
+    // ── Fetch DCCs ────────────────────────────────────────────────────────
+    Page<DCC> dccPage;
+    if (exporting) {
+        List<DCC> all = tbDccRepository.findAll(spec, Sort.by(Sort.Direction.DESC, "recordNo"));
+        dccPage = new org.springframework.data.domain.PageImpl<>(all);
+    } else {
+        Pageable pageable = PageRequest.of(page - 1, size, Sort.by(Sort.Direction.DESC, "recordNo"));
+        dccPage = tbDccRepository.findAll(spec, pageable);
+    }
+
+    List<DCC> dccList = dccPage.getContent();
+    // When allowedIds is active, totalFiltered = allowedIds.size() (already exact).
+    // Otherwise use the DB count.
+    long totalFiltered = (approverFilteredTotal >= 0)
+            ? approverFilteredTotal
+            : (exporting ? dccList.size() : dccPage.getTotalElements());
+
+    logger.info("DB returned {} DCC records (totalFiltered={})", dccList.size(), totalFiltered);
+
+    if (dccList.isEmpty()) return FetchContext.empty();
+    validatePoNumbers(dccList);
+
+    boolean fetchParentOnly = !exporting
+            && !(hasValue(req.getColumnName())
+                    && req.getColumnName().equalsIgnoreCase("recordNo")
+                    && hasValue(req.getSearchQuery()));
+
+    List<Long>   dccIds    = dccList.stream().map(DCC::getRecordNo).collect(Collectors.toList());
+    List<String> poNumbers = dccList.stream().map(DCC::getPoNumber).distinct().collect(Collectors.toList());
+
+    Map<String, List<tbPurchaseOrder>>            poMap      = batchLoadPurchaseOrders(poNumbers);
+    Map<Long,   TbCategoryApprovalRequests>       latestReqs = batchLoadLatestApprovalRequests(dccIds);
+    Map<Long,   List<TbCategoryApprovalRequests>> allReqs    = batchLoadAllRequestsByDcc(dccIds);
+    Map<Long,   List<TbCategoryApprovals>>        approvMap  = batchLoadApprovals(allReqs);
+
+    Map<String, List<tb_PurchaseOrderUPL>> uplMap      = null;
+    Map<Long,   List<DCCLineItem>>         lnMap       = null;
+    Map<String, tb_Site>                   siteBySiteId = null;
+    QuantityContext                         qtyCtx      = null;
+
+    if (!fetchParentOnly) {
+        uplMap       = batchLoadUplMap(poNumbers);
+        lnMap        = batchLoadDccLineItems(dccIds);
+        siteBySiteId = DccSiteRegionResolver.loadSiteBySiteIdMap(lnMap, tbSiteRepo);
+        qtyCtx       = buildQuantityContext(poNumbers, dccList, uplMap, lnMap);
+    }
+
+    return new FetchContext(dccList, totalFiltered, approverFilteredTotal, fetchParentOnly,
+            poMap, latestReqs, allReqs, approvMap, uplMap, lnMap, siteBySiteId, qtyCtx);
+}
 
     // ─── QUANTITY CONTEXT (eliminates N+1) ────────────────────────────────────
 
@@ -261,90 +266,73 @@ public class DccPOV2ServiceImpl implements DccPOV2Service {
 
     // ─── IN-MEMORY FILTERS ────────────────────────────────────────────────────
 
-    private List<DccPOCombinedViewDTO> applyInMemoryFilters(
-            List<DccPOCombinedViewDTO> rows, DccPORequest req) {
+ private List<DccPOCombinedViewDTO> applyInMemoryFilters(
+        List<DccPOCombinedViewDTO> rows, DccPORequest req) {
 
-        SimpleDateFormat sdf = new SimpleDateFormat(DATE_FMT, Locale.ENGLISH);
+    SimpleDateFormat sdf = new SimpleDateFormat(DATE_FMT, Locale.ENGLISH);
 
-        if (hasValue(req.getPendingApprovers())) {
-            String f = req.getPendingApprovers().trim().toLowerCase();
-            rows = rows.stream()
-                    .filter(dto -> dto.getPendingApprovers() != null
-                            && dto.getPendingApprovers().toLowerCase().contains(f))
-                    .collect(Collectors.toList());
-            logger.info("After pendingApprovers filter '{}': {} rows", f, rows.size());
-        }
+    // NOTE: pendingApprovers is now handled at the DB level via allowedIds in
+    // DccSpecification — do NOT filter it again here, or valid rows get dropped.
 
-        if (req.getFilterBy() != null) {
-            for (DccPORequest.FilterCriteria fc : req.getFilterBy()) {
-                if (fc.getColumn() == null || !hasValue(fc.getValue())) continue;
-                String col = fc.getColumn().toLowerCase();
-                String val = fc.getValue().trim();
-                String op  = fc.getOperator();
+    if (req.getFilterBy() != null) {
+        for (DccPORequest.FilterCriteria fc : req.getFilterBy()) {
+            if (fc.getColumn() == null || !hasValue(fc.getValue())) continue;
+            String col = fc.getColumn().toLowerCase();
+            String val = fc.getValue().trim();
+            String op  = fc.getOperator();
 
-                switch (col) {
-                    case "pendingapprovers":
-                    case "pendingapprover":
+            switch (col) {
+                case "pendingapprovers":
+                case "pendingapprover":
+                    // Only apply in-memory if an explicit filterBy criterion was sent
+                    // (not the top-level pendingApprovers field — that's already DB-filtered)
+                    rows = rows.stream()
+                            .filter(dto -> dto.getPendingApprovers() != null
+                                    && applyOp(dto.getPendingApprovers(), val, op))
+                            .collect(Collectors.toList());
+                    break;
+                case "approvalcount":
+                    try {
+                        Long expected = Long.parseLong(val);
                         rows = rows.stream()
-                                .filter(dto -> dto.getPendingApprovers() != null
-                                        && applyOp(dto.getPendingApprovers(), val, op))
+                                .filter(dto -> expected.equals(dto.getApprovalCount()))
                                 .collect(Collectors.toList());
-                        break;
-                    case "approvalcount":
-                        try {
-                            Long expected = Long.parseLong(val);
-                            rows = rows.stream()
-                                    .filter(dto -> expected.equals(dto.getApprovalCount()))
-                                    .collect(Collectors.toList());
-                        } catch (NumberFormatException ignored) {}
-                        break;
-                    case "supplierid":
-                        rows = rows.stream()
-                                .filter(dto -> dto.getSupplierId() != null
-                                        && applyOp(dto.getSupplierId(), val, op))
-                                .collect(Collectors.toList());
-                        break;
-                    case "dateapproved":
-                        rows = rows.stream()
-                                .filter(dto -> dto.getDateApproved() != null
-                                        && applyOp(dto.getDateApproved(), val, op))
-                                .collect(Collectors.toList());
-                        break;
-                    case "useragging":
-                        rows = rows.stream()
-                                .filter(dto -> dto.getUserAging() != null
-                                        && applyOp(dto.getUserAging(), val, op))
-                                .collect(Collectors.toList());
-                        break;
-                    case "totalagging":
-                        rows = rows.stream()
-                                .filter(dto -> dto.getTotalAging() != null
-                                        && applyOp(dto.getTotalAging(), val, op))
-                                .collect(Collectors.toList());
-                        break;
-                    default:
-                        break;
-                }
+                    } catch (NumberFormatException ignored) {}
+                    break;
+                case "supplierid":
+                    rows = rows.stream()
+                            .filter(dto -> dto.getSupplierId() != null
+                                    && applyOp(dto.getSupplierId(), val, op))
+                            .collect(Collectors.toList());
+                    break;
+                case "dateapproved":
+                    rows = rows.stream()
+                            .filter(dto -> dto.getDateApproved() != null
+                                    && applyOp(dto.getDateApproved(), val, op))
+                            .collect(Collectors.toList());
+                    break;
+                default:
+                    break;
             }
         }
-
-        String aStart = req.getApprovedDateStart();
-        String aEnd   = req.getApprovedDateEnd();
-        if (hasValue(aStart) || hasValue(aEnd)) {
-            rows = rows.stream().filter(dto -> {
-                try {
-                    if (!hasValue(dto.getDateApproved())) return false;
-                    Date d = sdf.parse(dto.getDateApproved());
-                    if (hasValue(aStart) && d.before(sdf.parse(aStart))) return false;
-                    if (hasValue(aEnd)   && d.after(sdf.parse(aEnd)))    return false;
-                    return true;
-                } catch (ParseException e) { return true; }
-            }).collect(Collectors.toList());
-        }
-
-        return rows;
     }
 
+    String aStart = req.getApprovedDateStart();
+    String aEnd   = req.getApprovedDateEnd();
+    if (hasValue(aStart) || hasValue(aEnd)) {
+        rows = rows.stream().filter(dto -> {
+            try {
+                if (!hasValue(dto.getDateApproved())) return false;
+                Date d = sdf.parse(dto.getDateApproved());
+                if (hasValue(aStart) && d.before(sdf.parse(aStart))) return false;
+                if (hasValue(aEnd)   && d.after(sdf.parse(aEnd)))    return false;
+                return true;
+            } catch (ParseException e) { return true; }
+        }).collect(Collectors.toList());
+    }
+
+    return rows;
+}
     private boolean applyOp(String fieldValue, String query, String op) {
         if (fieldValue == null || query == null) return false;
         String fv = fieldValue.toLowerCase();
@@ -363,29 +351,32 @@ public class DccPOV2ServiceImpl implements DccPOV2Service {
 
     // ─── ROW BUILDERS ─────────────────────────────────────────────────────────
 
-    private List<DccPOCombinedViewDTO> buildParentOnlyRows(FetchContext ctx, SimpleDateFormat fmt) {
-        List<DccPOCombinedViewDTO> result = new ArrayList<>(ctx.dccList.size());
-        for (DCC dcc : ctx.dccList) {
-            List<tbPurchaseOrder> pos = ctx.poMap.getOrDefault(dcc.getPoNumber(), List.of());
-            if (pos.isEmpty()) throw new DccPOProcessingException(
-                    "Missing PO for DCC record: " + dcc.getRecordNo());
-
-            TbCategoryApprovalRequests latestReq = ctx.latestReqs.get(dcc.getRecordNo());
-            DccPOCombinedViewDTO dto = new DccPOCombinedViewDTO();
-            populateDccFields(dto, dcc, fmt, latestReq);
-            populatePoFields(dto, pos.get(0));
-
-            if (latestReq != null) {
-                List<TbCategoryApprovalRequests> all = ctx.allReqs.getOrDefault(dcc.getRecordNo(), List.of());
-                calculateApprovalFieldsBatched(dto, latestReq, all, collectApprovals(all, ctx.approvMap));
-            } else {
-                setDefaultApprovalFields(dto);
-            }
-            result.add(dto);
+ private List<DccPOCombinedViewDTO> buildParentOnlyRows(FetchContext ctx, SimpleDateFormat fmt) {
+    List<DccPOCombinedViewDTO> result = new ArrayList<>(ctx.dccList.size());
+    for (DCC dcc : ctx.dccList) {
+        List<tbPurchaseOrder> pos = ctx.poMap.getOrDefault(dcc.getPoNumber(), List.of());
+        if (pos.isEmpty()) {
+            // Matches original service behaviour: log and skip, don't throw
+            logger.error("No Purchase Order found for poNumber: {} in DCC record: {}. Skipping.",
+                    dcc.getPoNumber(), dcc.getRecordNo());
+            continue;
         }
-        return result;
-    }
 
+        TbCategoryApprovalRequests latestReq = ctx.latestReqs.get(dcc.getRecordNo());
+        DccPOCombinedViewDTO dto = new DccPOCombinedViewDTO();
+        populateDccFields(dto, dcc, fmt, latestReq);
+        populatePoFields(dto, pos.get(0));
+
+        if (latestReq != null) {
+            List<TbCategoryApprovalRequests> all = ctx.allReqs.getOrDefault(dcc.getRecordNo(), List.of());
+            calculateApprovalFieldsBatched(dto, latestReq, all, collectApprovals(all, ctx.approvMap));
+        } else {
+            setDefaultApprovalFields(dto);
+        }
+        result.add(dto);
+    }
+    return result;
+}
     private List<DccPOCombinedViewDTO> buildFullRows(FetchContext ctx, SimpleDateFormat fmt) {
 
         List<DccPOCombinedViewDTO> result = new ArrayList<>();
