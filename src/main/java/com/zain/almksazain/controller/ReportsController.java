@@ -992,7 +992,7 @@ private String convertToSqlDate(String input) {
             return response;
         }
 
-        // Paginated mode: count distinct POs, then fetch line items for the current page via subquery
+        // Paginated mode: count distinct POs, then fetch line items for the current page via join
         String countSql = "SELECT COUNT(DISTINCT PO.poNumber) FROM tb_PurchaseOrder PO" + whereClause;
         Integer totalRecords = jdbcTemplate.queryForObject(countSql, params.toArray(), Integer.class);
         if (totalRecords == null || totalRecords == 0) {
@@ -1005,15 +1005,13 @@ private String convertToSqlDate(String input) {
         lineParams.add(size);
         lineParams.add(offset);
 
-        // Wrap paged subquery in a derived table — MySQL does not allow LIMIT directly inside IN(...)
         String lineItemsSql =
                 "SELECT PO.* FROM tb_PurchaseOrder PO " +
-                "WHERE PO.poNumber IN (" +
-                "  SELECT poNumber FROM (" +
-                "    SELECT DISTINCT PO2.poNumber FROM tb_PurchaseOrder PO2" + innerWhere +
-                "    ORDER BY PO2.poNumber LIMIT ? OFFSET ?" +
-                "  ) AS paged_pos" +
-                ") ORDER BY PO.poNumber, PO.lineNumber";
+                "INNER JOIN (" +
+                "  SELECT DISTINCT PO2.poNumber FROM tb_PurchaseOrder PO2" + innerWhere +
+                "  ORDER BY PO2.poNumber LIMIT ? OFFSET ?" +
+                ") paged ON PO.poNumber = paged.poNumber " +
+                "ORDER BY PO.poNumber, PO.lineNumber";
 
         List<Map<String, Object>> lineItems = jdbcTemplate.queryForList(lineItemsSql, lineParams.toArray());
         Map<String, Map<String, Object>> groupedResults = groupLineItemsByPO(lineItems);

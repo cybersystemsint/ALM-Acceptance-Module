@@ -248,294 +248,294 @@ public class ExportsController {
     // Capitalization Report Export
     // ============================================================================
 
-@PostMapping(value = "/reports/v2/capitalizationReport/export")
-public void exportCapitalizationReport(@RequestBody String req,
-                                       HttpServletResponse response) throws IOException {
+    @PostMapping(value = "/reports/v2/capitalizationReport/export")
+    public void exportCapitalizationReport(@RequestBody String req,
+                                           HttpServletResponse response) throws IOException {
 
-    JsonObject obj = JsonParser.parseString(req).getAsJsonObject();
+        JsonObject obj = JsonParser.parseString(req).getAsJsonObject();
 
-    Map<String, String> searchableColumns = new HashMap<>();
-    searchableColumns.put("requestId",                      "DCC.recordNo");
-    searchableColumns.put("poNumber",                       "DCC.poNumber");
-    searchableColumns.put("poLineNumber",                   "LN2.lineNumber");
-    searchableColumns.put("uplLineNumber",                  "LN2.uplLineNumber");
-    searchableColumns.put("siteId",                         "LN2.locationName");
-    searchableColumns.put("linkId",                         "LN2.linkId");
-    searchableColumns.put("isd",                            "LN2.dateInService");
-    searchableColumns.put("region",                         "rg.regionName");
-    searchableColumns.put("siteTypeName",                   "siteType.siteTypeName");
-    searchableColumns.put("projectName",                    "(CASE WHEN HD.newProjectName IS NULL OR LENGTH(TRIM(HD.newProjectName)) = 0 THEN HD.projectName ELSE HD.newProjectName END)");
-    searchableColumns.put("description",                    "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.uplLineDescription ELSE HD.poLineDescription END)");
-    searchableColumns.put("quantity",                       "LN2.deliveredQty");
-    searchableColumns.put("partNumber",                     "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (CASE WHEN LENGTH(LN2.actualItemCode) > 0 THEN LN2.actualItemCode ELSE upl.uplLineItemCode END) ELSE HD.itemPartNumber END)");
-    searchableColumns.put("itemSerializedStatus",
-            "(CASE WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('YES','Y','TRUE','1') THEN 'YES' " +
-                    "WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('NO','N','FALSE','0') THEN 'NO' ELSE NULL END)");
-    searchableColumns.put("serialNumber",                   "LN2.serialNumber");
-    searchableColumns.put("uplItemCategoryCodeDescription", "upl.zainItemCategoryDescription");
-    searchableColumns.put("faBookingAmount",                "(upl.uplLineUnitPrice * LN2.deliveredQty)");
-    searchableColumns.put("currency",                       "'SAR'");
-    searchableColumns.put("tagNumber",                      "LN2.tagNumber");
-    searchableColumns.put("receiveddate",                   "rec.approvedDate");
-    searchableColumns.put("recordNo",                       "DCC.recordNo");
+        Map<String, String> searchableColumns = new HashMap<>();
+        searchableColumns.put("requestId",                      "DCC.recordNo");
+        searchableColumns.put("poNumber",                       "DCC.poNumber");
+        searchableColumns.put("poLineNumber",                   "LN2.lineNumber");
+        searchableColumns.put("uplLineNumber",                  "LN2.uplLineNumber");
+        searchableColumns.put("siteId",                         "LN2.locationName");
+        searchableColumns.put("linkId",                         "LN2.linkId");
+        searchableColumns.put("isd",                            "LN2.dateInService");
+        searchableColumns.put("region",                         "rg.regionName");
+        searchableColumns.put("siteTypeName",                   "siteType.siteTypeName");
+        searchableColumns.put("projectName",                    "(CASE WHEN HD.newProjectName IS NULL OR LENGTH(TRIM(HD.newProjectName)) = 0 THEN HD.projectName ELSE HD.newProjectName END)");
+        searchableColumns.put("description",                    "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.uplLineDescription ELSE HD.poLineDescription END)");
+        searchableColumns.put("quantity",                       "LN2.deliveredQty");
+        searchableColumns.put("partNumber",                     "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (CASE WHEN LENGTH(LN2.actualItemCode) > 0 THEN LN2.actualItemCode ELSE upl.uplLineItemCode END) ELSE HD.itemPartNumber END)");
+        searchableColumns.put("itemSerializedStatus",
+                "(CASE WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('YES','Y','TRUE','1') THEN 'YES' " +
+                        "WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('NO','N','FALSE','0') THEN 'NO' ELSE NULL END)");
+        searchableColumns.put("serialNumber",                   "LN2.serialNumber");
+        searchableColumns.put("uplItemCategoryCodeDescription", "upl.zainItemCategoryDescription");
+        searchableColumns.put("faBookingAmount",                "(upl.uplLineUnitPrice * LN2.deliveredQty)");
+        searchableColumns.put("currency",                       "'SAR'");
+        searchableColumns.put("tagNumber",                      "LN2.tagNumber");
+        searchableColumns.put("receiveddate",                   "rec.approvedDate");
+        searchableColumns.put("recordNo",                       "DCC.recordNo");
 
-    Set<String> numericColumns = new HashSet<>(Arrays.asList(
-            "requestId", "poLineNumber", "uplLineNumber", "sequenceNo", "quantity"
-    ));
+        Set<String> numericColumns = new HashSet<>(Arrays.asList(
+                "requestId", "poLineNumber", "uplLineNumber", "sequenceNo", "quantity"
+        ));
 
-    Set<String> controlKeys = new HashSet<>(Arrays.asList(
-            "poNumber",                                         
-            "receivedDateFrom", "receivedDateTo", "isdFrom", "isdTo",
-            "page", "size", "sort", "filters", "columnName", "searchQuery"
-    ));
+        Set<String> controlKeys = new HashSet<>(Arrays.asList(
+                "poNumber",
+                "receivedDateFrom", "receivedDateTo", "isdFrom", "isdTo",
+                "page", "size", "sort", "filters", "columnName", "searchQuery"
+        ));
 
-    JsonObject filtersObj = new JsonObject();
-    if (obj.has("filters") && obj.get("filters").isJsonObject()) {
-        filtersObj = obj.getAsJsonObject("filters");
-    } else {
-        for (Map.Entry<String, JsonElement> ent : obj.entrySet()) {
-            String key = ent.getKey();
-            if (controlKeys.contains(key)) continue;
-            JsonElement val = ent.getValue();
-            if (val == null || val.isJsonNull()) continue;
-            if (val.isJsonPrimitive()) filtersObj.add(key, val);
-        }
-        if (obj.has("columnName") && obj.has("searchQuery")) {
-            String col = obj.get("columnName").getAsString();
-            String q   = obj.get("searchQuery").getAsString();
-            if (col != null && !col.trim().isEmpty() && q != null && !q.trim().isEmpty()) {
-                filtersObj.add(col, new JsonPrimitive(q));
-            }
-        }
-    }
-
-    StringBuilder whereClause = new StringBuilder();
-    List<Object> params = new ArrayList<>();
-
-    // FIX: handle poNumber with the same exact-match + "0" guard as the fetch endpoint
-    String poNumber = obj.has("poNumber") ? obj.get("poNumber").getAsString() : "0";
-    if (!poNumber.equalsIgnoreCase("0") && !poNumber.isEmpty()) {
-        whereClause.append(" AND DCC.poNumber = ?");
-        params.add(poNumber);
-    }
-
-    for (Map.Entry<String, JsonElement> entry : filtersObj.entrySet()) {
-        String columnKey = entry.getKey();
-        if (!searchableColumns.containsKey(columnKey)) continue;
-        String rawValue = entry.getValue().getAsString();
-        if (rawValue == null) continue;
-        rawValue = rawValue.trim();
-        if (rawValue.isEmpty()) continue;
-
-        String sqlCol = searchableColumns.get(columnKey);
-        if ("receiveddate".equals(columnKey) || "isd".equals(columnKey)) continue;
-
-        if (rawValue.contains(",")) {
-            String[] tokens = Arrays.stream(rawValue.split(","))
-                    .map(String::trim).filter(s -> !s.isEmpty()).toArray(String[]::new);
-            if (tokens.length == 0) continue;
-            if (numericColumns.contains(columnKey)) {
-                whereClause.append(" AND ").append(sqlCol).append(" IN (")
-                        .append(String.join(",", Collections.nCopies(tokens.length, "?"))).append(") ");
-                for (String t : tokens) params.add(t);
-            } else {
-                whereClause.append(" AND (");
-                for (int i = 0; i < tokens.length; i++) {
-                    if (i > 0) whereClause.append(" OR ");
-                    whereClause.append("LOWER(").append(sqlCol).append(") LIKE LOWER(?)");
-                    params.add("%" + tokens[i] + "%");
-                }
-                whereClause.append(") ");
-            }
+        JsonObject filtersObj = new JsonObject();
+        if (obj.has("filters") && obj.get("filters").isJsonObject()) {
+            filtersObj = obj.getAsJsonObject("filters");
         } else {
-            if (numericColumns.contains(columnKey)) {
-                whereClause.append(" AND ").append(sqlCol).append(" = ? ");
-                params.add(rawValue);
-            } else {
-                whereClause.append(" AND LOWER(").append(sqlCol).append(") LIKE LOWER(?) ");
-                params.add("%" + rawValue + "%");
+            for (Map.Entry<String, JsonElement> ent : obj.entrySet()) {
+                String key = ent.getKey();
+                if (controlKeys.contains(key)) continue;
+                JsonElement val = ent.getValue();
+                if (val == null || val.isJsonNull()) continue;
+                if (val.isJsonPrimitive()) filtersObj.add(key, val);
+            }
+            if (obj.has("columnName") && obj.has("searchQuery")) {
+                String col = obj.get("columnName").getAsString();
+                String q   = obj.get("searchQuery").getAsString();
+                if (col != null && !col.trim().isEmpty() && q != null && !q.trim().isEmpty()) {
+                    filtersObj.add(col, new JsonPrimitive(q));
+                }
             }
         }
-    }
-    String receivedDateFrom = convertToSqlDate(obj.has("receivedDateFrom") ? obj.get("receivedDateFrom").getAsString() : "");
-    String receivedDateTo   = convertToSqlDate(obj.has("receivedDateTo")   ? obj.get("receivedDateTo").getAsString()   : "");
-    if (!receivedDateFrom.isEmpty() && !receivedDateTo.isEmpty()) {
-        whereClause.append(" AND DATE(rec.approvedDate) BETWEEN ? AND ? ");
-        params.add(receivedDateFrom); params.add(receivedDateTo);
-    } else if (!receivedDateFrom.isEmpty()) {
-        whereClause.append(" AND DATE(rec.approvedDate) >= ? ");
-        params.add(receivedDateFrom);
-    } else if (!receivedDateTo.isEmpty()) {
-        whereClause.append(" AND DATE(rec.approvedDate) <= ? ");
-        params.add(receivedDateTo);
-    }
 
-    String isdFrom = convertToSqlDate(obj.has("isdFrom") ? obj.get("isdFrom").getAsString() : "");
-    String isdTo   = convertToSqlDate(obj.has("isdTo")   ? obj.get("isdTo").getAsString()   : "");
-    if (!isdFrom.isEmpty() && !isdTo.isEmpty()) {
-        whereClause.append(" AND DATE(LN2.dateInService) BETWEEN ? AND ? ");
-        params.add(isdFrom); params.add(isdTo);
-    } else if (!isdFrom.isEmpty()) {
-        whereClause.append(" AND DATE(LN2.dateInService) >= ? ");
-        params.add(isdFrom);
-    } else if (!isdTo.isEmpty()) {
-        whereClause.append(" AND DATE(LN2.dateInService) <= ? ");
-        params.add(isdTo);
-    }
+        StringBuilder whereClause = new StringBuilder();
+        List<Object> params = new ArrayList<>();
 
-    String baseSql = " FROM tb_DCC DCC "
-            + "JOIN tb_PurchaseOrder HD ON DCC.poNumber = HD.poNumber "
-            + "JOIN ( "
-            + "    SELECT t.acceptanceRequestRecordNo, MAX(t.recordNo) AS recordNo "
-            + "    FROM tb_Category_Approval_Requests t "
-            + "    WHERE t.status = 'approved' AND t.received = 1 "
-            + "    GROUP BY t.acceptanceRequestRecordNo "
-            + ") AR_latest ON DCC.recordNo = AR_latest.acceptanceRequestRecordNo "
-            + "JOIN tb_Category_Approval_Requests AR ON AR.recordNo = AR_latest.recordNo "
-            + "LEFT JOIN ( "
-            + "    SELECT r.categoryApprovalRequestId, MAX(r.approvedDate) AS approvedDate "
-            + "    FROM tb_AcceptanceRequest_Receipt r "
-            + "    WHERE r.approvalStatus = 'received' "
-            + "    GROUP BY r.categoryApprovalRequestId "
-            + ") rec ON AR.recordNo = rec.categoryApprovalRequestId "
-            + "JOIN tb_DCC_LN LN2 ON DCC.recordNo = LN2.dccId "
-            + "LEFT JOIN tb_PurchaseOrderUPL upl ON DCC.poNumber = upl.poNumber AND LN2.uplLineNumber = upl.uplLine AND upl.poLineNumber = LN2.lineNumber "
-            + "LEFT JOIN tb_Site site ON LN2.locationName COLLATE utf8mb4_general_ci = site.siteId COLLATE utf8mb4_general_ci "
-            + "LEFT JOIN tb_Site_Type siteType ON site.siteTypeId COLLATE utf8mb4_general_ci = siteType.recordNo COLLATE utf8mb4_general_ci "
-            + "LEFT JOIN tb_Region rg ON site.regionId COLLATE utf8mb4_general_ci = rg.recordNo COLLATE utf8mb4_general_ci "
-            + "WHERE (0 <> (CASE WHEN LENGTH(LN2.uplLineNumber) > 0 "
-            + "  THEN (LN2.uplLineNumber = upl.uplLine AND upl.poLineNumber = LN2.lineNumber AND upl.poNumber = DCC.poNumber) "
-            + "  ELSE (HD.lineNumber = LN2.lineNumber AND HD.poNumber = DCC.poNumber) END)) "
-            + "AND DCC.status = 'approved-received' "
-            + whereClause;
+        // FIX: handle poNumber with the same exact-match + "0" guard as the fetch endpoint
+        String poNumber = obj.has("poNumber") ? obj.get("poNumber").getAsString() : "0";
+        if (!poNumber.equalsIgnoreCase("0") && !poNumber.isEmpty()) {
+            whereClause.append(" AND DCC.poNumber = ?");
+            params.add(poNumber);
+        }
 
-    String sql = "SELECT "
-            + "DCC.recordNo AS requestNo, "
-            + "DCC.poNumber AS poNumber, "
-            + "LN2.lineNumber AS poLineNumber, "
-            + "LN2.uplLineNumber AS uplLineNumber, "
-            + "LN2.locationName AS siteId, "
-            + "LN2.linkId AS linkId, "
-            + "LN2.dateInService AS isd, "
-            + "rg.regionName AS region, "
-            + "siteType.siteTypeName AS siteTypeName, "
-            + "(CASE WHEN HD.newProjectName IS NULL OR LENGTH(TRIM(HD.newProjectName)) = 0 THEN HD.projectName ELSE HD.newProjectName END) AS projectName, "
-            + "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.uplLineDescription ELSE HD.poLineDescription END) AS description, "
-            + "LN2.deliveredQty AS quantity, "
-            + "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (CASE WHEN LENGTH(LN2.actualItemCode) > 0 THEN LN2.actualItemCode ELSE upl.uplLineItemCode END) ELSE HD.itemPartNumber END) AS partNumber, "
-            + "(CASE WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('YES','Y','TRUE','1') THEN 'YES' "
-            + "WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('NO','N','FALSE','0') THEN 'NO' ELSE NULL END) AS itemSerializedStatus, "
-            + "LN2.serialNumber AS serialNumber, "
-            + "upl.zainItemCategoryDescription AS uplItemCategoryCodeDescription, "
-            + "(upl.uplLineUnitPrice * LN2.deliveredQty) AS faBookingAmount, "
-            + "'SAR' AS currency, "
-            + "LN2.tagNumber AS tagNumber, "
-            + "rec.approvedDate AS receiveddate "
-            + baseSql
-            + " GROUP BY LN2.recordNo";
+        for (Map.Entry<String, JsonElement> entry : filtersObj.entrySet()) {
+            String columnKey = entry.getKey();
+            if (!searchableColumns.containsKey(columnKey)) continue;
+            String rawValue = entry.getValue().getAsString();
+            if (rawValue == null) continue;
+            rawValue = rawValue.trim();
+            if (rawValue.isEmpty()) continue;
 
-    List<String> columns = Arrays.asList(
-            "sequenceNo", "requestNo", "poNumber", "poLineNumber", "uplLineNumber",
-            "siteId", "linkId", "isd", "region", "siteTypeName", "projectName",
-            "description", "quantity", "partNumber", "itemSerializedStatus",
-            "serialNumber", "uplItemCategoryCodeDescription", "faBookingAmount",
-            "currency", "tagNumber", "receiveddate"
-    );
+            String sqlCol = searchableColumns.get(columnKey);
+            if ("receiveddate".equals(columnKey) || "isd".equals(columnKey)) continue;
 
-    List<String> headerNames = Arrays.asList(
-            "Sequence No", "Request No", "PO Number", "PO Line", "UPL Line",
-            "Site ID", "Link ID", "ISD", "Region", "Site Type", "Project Name",
-            "Description", "Quantity", "Part Number", "Item Serialized [Yes/No]",
-            "Serial Number", "Category Description", "FA Booking Amount",
-            "PO Currency", "TAG Number", "Received Date"
-    );
-
-    response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-    response.setHeader("Content-Disposition", "attachment; filename=capitalization_report.xlsx");
-
-    try {
-        jdbcTemplate.execute("SET SESSION sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''))");
-    } catch (Exception ignore) {}
-
-    SXSSFWorkbook workbook = new SXSSFWorkbook(500);
-    try (Connection conn = dataSource.getConnection()) {
-        try { conn.setAutoCommit(false); } catch (Exception ignore) {}
-
-        try (PreparedStatement ps = conn.prepareStatement(sql,
-                ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY)) {
-            try { ps.setFetchSize(DEFAULT_FETCH_SIZE); } catch (Exception ignore) {}
-
-            int idx = 1;
-            for (Object p : params) ps.setObject(idx++, p);
-
-            Sheet sheet = workbook.createSheet("Capitalization Report");
-            Row header = sheet.createRow(0);
-            for (int i = 0; i < headerNames.size(); i++) {
-                header.createCell(i).setCellValue(headerNames.get(i));
+            if (rawValue.contains(",")) {
+                String[] tokens = Arrays.stream(rawValue.split(","))
+                        .map(String::trim).filter(s -> !s.isEmpty()).toArray(String[]::new);
+                if (tokens.length == 0) continue;
+                if (numericColumns.contains(columnKey)) {
+                    whereClause.append(" AND ").append(sqlCol).append(" IN (")
+                            .append(String.join(",", Collections.nCopies(tokens.length, "?"))).append(") ");
+                    for (String t : tokens) params.add(t);
+                } else {
+                    whereClause.append(" AND (");
+                    for (int i = 0; i < tokens.length; i++) {
+                        if (i > 0) whereClause.append(" OR ");
+                        whereClause.append("LOWER(").append(sqlCol).append(") LIKE LOWER(?)");
+                        params.add("%" + tokens[i] + "%");
+                    }
+                    whereClause.append(") ");
+                }
+            } else {
+                if (numericColumns.contains(columnKey)) {
+                    whereClause.append(" AND ").append(sqlCol).append(" = ? ");
+                    params.add(rawValue);
+                } else {
+                    whereClause.append(" AND LOWER(").append(sqlCol).append(") LIKE LOWER(?) ");
+                    params.add("%" + rawValue + "%");
+                }
             }
+        }
+        String receivedDateFrom = convertToSqlDate(obj.has("receivedDateFrom") ? obj.get("receivedDateFrom").getAsString() : "");
+        String receivedDateTo   = convertToSqlDate(obj.has("receivedDateTo")   ? obj.get("receivedDateTo").getAsString()   : "");
+        if (!receivedDateFrom.isEmpty() && !receivedDateTo.isEmpty()) {
+            whereClause.append(" AND DATE(rec.approvedDate) BETWEEN ? AND ? ");
+            params.add(receivedDateFrom); params.add(receivedDateTo);
+        } else if (!receivedDateFrom.isEmpty()) {
+            whereClause.append(" AND DATE(rec.approvedDate) >= ? ");
+            params.add(receivedDateFrom);
+        } else if (!receivedDateTo.isEmpty()) {
+            whereClause.append(" AND DATE(rec.approvedDate) <= ? ");
+            params.add(receivedDateTo);
+        }
 
-            CellStyle dateCellStyle = workbook.createCellStyle();
-            CreationHelper createHelper = workbook.getCreationHelper();
-            dateCellStyle.setDataFormat(createHelper.createDataFormat().getFormat("dd-mmm-yyyy"));
-            dateCellStyle.setAlignment(HorizontalAlignment.CENTER);
+        String isdFrom = convertToSqlDate(obj.has("isdFrom") ? obj.get("isdFrom").getAsString() : "");
+        String isdTo   = convertToSqlDate(obj.has("isdTo")   ? obj.get("isdTo").getAsString()   : "");
+        if (!isdFrom.isEmpty() && !isdTo.isEmpty()) {
+            whereClause.append(" AND DATE(LN2.dateInService) BETWEEN ? AND ? ");
+            params.add(isdFrom); params.add(isdTo);
+        } else if (!isdFrom.isEmpty()) {
+            whereClause.append(" AND DATE(LN2.dateInService) >= ? ");
+            params.add(isdFrom);
+        } else if (!isdTo.isEmpty()) {
+            whereClause.append(" AND DATE(LN2.dateInService) <= ? ");
+            params.add(isdTo);
+        }
 
-            AtomicInteger rowIdx     = new AtomicInteger(1);
-            AtomicInteger sequenceNo = new AtomicInteger(1);
+        String baseSql = " FROM tb_DCC DCC "
+                + "JOIN tb_PurchaseOrder HD ON DCC.poNumber = HD.poNumber "
+                + "JOIN ( "
+                + "    SELECT t.acceptanceRequestRecordNo, MAX(t.recordNo) AS recordNo "
+                + "    FROM tb_Category_Approval_Requests t "
+                + "    WHERE t.status = 'approved' AND t.received = 1 "
+                + "    GROUP BY t.acceptanceRequestRecordNo "
+                + ") AR_latest ON DCC.recordNo = AR_latest.acceptanceRequestRecordNo "
+                + "JOIN tb_Category_Approval_Requests AR ON AR.recordNo = AR_latest.recordNo "
+                + "LEFT JOIN ( "
+                + "    SELECT r.categoryApprovalRequestId, MAX(r.approvedDate) AS approvedDate "
+                + "    FROM tb_AcceptanceRequest_Receipt r "
+                + "    WHERE r.approvalStatus = 'received' "
+                + "    GROUP BY r.categoryApprovalRequestId "
+                + ") rec ON AR.recordNo = rec.categoryApprovalRequestId "
+                + "JOIN tb_DCC_LN LN2 ON DCC.recordNo = LN2.dccId "
+                + "LEFT JOIN tb_PurchaseOrderUPL upl ON DCC.poNumber = upl.poNumber AND LN2.uplLineNumber = upl.uplLine AND upl.poLineNumber = LN2.lineNumber "
+                + "LEFT JOIN tb_Site site ON LN2.locationName COLLATE utf8mb4_general_ci = site.siteId COLLATE utf8mb4_general_ci "
+                + "LEFT JOIN tb_Site_Type siteType ON site.siteTypeId COLLATE utf8mb4_general_ci = siteType.recordNo COLLATE utf8mb4_general_ci "
+                + "LEFT JOIN tb_Region rg ON site.regionId COLLATE utf8mb4_general_ci = rg.recordNo COLLATE utf8mb4_general_ci "
+                + "WHERE (0 <> (CASE WHEN LENGTH(LN2.uplLineNumber) > 0 "
+                + "  THEN (LN2.uplLineNumber = upl.uplLine AND upl.poLineNumber = LN2.lineNumber AND upl.poNumber = DCC.poNumber) "
+                + "  ELSE (HD.lineNumber = LN2.lineNumber AND HD.poNumber = DCC.poNumber) END)) "
+                + "AND DCC.status = 'approved-received' "
+                + whereClause;
 
-            try (ResultSet rs = ps.executeQuery()) {
-                ResultSetMetaData rsMd = rs.getMetaData();
-                Set<String> rsColsLower = new HashSet<>();
-                for (int i = 1; i <= rsMd.getColumnCount(); i++) {
-                    String label = rsMd.getColumnLabel(i);
-                    if (label != null) rsColsLower.add(label.toLowerCase(Locale.ROOT));
+        String sql = "SELECT "
+                + "DCC.recordNo AS requestNo, "
+                + "DCC.poNumber AS poNumber, "
+                + "LN2.lineNumber AS poLineNumber, "
+                + "LN2.uplLineNumber AS uplLineNumber, "
+                + "LN2.locationName AS siteId, "
+                + "LN2.linkId AS linkId, "
+                + "LN2.dateInService AS isd, "
+                + "rg.regionName AS region, "
+                + "siteType.siteTypeName AS siteTypeName, "
+                + "(CASE WHEN HD.newProjectName IS NULL OR LENGTH(TRIM(HD.newProjectName)) = 0 THEN HD.projectName ELSE HD.newProjectName END) AS projectName, "
+                + "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.uplLineDescription ELSE HD.poLineDescription END) AS description, "
+                + "LN2.deliveredQty AS quantity, "
+                + "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (CASE WHEN LENGTH(LN2.actualItemCode) > 0 THEN LN2.actualItemCode ELSE upl.uplLineItemCode END) ELSE HD.itemPartNumber END) AS partNumber, "
+                + "(CASE WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('YES','Y','TRUE','1') THEN 'YES' "
+                + "WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('NO','N','FALSE','0') THEN 'NO' ELSE NULL END) AS itemSerializedStatus, "
+                + "LN2.serialNumber AS serialNumber, "
+                + "upl.zainItemCategoryDescription AS uplItemCategoryCodeDescription, "
+                + "(upl.uplLineUnitPrice * LN2.deliveredQty) AS faBookingAmount, "
+                + "'SAR' AS currency, "
+                + "LN2.tagNumber AS tagNumber, "
+                + "rec.approvedDate AS receiveddate "
+                + baseSql
+                + " GROUP BY LN2.recordNo";
+
+        List<String> columns = Arrays.asList(
+                "sequenceNo", "requestNo", "poNumber", "poLineNumber", "uplLineNumber",
+                "siteId", "linkId", "isd", "region", "siteTypeName", "projectName",
+                "description", "quantity", "partNumber", "itemSerializedStatus",
+                "serialNumber", "uplItemCategoryCodeDescription", "faBookingAmount",
+                "currency", "tagNumber", "receiveddate"
+        );
+
+        List<String> headerNames = Arrays.asList(
+                "Sequence No", "Request No", "PO Number", "PO Line", "UPL Line",
+                "Site ID", "Link ID", "ISD", "Region", "Site Type", "Project Name",
+                "Description", "Quantity", "Part Number", "Item Serialized [Yes/No]",
+                "Serial Number", "Category Description", "FA Booking Amount",
+                "PO Currency", "TAG Number", "Received Date"
+        );
+
+        response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        response.setHeader("Content-Disposition", "attachment; filename=capitalization_report.xlsx");
+
+        try {
+            jdbcTemplate.execute("SET SESSION sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''))");
+        } catch (Exception ignore) {}
+
+        SXSSFWorkbook workbook = new SXSSFWorkbook(500);
+        try (Connection conn = dataSource.getConnection()) {
+            try { conn.setAutoCommit(false); } catch (Exception ignore) {}
+
+            try (PreparedStatement ps = conn.prepareStatement(sql,
+                    ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY)) {
+                try { ps.setFetchSize(DEFAULT_FETCH_SIZE); } catch (Exception ignore) {}
+
+                int idx = 1;
+                for (Object p : params) ps.setObject(idx++, p);
+
+                Sheet sheet = workbook.createSheet("Capitalization Report");
+                Row header = sheet.createRow(0);
+                for (int i = 0; i < headerNames.size(); i++) {
+                    header.createCell(i).setCellValue(headerNames.get(i));
                 }
 
-                while (rs.next()) {
-                    Row row = sheet.createRow(rowIdx.getAndIncrement());
-                    for (int i = 0; i < columns.size(); i++) {
-                        String colName = columns.get(i);
-                        Cell cell = row.createCell(i);
-                        if ("sequenceNo".equals(colName)) {
-                            cell.setCellValue(sequenceNo.getAndIncrement());
-                        } else if ("receiveddate".equals(colName) || "isd".equals(colName)) {
-                            Timestamp ts = null;
-                            try { ts = rs.getTimestamp(colName); } catch (SQLException ignored) {}
-                            if (ts != null) {
-                                cell.setCellType(CellType.NUMERIC);
-                                cell.setCellValue(new java.util.Date(ts.getTime()));
-                                cell.setCellStyle(dateCellStyle);
+                CellStyle dateCellStyle = workbook.createCellStyle();
+                CreationHelper createHelper = workbook.getCreationHelper();
+                dateCellStyle.setDataFormat(createHelper.createDataFormat().getFormat("dd-mmm-yyyy"));
+                dateCellStyle.setAlignment(HorizontalAlignment.CENTER);
+
+                AtomicInteger rowIdx     = new AtomicInteger(1);
+                AtomicInteger sequenceNo = new AtomicInteger(1);
+
+                try (ResultSet rs = ps.executeQuery()) {
+                    ResultSetMetaData rsMd = rs.getMetaData();
+                    Set<String> rsColsLower = new HashSet<>();
+                    for (int i = 1; i <= rsMd.getColumnCount(); i++) {
+                        String label = rsMd.getColumnLabel(i);
+                        if (label != null) rsColsLower.add(label.toLowerCase(Locale.ROOT));
+                    }
+
+                    while (rs.next()) {
+                        Row row = sheet.createRow(rowIdx.getAndIncrement());
+                        for (int i = 0; i < columns.size(); i++) {
+                            String colName = columns.get(i);
+                            Cell cell = row.createCell(i);
+                            if ("sequenceNo".equals(colName)) {
+                                cell.setCellValue(sequenceNo.getAndIncrement());
+                            } else if ("receiveddate".equals(colName) || "isd".equals(colName)) {
+                                Timestamp ts = null;
+                                try { ts = rs.getTimestamp(colName); } catch (SQLException ignored) {}
+                                if (ts != null) {
+                                    cell.setCellType(CellType.NUMERIC);
+                                    cell.setCellValue(new java.util.Date(ts.getTime()));
+                                    cell.setCellStyle(dateCellStyle);
+                                } else {
+                                    cell.setBlank();
+                                }
                             } else {
-                                cell.setBlank();
+                                String val = null;
+                                try { val = rs.getString(colName); } catch (SQLException ex) {}
+                                cell.setCellValue(val == null ? "" : val);
                             }
-                        } else {
-                            String val = null;
-                            try { val = rs.getString(colName); } catch (SQLException ex) {}
-                            cell.setCellValue(val == null ? "" : val);
                         }
                     }
                 }
+
+                try (BufferedOutputStream bos = new BufferedOutputStream(
+                        response.getOutputStream(), 128 * 1024)) {
+                    workbook.write(bos);
+                    bos.flush();
+                }
+                response.flushBuffer();
             }
 
-            try (BufferedOutputStream bos = new BufferedOutputStream(
-                    response.getOutputStream(), 128 * 1024)) {
-                workbook.write(bos);
-                bos.flush();
+        } catch (Exception e) {
+            if (!response.isCommitted()) {
+                response.reset();
+                response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+                response.setContentType("text/plain");
+                response.getWriter().write("Excel export failed: " + e.getMessage());
+                response.getWriter().flush();
             }
-            response.flushBuffer();
+        } finally {
+            workbook.dispose();
         }
-
-    } catch (Exception e) {
-        if (!response.isCommitted()) {
-            response.reset();
-            response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
-            response.setContentType("text/plain");
-            response.getWriter().write("Excel export failed: " + e.getMessage());
-            response.getWriter().flush();
-        }
-    } finally {
-        workbook.dispose();
     }
-}
     // ============================================================================
     // Item Code Substitutes Export
     // ============================================================================
@@ -688,21 +688,8 @@ public void exportCapitalizationReport(@RequestBody String req,
         try {
             JsonObject obj = JsonParser.parseString(req).getAsJsonObject();
 
-            Map<String, String> searchableColumns = new HashMap<>();
-            searchableColumns.put("poNumber",          "PO.poNumber");
-            searchableColumns.put("vendorNumber",      "PO.vendorNumber");
-            searchableColumns.put("supplierId",        "PO.vendorNumber");
-            searchableColumns.put("status",            "PO.status");
-            searchableColumns.put("currency",          "PO.currency");
-            searchableColumns.put("itemPartNumber",    "PO.itemPartNumber");
-            searchableColumns.put("poLineDescription", "PO.poLineDescription");
-            searchableColumns.put("lineNumber",        "PO.lineNumber");
-            searchableColumns.put("recordNo",          "PO.recordNo");
-            searchableColumns.put("lineCancelFlag",    "PO.lineCancelFlag");
-
-            Set<String> numericColumns = new HashSet<>(Arrays.asList(
-                    "recordNo", "lineNumber", "vendorNumber", "supplierId", "poNumber"
-            ));
+            Map<String, String> searchableColumns = buildPurchaseOrderSearchableColumns();
+            Set<String> numericColumns = buildPurchaseOrderNumericColumns();
 
             Set<String> controlKeys = new HashSet<>(Arrays.asList(
                     "page", "size", "sort", "filters", "columnName", "searchQuery",
@@ -803,6 +790,53 @@ public void exportCapitalizationReport(@RequestBody String req,
                 response.getWriter().flush();
             }
         }
+    }
+
+    // ============================================================================
+    // Purchase Order Export Helper Methods
+    // ============================================================================
+
+    private Map<String, String> buildPurchaseOrderSearchableColumns() {
+        Map<String, String> map = new HashMap<>();
+        String[] fields = {
+                "recordNo", "poNumber", "typeLookUpCode", "blanketTotalAmount", "releaseNum", "lineNumber",
+                "prNum", "projectName", "newProjectName", "lineCancelFlag", "cancelReason", "itemPartNumber",
+                "prSubAllow", "countryOfOrigin", "poOrderQuantity", "poQtyNew", "quantityReceived",
+                "quantityDueOld", "quantityDueNew", "quantityBilled", "currencyCode", "unitPriceInPoCurrency",
+                "unitPriceInSAR", "linePriceInPoCurrency", "linePriceInSAR", "amountReceived", "amountDue",
+                "amountDueNew", "amountBilled", "poLineDescription", "organizationName", "organizationCode",
+                "subInventoryCode", "receiptRouting", "authorisationStatus", "poClosureStatus", "departmentName",
+                "businessOwner", "poLineType", "acceptanceType", "costCenter", "chargeAccount", "serialControl",
+                "vendorSerialNumberYN", "itemType", "itemCategoryInventory", "inventoryCategoryDescription",
+                "itemCategoryFA", "FACategoryDescription", "itemCategoryPurchasing", "PurchasingCategoryDescription",
+                "vendorName", "vendorNumber", "approvedDate", "createdDate", "createdBy", "createdByName",
+                "descopedLinePriceInPoCurrency", "newLinePriceInPoCurrency", "descopeQty", "poDate"
+        };
+        for (String field : fields) {
+            map.put(field, "PO." + field);
+        }
+        // Common API aliases / column name variants
+        map.put("supplierId",                    "PO.vendorNumber");
+        map.put("currency",                        "PO.currencyCode");
+        map.put("releaseNumber",                   "PO.releaseNum");
+        map.put("authorizationStatus",             "PO.authorisationStatus");
+        map.put("subinventoryCode",                "PO.subInventoryCode");
+        map.put("pnSubAllow",                      "PO.prSubAllow");
+        map.put("itemCategoryFa",                  "PO.itemCategoryFA");
+        map.put("faCategoryDescription",           "PO.FACategoryDescription");
+        map.put("purchasingCategoryDescription",   "PO.PurchasingCategoryDescription");
+        map.put("vendorSerialNumberYn",            "PO.vendorSerialNumberYN");
+        return map;
+    }
+
+    private Set<String> buildPurchaseOrderNumericColumns() {
+        return new HashSet<>(Arrays.asList(
+                "recordNo", "lineNumber", "vendorNumber", "supplierId", "poNumber", "blanketTotalAmount",
+                "poOrderQuantity", "poQtyNew", "quantityReceived", "quantityDueOld", "quantityDueNew",
+                "quantityBilled", "unitPriceInPoCurrency", "unitPriceInSAR", "linePriceInPoCurrency",
+                "linePriceInSAR", "amountReceived", "amountDue", "amountDueNew", "amountBilled",
+                "descopedLinePriceInPoCurrency", "newLinePriceInPoCurrency", "createdBy", "descopeQty"
+        ));
     }
 
     // ============================================================================
