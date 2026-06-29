@@ -9,6 +9,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
@@ -979,7 +980,7 @@ private String convertToSqlDate(String input) {
         // "Fetch all" mode (page=1, size=20000): single query, no pagination overhead
         if (page == 1 && size == 20000) {
             String fetchAllSql = "SELECT PO.* FROM tb_PurchaseOrder PO" + whereClause
-                    + " ORDER BY PO.poNumber, PO.lineNumber";
+                    + " ORDER BY CAST(PO.isFavourite AS UNSIGNED) DESC, PO.poNumber, PO.lineNumber";
             List<Map<String, Object>> allLineItems = jdbcTemplate.queryForList(fetchAllSql, params.toArray());
             Map<String, Map<String, Object>> groupedResults = groupLineItemsByPO(allLineItems);
             int totalPOs = groupedResults.size();
@@ -988,7 +989,7 @@ private String convertToSqlDate(String input) {
             response.put("pageSize", totalPOs);
             response.put("totalRecords", totalPOs);
             response.put("totalPages", 1);
-            response.put("data", new ArrayList<>(groupedResults.values()));
+            response.put("data", sortByFavouriteFirst(groupedResults));
             return response;
         }
 
@@ -1008,10 +1009,14 @@ private String convertToSqlDate(String input) {
         String lineItemsSql =
                 "SELECT PO.* FROM tb_PurchaseOrder PO " +
                 "INNER JOIN (" +
-                "  SELECT DISTINCT PO2.poNumber FROM tb_PurchaseOrder PO2" + innerWhere +
-                "  ORDER BY PO2.poNumber LIMIT ? OFFSET ?" +
+                "  SELECT paged_pos.poNumber FROM (" +
+                "    SELECT PO2.poNumber FROM tb_PurchaseOrder PO2" + innerWhere +
+                "    GROUP BY PO2.poNumber" +
+                "    ORDER BY MAX(CAST(PO2.isFavourite AS UNSIGNED)) DESC, PO2.poNumber" +
+                "    LIMIT ? OFFSET ?" +
+                "  ) paged_pos" +
                 ") paged ON PO.poNumber = paged.poNumber " +
-                "ORDER BY PO.poNumber, PO.lineNumber";
+                "ORDER BY CAST(PO.isFavourite AS UNSIGNED) DESC, PO.poNumber, PO.lineNumber";
 
         List<Map<String, Object>> lineItems = jdbcTemplate.queryForList(lineItemsSql, lineParams.toArray());
         Map<String, Map<String, Object>> groupedResults = groupLineItemsByPO(lineItems);
@@ -1021,7 +1026,7 @@ private String convertToSqlDate(String input) {
         response.put("pageSize", size);
         response.put("totalRecords", totalRecords);
         response.put("totalPages", (int) Math.ceil((double) totalRecords / size));
-        response.put("data", new ArrayList<>(groupedResults.values()));
+        response.put("data", sortByFavouriteFirst(groupedResults));
         return response;
     }
 
@@ -1051,6 +1056,39 @@ private String convertToSqlDate(String input) {
 
     private double toDouble(Object val) {
         return val != null ? ((Number) val).doubleValue() : 0.0;
+    }
+
+    private boolean toBoolean(Object val) {
+        if (val == null) {
+            return false;
+        }
+        if (val instanceof Boolean) {
+            return (Boolean) val;
+        }
+        if (val instanceof Number) {
+            return ((Number) val).intValue() != 0;
+        }
+        if (val instanceof byte[]) {
+            return ((byte[]) val)[0] != 0;
+        }
+        String text = val.toString();
+        return !text.equalsIgnoreCase("false") && !text.equals("0");
+    }
+
+    private Object getMapValueIgnoreCase(Map<String, Object> row, String key) {
+        if (row.containsKey(key)) {
+            return row.get(key);
+        }
+        for (Map.Entry<String, Object> entry : row.entrySet()) {
+            if (entry.getKey().equalsIgnoreCase(key)) {
+                return entry.getValue();
+            }
+        }
+        return null;
+    }
+
+    private boolean isRowFavourite(Map<String, Object> row) {
+        return toBoolean(getMapValueIgnoreCase(row, "isFavourite"));
     }
 
     private Map<String, Object> buildPoLineItem(Map<String, Object> lineItem) {
@@ -1094,7 +1132,7 @@ private String convertToSqlDate(String input) {
                 "amountReceived", "amountDue", "amountDueNew", "amountBilled",
                 "poLineDescription", "vendorSerialNumberYN", "itemCategoryInventory",
                 "inventoryCategoryDescription", "itemCategoryFA", "FACategoryDescription",
-                "descopedLinePriceInPoCurrency", "newLinePriceInPoCurrency");
+                "descopedLinePriceInPoCurrency", "newLinePriceInPoCurrency", "isFavourite");
         Map<String, Map<String, Object>> grouped = new LinkedHashMap<>();
         for (Map<String, Object> lineItem : lineItems) {
             String poNumber = (String) lineItem.get("poNumber");
@@ -1103,6 +1141,8 @@ private String convertToSqlDate(String input) {
                 for (String field : lineSpecificFields) groupedRow.remove(field);
                 groupedRow.put("lineCancelFlag", lineItem.get("lineCancelFlag").toString().equalsIgnoreCase("false") ? "N" : "Y");
                 groupedRow.put("prSubAllow", lineItem.get("prSubAllow").toString().equalsIgnoreCase("false") ? "N" : "Y");
+                groupedRow.put("recordNo", lineItem.get("recordNo"));
+                groupedRow.put("isFavourite", isRowFavourite(lineItem));
                 groupedRow.put("totalPoQtyNew", 0.0);
                 groupedRow.put("totalQuantityReceived", 0.0);
                 groupedRow.put("totalQuantityDueOld", 0.0);
@@ -1140,8 +1180,36 @@ private String convertToSqlDate(String input) {
             r.put("totalamountBilled", (double) r.get("totalamountBilled") + toDouble(lineItem.get("amountBilled")));
             r.put("totalDescopedLinePriceInPoCurrency", (double) r.get("totalDescopedLinePriceInPoCurrency") + toDouble(lineItem.get("descopedLinePriceInPoCurrency")));
             r.put("totalNewLinePriceInPoCurrency", (double) r.get("totalNewLinePriceInPoCurrency") + toDouble(lineItem.get("newLinePriceInPoCurrency")));
+            if (toBoolean(getMapValueIgnoreCase(lineItem, "isFavourite"))) {
+                r.put("isFavourite", true);
+            }
         }
         return grouped;
+    }
+
+    private List<Map<String, Object>> sortByFavouriteFirst(Map<String, Map<String, Object>> groupedResults) {
+        List<Map<String, Object>> favourites = new ArrayList<>();
+        List<Map<String, Object>> others = new ArrayList<>();
+
+        for (Map<String, Object> row : groupedResults.values()) {
+            boolean favourite = isRowFavourite(row);
+            row.put("isFavourite", favourite);
+            if (favourite) {
+                favourites.add(row);
+            } else {
+                others.add(row);
+            }
+        }
+
+        java.util.Comparator<Map<String, Object>> byPoNumber = (a, b) ->
+                Objects.toString(a.get("poNumber"), "").compareTo(Objects.toString(b.get("poNumber"), ""));
+        favourites.sort(byPoNumber);
+        others.sort(byPoNumber);
+
+        List<Map<String, Object>> sorted = new ArrayList<>(favourites.size() + others.size());
+        sorted.addAll(favourites);
+        sorted.addAll(others);
+        return sorted;
     }
 
     // ===== END SHARED PO NESTING HELPERS =====

@@ -78,6 +78,9 @@ public class tbPurchaseOrder implements Serializable {
     public Double descopedLinePriceInPoCurrency;
     public Double newLinePriceInPoCurrency;
 
+    @Column(name = "isFavourite", nullable = false)
+    public boolean isFavourite;
+
     public Double getNewLinePriceInPoCurrency() {
         return newLinePriceInPoCurrency;
     }
@@ -550,6 +553,14 @@ public class tbPurchaseOrder implements Serializable {
 
     public void setNewProjectName(String newProjectName) {
         this.newProjectName = newProjectName;
+    }
+
+    public boolean isFavourite() {
+        return isFavourite;
+    }
+
+    public void setFavourite(boolean isFavourite) {
+        this.isFavourite = isFavourite;
     }
 
 
