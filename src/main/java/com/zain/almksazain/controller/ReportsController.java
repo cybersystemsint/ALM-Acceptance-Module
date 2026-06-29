@@ -101,7 +101,7 @@ public class ReportsController {
             whereClause += " AND " + columnName.toLowerCase() + " LIKE ?";
             params.add("%" + searchQuery + "%");
         }
-        jdbcTemplate.execute("SET SESSION sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''))");
+        // ONLY_FULL_GROUP_BY is disabled via datasource connection-init-sql in application.properties
 
         String countDetails = "SELECT COUNT(*) FROM acceptanceReport" + whereClause;
         int totalRecords = jdbcTemplate.queryForObject(countDetails, Integer.class, params.toArray());
@@ -160,7 +160,7 @@ public class ReportsController {
         String columnName = obj.has("columnName") ? obj.get("columnName").getAsString() : "";
         String searchQuery = obj.has("searchQuery") ? obj.get("searchQuery").getAsString() : "";
 
-        jdbcTemplate.execute("SET SESSION sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''))");
+        // ONLY_FULL_GROUP_BY is disabled via datasource connection-init-sql in application.properties
 
         //String sql = "SELECT * FROM `capitalizationReport` WHERE 1=1";
         ///
@@ -314,7 +314,63 @@ public class ReportsController {
                 }
             }
         }
+        
+        
+                // ── filterBy multi-filter (optional) ─────────────────────────────────
+        // {
+        //   "filterBy": {
+        //     "region":       "Central",
+        //     "serialNumber": "SN123456",
+        //     "siteTypeName": "Outdoor",
+        //     "requestId":    "1001,1002,1003"  ← comma = IN for numeric
+        //     "vendorName":   "Nokia,Ericsson"  ← comma = OR LIKE for text
+        //   }
+        // }
+        if (obj.has("filterBy") && obj.get("filterBy").isJsonObject()) {
+            JsonObject filterBy = obj.getAsJsonObject("filterBy");
+            for (Map.Entry<String, JsonElement> entry : filterBy.entrySet()) {
+                String col = entry.getKey();
+                if (col == null) continue;
 
+                String sqlCol = searchableColumns.get(col);
+                if (sqlCol == null) continue;
+
+                JsonElement valEl = entry.getValue();
+                if (valEl == null || valEl.isJsonNull()) continue;
+                String val = valEl.getAsString().trim();
+                if (val.isEmpty()) continue;
+
+                if (numericColumns.contains(col)) {
+                    if (val.contains(",")) {
+                        // "requestId": "1001,1002,1003" → IN (?,?,?)
+                        String[] vals = val.split(",");
+                        where.append(" AND ").append(sqlCol).append(" IN (")
+                             .append(String.join(",", Collections.nCopies(vals.length, "?"))).append(")");
+                        for (String v : vals) whereParams.add(v.trim());
+                    } else {
+                        // "poLineNumber": "5" → = ?
+                        where.append(" AND ").append(sqlCol).append(" = ?");
+                        whereParams.add(val);
+                    }
+                } else {
+                    if (val.contains(",")) {
+                        // "vendorName": "Nokia,Ericsson" → (col LIKE ? OR col LIKE ?)
+                        String[] tokens = val.split(",");
+                        where.append(" AND (");
+                        for (int i = 0; i < tokens.length; i++) {
+                            if (i > 0) where.append(" OR ");
+                            where.append(sqlCol).append(" LIKE ?");
+                            whereParams.add("%" + tokens[i].trim() + "%");
+                        }
+                        where.append(")");
+                    } else {
+                        // "region": "Central" → col LIKE ?
+                        where.append(" AND ").append(sqlCol).append(" LIKE ?");
+                        whereParams.add("%" + val + "%");
+                    }
+                }
+            }
+        }
         // Base from/joins used by both queries (only selecting keys in first query)
         String baseFrom = " FROM tb_DCC DCC " +
                 "JOIN tb_PurchaseOrder HD ON DCC.poNumber = HD.poNumber " +
@@ -897,375 +953,75 @@ private String convertToSqlDate(String input) {
         String poID = obj.get("poNumber").getAsString();
         String columnName = obj.has("columnName") ? obj.get("columnName").getAsString() : "";
         String searchQuery = obj.has("searchQuery") ? obj.get("searchQuery").getAsString() : "";
-        String dateFrom = obj.has("dateFrom") ? obj.get("dateFrom").getAsString() : "";
-        String dateTo = obj.has("dateTo") ? obj.get("dateTo").getAsString() : "";
 
-        int page = obj.has("page") ? obj.get("page").getAsInt() : 1;
-        int size = obj.has("size") ? obj.get("size").getAsInt() : 20000;
+        int page = Math.max(obj.has("page") ? obj.get("page").getAsInt() : 1, 1);
+        int size = Math.max(obj.has("size") ? obj.get("size").getAsInt() : 20000, 1);
 
-        // Validate page and size
-        page = Math.max(page, 1);
-        size = Math.max(size, 1);
-
-        String conditionSql = "";
-        String whereClause = " WHERE 1=1 ";
-        List<Object> params2 = new ArrayList<>();
+        String whereClause = " WHERE 1=1";
+        List<Object> params = new ArrayList<>();
 
         if (!supplierId.equalsIgnoreCase("0") && !poID.equalsIgnoreCase("0")) {
             whereClause += " AND PO.vendorNumber = ? AND PO.poNumber = ?";
-            params2.add(supplierId);
-            params2.add(poID);
-        } else if (!supplierId.equalsIgnoreCase("0") && poID.equalsIgnoreCase("0")) {
+            params.add(supplierId);
+            params.add(poID);
+        } else if (!supplierId.equalsIgnoreCase("0")) {
             whereClause += " AND PO.vendorNumber = ?";
-            params2.add(supplierId);
-        } else if (supplierId.equalsIgnoreCase("0") && !poID.equalsIgnoreCase("0")) {
+            params.add(supplierId);
+        } else if (!poID.equalsIgnoreCase("0")) {
             whereClause += " AND PO.poNumber = ?";
-            params2.add(poID);
+            params.add(poID);
         }
-        // Filtering by columnName and searchQuery
         if (!columnName.isEmpty() && !searchQuery.isEmpty()) {
             whereClause += " AND PO." + columnName + " LIKE ?";
-            params2.add("%" + searchQuery + "%");
+            params.add("%" + searchQuery + "%");
         }
 
-        // Step 1: Fetch unique POs
-        String uniquePOsSql = "SELECT DISTINCT PO.poNumber FROM tb_PurchaseOrder PO " + whereClause;
-        //List<String> uniquePONumbers = jdbcTemplate.queryForList(uniquePOsSql, String.class);
-        List<String> uniquePONumbers = jdbcTemplate.queryForList(uniquePOsSql, params2.toArray(), String.class);
-
-        loggger.info("GET NESTED SQL 1  " + uniquePOsSql);
-        // If page is 1 and size is 20000, return all unique POs
+        // "Fetch all" mode (page=1, size=20000): single query, no pagination overhead
         if (page == 1 && size == 20000) {
-            // No pagination needed, just fetch all unique POs
-            // Fetch line items for all unique POs
-            String lineItemsSql = "SELECT * FROM tb_PurchaseOrder PO WHERE PO.poNumber IN (" + String.join(",", uniquePONumbers.stream().map(po -> "'" + po + "'").collect(Collectors.toList())) + ")";
-            Map<String, Object> params = new HashMap<>();
-            //   params.put("poNumbers", uniquePONumbers);
-            List<Map<String, Object>> lineItems = jdbcTemplate.queryForList(lineItemsSql);
-
-            // Step 3: Group line items by PO number
-            Map<String, Map<String, Object>> groupedResults = new LinkedHashMap<>();
-            for (Map<String, Object> lineItem : lineItems) {
-                String Linecancel = "";
-                String subAllow = "";
-                String poNumber = (String) lineItem.get("poNumber");
-
-                if (!groupedResults.containsKey(poNumber)) {
-                    Map<String, Object> groupedRow = new LinkedHashMap<>(lineItem);
-                    // Remove unnecessary fields
-                    groupedRow.remove("recordNo");
-                    groupedRow.remove("lineNumber");
-                    groupedRow.remove("countryOfOrigin");
-                    groupedRow.remove("poOrderQuantity");
-                    groupedRow.remove("poQtyNew");
-                    groupedRow.remove("quantityReceived");
-                    groupedRow.remove("quantityDueOld");
-                    groupedRow.remove("quantityDueNew");
-                    groupedRow.remove("quantityBilled");
-                    groupedRow.remove("unitPriceInPoCurrency");
-                    groupedRow.remove("unitPriceInSAR");
-                    groupedRow.remove("linePriceInPoCurrency");
-                    groupedRow.remove("linePriceInSAR");
-                    groupedRow.remove("amountReceived");
-                    groupedRow.remove("amountDue");
-                    groupedRow.remove("amountDueNew");
-                    groupedRow.remove("amountBilled");
-                    groupedRow.remove("poLineDescription");
-                    groupedRow.remove("vendorSerialNumberYN");
-                    groupedRow.remove("itemCategoryInventory");
-                    groupedRow.remove("inventoryCategoryDescription");
-                    groupedRow.remove("itemCategoryFA");
-                    groupedRow.remove("FACategoryDescription");
-                    groupedRow.remove("descopedLinePriceInPoCurrency");
-                    groupedRow.remove("newLinePriceInPoCurrency");
-
-                    Linecancel = lineItem.get("lineCancelFlag").toString();
-                    subAllow = lineItem.get("prSubAllow").toString();
-
-                    if (Linecancel.equalsIgnoreCase("false")) {
-                        groupedRow.put("lineCancelFlag", "N");
-                    } else {
-                        groupedRow.put("lineCancelFlag", "Y");
-                    }
-                    if (subAllow.equalsIgnoreCase("false")) {
-                        groupedRow.put("prSubAllow", "N");
-                    } else {
-                        groupedRow.put("prSubAllow", "Y");
-                    }
-
-                    // Initialize totals
-                    groupedRow.put("totalPoQtyNew", 0.0);
-                    groupedRow.put("totalQuantityReceived", 0.0);
-                    groupedRow.put("totalQuantityDueOld", 0.0);
-                    groupedRow.put("totalQuantityDueNew", 0.0);
-                    groupedRow.put("totalQuantityBilled", 0.0);
-                    groupedRow.put("totalpoOrderQuantity", 0.0);
-                    groupedRow.put("totalunitPriceInPoCurrency", 0.0);
-                    groupedRow.put("totalunitPriceInSAR", 0.0);
-                    groupedRow.put("totallinePriceInPoCurrency", 0.0);
-                    groupedRow.put("totallinePriceInSAR", 0.0);
-                    groupedRow.put("totalamountReceived", 0.0);
-                    groupedRow.put("totalamountDue", 0.0);
-                    groupedRow.put("totalamountDueNew", 0.0);
-                    groupedRow.put("totalamountBilled", 0.0);
-                    groupedRow.put("totalDescopedLinePriceInPoCurrency", 0.0);
-                    groupedRow.put("totalNewLinePriceInPoCurrency", 0.0);
-                    // Add POlineItems key with an empty list
-                    groupedRow.put("POlineItems", new ArrayList<Map<String, Object>>());
-                    groupedResults.put(poNumber, groupedRow);
-                }
-
-                Map<String, Object> poLineItem = new LinkedHashMap<>();
-                poLineItem.put("recordNo", lineItem.get("recordNo"));
-                poLineItem.put("poNumber", lineItem.get("poNumber"));
-                poLineItem.put("lineNumber", lineItem.get("lineNumber"));
-                poLineItem.put("itemPartNumber", lineItem.get("itemPartNumber"));
-                poLineItem.put("countryOfOrigin", lineItem.get("countryOfOrigin"));
-                poLineItem.put("poOrderQuantity", (lineItem.get("poOrderQuantity")));
-                poLineItem.put("poQtyNew", (lineItem.get("poQtyNew")));
-
-                poLineItem.put("quantityReceived", (lineItem.get("quantityReceived")));
-                poLineItem.put("quantityDueOld", (lineItem.get("quantityDueOld")));
-                poLineItem.put("quantityDueNew", (lineItem.get("quantityDueNew")));
-                poLineItem.put("quantityBilled", (lineItem.get("quantityBilled")));
-                poLineItem.put("unitPriceInPoCurrency", lineItem.get("unitPriceInPoCurrency"));
-                poLineItem.put("unitPriceInSAR", lineItem.get("unitPriceInSAR"));
-                poLineItem.put("linePriceInPoCurrency", lineItem.get("linePriceInPoCurrency"));
-                poLineItem.put("linePriceInSAR", lineItem.get("linePriceInSAR"));
-                poLineItem.put("amountReceived", lineItem.get("amountReceived"));
-                poLineItem.put("amountDue", lineItem.get("amountDue"));
-                poLineItem.put("amountDueNew", lineItem.get("amountDueNew"));
-                poLineItem.put("amountBilled", lineItem.get("amountBilled"));
-                poLineItem.put("poLineDescription", lineItem.get("poLineDescription"));
-                poLineItem.put("vendorSerialNumberYN", lineItem.get("vendorSerialNumberYN"));
-                poLineItem.put("itemCategoryInventory", lineItem.get("itemCategoryInventory"));
-                poLineItem.put("inventoryCategoryDescription", lineItem.get("inventoryCategoryDescription"));
-                poLineItem.put("itemCategoryFA", lineItem.get("itemCategoryFA"));
-                poLineItem.put("FACategoryDescription", lineItem.get("FACategoryDescription"));
-                poLineItem.put("descopedLinePriceInPoCurrency", lineItem.get("descopedLinePriceInPoCurrency"));
-                poLineItem.put("newLinePriceInPoCurrency", lineItem.get("newLinePriceInPoCurrency"));
-
-                // Add the line item to the POlineItems list
-                ((List<Map<String, Object>>) groupedResults.get(poNumber).get("POlineItems")).add(poLineItem);
-
-                // Update totals
-                Double poOrderQuantity = (lineItem.get("poOrderQuantity") != null) ? ((Number) lineItem.get("poOrderQuantity")).doubleValue() : 0.0;
-                Double poQtyNew = (lineItem.get("poQtyNew") != null) ? ((Number) lineItem.get("poQtyNew")).doubleValue() : 0.0;
-                Double quantityReceived = (lineItem.get("quantityReceived") != null) ? ((Number) lineItem.get("quantityReceived")).doubleValue() : 0.0;
-                Double quantityDueOld = (lineItem.get("quantityDueOld") != null) ? ((Number) lineItem.get("quantityDueOld")).doubleValue() : 0.0;
-                Double quantityDueNew = (lineItem.get("quantityDueNew") != null) ? ((Number) lineItem.get("quantityDueNew")).doubleValue() : 0.0;
-                Double quantityBilled = (lineItem.get("quantityBilled") != null) ? ((Number) lineItem.get("quantityBilled")).doubleValue() : 0.0;
-                Double unitPriceInPoCurrency = (lineItem.get("unitPriceInPoCurrency") != null) ? ((Number) lineItem.get("unitPriceInPoCurrency")).doubleValue() : 0.0;
-                Double unitPriceInSAR = (lineItem.get("unitPriceInSAR") != null) ? ((Number) lineItem.get("unitPriceInSAR")).doubleValue() : 0.0;
-                Double linePriceInPoCurrency = (lineItem.get("linePriceInPoCurrency") != null) ? ((Number) lineItem.get("linePriceInPoCurrency")).doubleValue() : 0.0;
-                Double linePriceInSAR = (lineItem.get("linePriceInSAR") != null) ? ((Number) lineItem.get("linePriceInSAR")).doubleValue() : 0.0;
-                Double amountReceived = (lineItem.get("amountReceived") != null) ? ((Number) lineItem.get("amountReceived")).doubleValue() : 0.0;
-                Double amountDue = (lineItem.get("amountDue") != null) ? ((Number) lineItem.get("amountDue")).doubleValue() : 0.0;
-                Double amountDueNew = (lineItem.get("amountDueNew") != null) ? ((Number) lineItem.get("amountDueNew")).doubleValue() : 0.0;
-                Double amountBilled = (lineItem.get("amountBilled") != null) ? ((Number) lineItem.get("amountBilled")).doubleValue() : 0.0;
-                Double descopedLinePriceInPoCurrency = (lineItem.get("descopedLinePriceInPoCurrency") != null) ? ((Number) lineItem.get("descopedLinePriceInPoCurrency")).doubleValue() : 0.0;
-                Double newLinePriceInPoCurrency = (lineItem.get("newLinePriceInPoCurrency") != null) ? ((Number) lineItem.get("newLinePriceInPoCurrency")).doubleValue() : 0.0;
-
-                Map<String, Object> groupedRow = groupedResults.get(poNumber);
-                groupedRow.put("totalPoQtyNew", ((Double) groupedRow.get("totalPoQtyNew") + poQtyNew));
-                groupedRow.put("totalQuantityReceived", ((Double) groupedRow.get("totalQuantityReceived") + quantityReceived));
-                groupedRow.put("totalQuantityDueOld", ((Double) groupedRow.get("totalQuantityDueOld") + quantityDueOld));
-                groupedRow.put("totalQuantityDueNew", ((Double) groupedRow.get("totalQuantityDueNew") + quantityDueNew));
-                groupedRow.put("totalQuantityBilled", ((Double) groupedRow.get("totalQuantityBilled") + quantityBilled));
-                groupedRow.put("totalpoOrderQuantity", ((Double) groupedRow.get("totalpoOrderQuantity") + poOrderQuantity));
-                groupedRow.put("totalunitPriceInPoCurrency", (Double) groupedRow.get("totalunitPriceInPoCurrency") + unitPriceInPoCurrency);
-                groupedRow.put("totalunitPriceInSAR", (Double) groupedRow.get("totalunitPriceInSAR") + unitPriceInSAR);
-                groupedRow.put("totallinePriceInPoCurrency", (Double) groupedRow.get("totallinePriceInPoCurrency") + linePriceInPoCurrency);
-                groupedRow.put("totallinePriceInSAR", (Double) groupedRow.get("totallinePriceInSAR") + linePriceInSAR);
-                groupedRow.put("totalamountReceived", (Double) groupedRow.get("totalamountReceived") + amountReceived);
-                groupedRow.put("totalamountDue", (Double) groupedRow.get("totalamountDue") + amountDue);
-                groupedRow.put("totalamountDueNew", (Double) groupedRow.get("totalamountDueNew") + amountDueNew);
-                groupedRow.put("totalamountBilled", (Double) groupedRow.get("totalamountBilled") + amountBilled);
-                groupedRow.put("totalDescopedLinePriceInPoCurrency", (Double) groupedRow.get("totalDescopedLinePriceInPoCurrency") + descopedLinePriceInPoCurrency);
-                groupedRow.put("totalNewLinePriceInPoCurrency", (Double) groupedRow.get("totalNewLinePriceInPoCurrency") + newLinePriceInPoCurrency);
-            }
-
+            String fetchAllSql = "SELECT PO.* FROM tb_PurchaseOrder PO" + whereClause
+                    + " ORDER BY PO.poNumber, PO.lineNumber";
+            List<Map<String, Object>> allLineItems = jdbcTemplate.queryForList(fetchAllSql, params.toArray());
+            Map<String, Map<String, Object>> groupedResults = groupLineItemsByPO(allLineItems);
+            int totalPOs = groupedResults.size();
             Map<String, Object> response = new HashMap<>();
-            response.put("currentPage", page);
-            response.put("pageSize", uniquePONumbers.size());
-            response.put("totalRecords", uniquePONumbers.size());
-            response.put("totalPages", 1); // Since we are returning all records
+            response.put("currentPage", 1);
+            response.put("pageSize", totalPOs);
+            response.put("totalRecords", totalPOs);
+            response.put("totalPages", 1);
             response.put("data", new ArrayList<>(groupedResults.values()));
-
             return response;
         }
 
-        // Step 1: Fetch unique POs with pagination
-        String uniquePOsSql2 = "SELECT DISTINCT PO.poNumber FROM tb_PurchaseOrder PO " + whereClause + " LIMIT " + size + " OFFSET " + (page - 1) * size;
-        List<String> uniquePONumbers2 = jdbcTemplate.queryForList(uniquePOsSql2, params2.toArray(), String.class);
-
-        //List<String> uniquePONumbers2 = jdbcTemplate.queryForList(uniquePOsSql2, String.class);
-        loggger.info("GET NESTED SQL 2  " + uniquePOsSql2);
-
-        // Step 2: Fetch line items for the unique POs
-        if (uniquePONumbers2.isEmpty()) {
-            // If no unique POs found, return an empty response
-            Map<String, Object> response = new HashMap<>();
-            response.put("currentPage", page);
-            response.put("pageSize", size);
-            response.put("totalRecords", 0);
-            response.put("totalPages", 0);
-            response.put("data", new ArrayList<>());
-            return response;
+        // Paginated mode: count distinct POs, then fetch line items for the current page via join
+        String countSql = "SELECT COUNT(DISTINCT PO.poNumber) FROM tb_PurchaseOrder PO" + whereClause;
+        Integer totalRecords = jdbcTemplate.queryForObject(countSql, params.toArray(), Integer.class);
+        if (totalRecords == null || totalRecords == 0) {
+            return buildEmptyResponse(page, size);
         }
 
-        String lineItemsSql = "SELECT * FROM tb_PurchaseOrder PO WHERE PO.poNumber IN (" + String.join(",", uniquePONumbers2.stream().map(po -> "'" + po + "'").collect(Collectors.toList())) + ")";
-        List<Map<String, Object>> lineItems = jdbcTemplate.queryForList(lineItemsSql);
+        int offset = (page - 1) * size;
+        String innerWhere = whereClause.replace("PO.", "PO2.");
+        List<Object> lineParams = new ArrayList<>(params);
+        lineParams.add(size);
+        lineParams.add(offset);
 
-        Map<String, Map<String, Object>> paginatedGroupedResults = new LinkedHashMap<>();
-        for (Map<String, Object> lineItem : lineItems) {
-            String poNumber = (String) lineItem.get("poNumber");
-            String Linecancel = "";
-            String subAllow = "";
+        String lineItemsSql =
+                "SELECT PO.* FROM tb_PurchaseOrder PO " +
+                "INNER JOIN (" +
+                "  SELECT DISTINCT PO2.poNumber FROM tb_PurchaseOrder PO2" + innerWhere +
+                "  ORDER BY PO2.poNumber LIMIT ? OFFSET ?" +
+                ") paged ON PO.poNumber = paged.poNumber " +
+                "ORDER BY PO.poNumber, PO.lineNumber";
 
-            if (!paginatedGroupedResults.containsKey(poNumber)) {
-                Map<String, Object> groupedRow = new LinkedHashMap<>(lineItem);
-                // Remove unnecessary fields
-                groupedRow.remove("recordNo");
-                groupedRow.remove("lineNumber");
-                groupedRow.remove("countryOfOrigin");
-                groupedRow.remove("poOrderQuantity");
-                groupedRow.remove("poQtyNew");
-                groupedRow.remove("quantityReceived");
-                groupedRow.remove("quantityDueOld");
-                groupedRow.remove("quantityDueNew");
-                groupedRow.remove("quantityBilled");
-                groupedRow.remove("unitPriceInPoCurrency");
-                groupedRow.remove("unitPriceInSAR");
-                groupedRow.remove("linePriceInPoCurrency");
-                groupedRow.remove("linePriceInSAR");
-                groupedRow.remove("amountReceived");
-                groupedRow.remove("amountDue");
-                groupedRow.remove("amountDueNew");
-                groupedRow.remove("amountBilled");
-                groupedRow.remove("poLineDescription");
-                groupedRow.remove("vendorSerialNumberYN");
-                groupedRow.remove("itemCategoryInventory");
-                groupedRow.remove("inventoryCategoryDescription");
-                groupedRow.remove("itemCategoryFA");
-                groupedRow.remove("FACategoryDescription");
-                groupedRow.remove("descopedLinePriceInPoCurrency");
-                groupedRow.remove("newLinePriceInPoCurrency");
+        List<Map<String, Object>> lineItems = jdbcTemplate.queryForList(lineItemsSql, lineParams.toArray());
+        Map<String, Map<String, Object>> groupedResults = groupLineItemsByPO(lineItems);
 
-                Linecancel = lineItem.get("lineCancelFlag").toString();
-                subAllow = lineItem.get("prSubAllow").toString();
-
-                if (Linecancel.equalsIgnoreCase("false")) {
-                    groupedRow.put("lineCancelFlag", "N");
-                } else {
-                    groupedRow.put("lineCancelFlag", "Y");
-                }
-                if (subAllow.equalsIgnoreCase("false")) {
-                    groupedRow.put("prSubAllow", "N");
-                } else {
-                    groupedRow.put("prSubAllow", "Y");
-                }
-
-                //  lineCancelFlag
-                // Initialize totals
-                groupedRow.put("totalPoQtyNew", 0.0);
-                groupedRow.put("totalQuantityReceived", 0.0);
-                groupedRow.put("totalQuantityDueOld", 0.0);
-                groupedRow.put("totalQuantityDueNew", 0.0);
-                groupedRow.put("totalQuantityBilled", 0.0);
-                groupedRow.put("totalpoOrderQuantity", 0.0);
-                groupedRow.put("totalunitPriceInPoCurrency", 0.0);
-                groupedRow.put("totalunitPriceInSAR", 0.0);
-                groupedRow.put("totallinePriceInPoCurrency", 0.0);
-                groupedRow.put("totallinePriceInSAR", 0.0);
-                groupedRow.put("totalamountReceived", 0.0);
-                groupedRow.put("totalamountDue", 0.0);
-                groupedRow.put("totalamountDueNew", 0.0);
-                groupedRow.put("totalamountBilled", 0.0);
-                groupedRow.put("totalDescopedLinePriceInPoCurrency", 0.0);
-                groupedRow.put("totalNewLinePriceInPoCurrency", 0.0);
-                // Add POlineItems key with an empty list
-                groupedRow.put("POlineItems", new ArrayList<Map<String, Object>>());
-                paginatedGroupedResults.put(poNumber, groupedRow);
-            }
-
-            Map<String, Object> poLineItem = new LinkedHashMap<>();
-            poLineItem.put("recordNo", lineItem.get("recordNo"));
-            poLineItem.put("poNumber", lineItem.get("poNumber"));
-            poLineItem.put("lineNumber", lineItem.get("lineNumber"));
-            poLineItem.put("itemPartNumber", lineItem.get("itemPartNumber"));
-            poLineItem.put("countryOfOrigin", lineItem.get("countryOfOrigin"));
-            poLineItem.put("poOrderQuantity", (lineItem.get("poOrderQuantity")));
-            poLineItem.put("poQtyNew", (lineItem.get("poQtyNew")));
-            poLineItem.put("quantityReceived", (lineItem.get("quantityReceived")));
-            poLineItem.put("quantityDueOld", (lineItem.get("quantityDueOld")));
-            poLineItem.put("quantityDueNew", (lineItem.get("quantityDueNew")));
-            poLineItem.put("quantityBilled", (lineItem.get("quantityBilled")));
-            poLineItem.put("unitPriceInPoCurrency", lineItem.get("unitPriceInPoCurrency"));
-            poLineItem.put("unitPriceInSAR", lineItem.get("unitPriceInSAR"));
-            poLineItem.put("linePriceInPoCurrency", lineItem.get("linePriceInPoCurrency"));
-            poLineItem.put("linePriceInSAR", lineItem.get("linePriceInSAR"));
-            poLineItem.put("amountReceived", lineItem.get("amountReceived"));
-            poLineItem.put("amountDue", lineItem.get("amountDue"));
-            poLineItem.put("amountDueNew", lineItem.get("amountDueNew"));
-            poLineItem.put("amountBilled", lineItem.get("amountBilled"));
-            poLineItem.put("poLineDescription", lineItem.get("poLineDescription"));
-            poLineItem.put("vendorSerialNumberYN", lineItem.get("vendorSerialNumberYN"));
-            poLineItem.put("itemCategoryInventory", lineItem.get("itemCategoryInventory"));
-            poLineItem.put("inventoryCategoryDescription", lineItem.get("inventoryCategoryDescription"));
-            poLineItem.put("itemCategoryFA", lineItem.get("itemCategoryFA"));
-            poLineItem.put("FACategoryDescription", lineItem.get("FACategoryDescription"));
-            poLineItem.put("descopedLinePriceInPoCurrency", lineItem.get("descopedLinePriceInPoCurrency"));
-            poLineItem.put("newLinePriceInPoCurrency", lineItem.get("newLinePriceInPoCurrency"));
-
-            // Add the line item to the POlineItems list
-            ((List<Map<String, Object>>) paginatedGroupedResults.get(poNumber).get("POlineItems")).add(poLineItem);
-
-            // Update totals
-            Double poOrderQuantity = (lineItem.get("poOrderQuantity") != null) ? ((Number) lineItem.get("poOrderQuantity")).doubleValue() : 0.0;
-            Double poQtyNew = (lineItem.get("poQtyNew") != null) ? ((Number) lineItem.get("poQtyNew")).doubleValue() : 0.0;
-            Double quantityReceived = (lineItem.get("quantityReceived") != null) ? ((Number) lineItem.get("quantityReceived")).doubleValue() : 0.0;
-            Double quantityDueOld = (lineItem.get("quantityDueOld") != null) ? ((Number) lineItem.get("quantityDueOld")).doubleValue() : 0.0;
-            Double quantityDueNew = (lineItem.get("quantityDueNew") != null) ? ((Number) lineItem.get("quantityDueNew")).doubleValue() : 0.0;
-            Double quantityBilled = (lineItem.get("quantityBilled") != null) ? ((Number) lineItem.get("quantityBilled")).doubleValue() : 0.0;
-            Double unitPriceInPoCurrency = (lineItem.get("unitPriceInPoCurrency") != null) ? ((Number) lineItem.get("unitPriceInPoCurrency")).doubleValue() : 0.0;
-            Double unitPriceInSAR = (lineItem.get("unitPriceInSAR") != null) ? ((Number) lineItem.get("unitPriceInSAR")).doubleValue() : 0.0;
-            Double linePriceInPoCurrency = (lineItem.get("linePriceInPoCurrency") != null) ? ((Number) lineItem.get("linePriceInPoCurrency")).doubleValue() : 0.0;
-            Double linePriceInSAR = (lineItem.get("linePriceInSAR") != null) ? ((Number) lineItem.get("linePriceInSAR")).doubleValue() : 0.0;
-            Double amountReceived = (lineItem.get("amountReceived") != null) ? ((Number) lineItem.get("amountReceived")).doubleValue() : 0.0;
-            Double amountDue = (lineItem.get("amountDue") != null) ? ((Number) lineItem.get("amountDue")).doubleValue() : 0.0;
-            Double amountDueNew = (lineItem.get("amountDueNew") != null) ? ((Number) lineItem.get("amountDueNew")).doubleValue() : 0.0;
-            Double amountBilled = (lineItem.get("amountBilled") != null) ? ((Number) lineItem.get("amountBilled")).doubleValue() : 0.0;
-            Double descopedLinePriceInPoCurrency = (lineItem.get("descopedLinePriceInPoCurrency") != null) ? ((Number) lineItem.get("descopedLinePriceInPoCurrency")).doubleValue() : 0.0;
-            Double newLinePriceInPoCurrency = (lineItem.get("newLinePriceInPoCurrency") != null) ? ((Number) lineItem.get("newLinePriceInPoCurrency")).doubleValue() : 0.0;
-
-            Map<String, Object> groupedRow = paginatedGroupedResults.get(poNumber);
-            groupedRow.put("totalPoQtyNew", ((Double) groupedRow.get("totalPoQtyNew") + poQtyNew));
-            groupedRow.put("totalQuantityReceived", ((Double) groupedRow.get("totalQuantityReceived") + quantityReceived));
-            groupedRow.put("totalQuantityDueOld", ((Double) groupedRow.get("totalQuantityDueOld") + quantityDueOld));
-            groupedRow.put("totalQuantityDueNew", ((Double) groupedRow.get("totalQuantityDueNew") + quantityDueNew));
-            groupedRow.put("totalQuantityBilled", ((Double) groupedRow.get("totalQuantityBilled") + quantityBilled));
-            groupedRow.put("totalpoOrderQuantity", ((Double) groupedRow.get("totalpoOrderQuantity") + poOrderQuantity));
-            groupedRow.put("totalunitPriceInPoCurrency", (Double) groupedRow.get("totalunitPriceInPoCurrency") + unitPriceInPoCurrency);
-            groupedRow.put("totalunitPriceInSAR", (Double) groupedRow.get("totalunitPriceInSAR") + unitPriceInSAR);
-            groupedRow.put("totallinePriceInPoCurrency", (Double) groupedRow.get("totallinePriceInPoCurrency") + linePriceInPoCurrency);
-            groupedRow.put("totallinePriceInSAR", (Double) groupedRow.get("totallinePriceInSAR") + linePriceInSAR);
-            groupedRow.put("totalamountReceived", (Double) groupedRow.get("totalamountReceived") + amountReceived);
-            groupedRow.put("totalamountDue", (Double) groupedRow.get("totalamountDue") + amountDue);
-            groupedRow.put("totalamountDueNew", (Double) groupedRow.get("totalamountDueNew") + amountDueNew);
-            groupedRow.put("totalamountBilled", (Double) groupedRow.get("totalamountBilled") + amountBilled);
-            groupedRow.put("totalDescopedLinePriceInPoCurrency", (Double) groupedRow.get("totalDescopedLinePriceInPoCurrency") + descopedLinePriceInPoCurrency);
-            groupedRow.put("totalNewLinePriceInPoCurrency", (Double) groupedRow.get("totalNewLinePriceInPoCurrency") + newLinePriceInPoCurrency);
-        }
-
-        // Prepare the response
         Map<String, Object> response = new HashMap<>();
         response.put("currentPage", page);
         response.put("pageSize", size);
-        response.put("totalRecords", uniquePONumbers.size());
-        response.put("totalPages", (int) Math.ceil((double) uniquePONumbers.size() / size));
-        response.put("data", new ArrayList<>(paginatedGroupedResults.values()));
-
+        response.put("totalRecords", totalRecords);
+        response.put("totalPages", (int) Math.ceil((double) totalRecords / size));
+        response.put("data", new ArrayList<>(groupedResults.values()));
         return response;
     }
 
@@ -1291,6 +1047,105 @@ private String convertToSqlDate(String input) {
         return response;
     }
 
+    // ===== SHARED PO NESTING HELPERS =====
+
+    private double toDouble(Object val) {
+        return val != null ? ((Number) val).doubleValue() : 0.0;
+    }
+
+    private Map<String, Object> buildPoLineItem(Map<String, Object> lineItem) {
+        Map<String, Object> li = new LinkedHashMap<>();
+        li.put("recordNo", lineItem.get("recordNo"));
+        li.put("poNumber", lineItem.get("poNumber"));
+        li.put("lineNumber", lineItem.get("lineNumber"));
+        li.put("itemPartNumber", lineItem.get("itemPartNumber"));
+        li.put("countryOfOrigin", lineItem.get("countryOfOrigin"));
+        li.put("poOrderQuantity", lineItem.get("poOrderQuantity"));
+        li.put("poQtyNew", lineItem.get("poQtyNew"));
+        li.put("quantityReceived", lineItem.get("quantityReceived"));
+        li.put("quantityDueOld", lineItem.get("quantityDueOld"));
+        li.put("quantityDueNew", lineItem.get("quantityDueNew"));
+        li.put("quantityBilled", lineItem.get("quantityBilled"));
+        li.put("unitPriceInPoCurrency", lineItem.get("unitPriceInPoCurrency"));
+        li.put("unitPriceInSAR", lineItem.get("unitPriceInSAR"));
+        li.put("linePriceInPoCurrency", lineItem.get("linePriceInPoCurrency"));
+        li.put("linePriceInSAR", lineItem.get("linePriceInSAR"));
+        li.put("amountReceived", lineItem.get("amountReceived"));
+        li.put("amountDue", lineItem.get("amountDue"));
+        li.put("amountDueNew", lineItem.get("amountDueNew"));
+        li.put("amountBilled", lineItem.get("amountBilled"));
+        li.put("poLineDescription", lineItem.get("poLineDescription"));
+        li.put("vendorSerialNumberYN", lineItem.get("vendorSerialNumberYN"));
+        li.put("itemCategoryInventory", lineItem.get("itemCategoryInventory"));
+        li.put("inventoryCategoryDescription", lineItem.get("inventoryCategoryDescription"));
+        li.put("itemCategoryFA", lineItem.get("itemCategoryFA"));
+        li.put("FACategoryDescription", lineItem.get("FACategoryDescription"));
+        li.put("descopedLinePriceInPoCurrency", lineItem.get("descopedLinePriceInPoCurrency"));
+        li.put("newLinePriceInPoCurrency", lineItem.get("newLinePriceInPoCurrency"));
+        return li;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Map<String, Object>> groupLineItemsByPO(List<Map<String, Object>> lineItems) {
+        List<String> lineSpecificFields = Arrays.asList(
+                "recordNo", "lineNumber", "countryOfOrigin", "poOrderQuantity", "poQtyNew",
+                "quantityReceived", "quantityDueOld", "quantityDueNew", "quantityBilled",
+                "unitPriceInPoCurrency", "unitPriceInSAR", "linePriceInPoCurrency", "linePriceInSAR",
+                "amountReceived", "amountDue", "amountDueNew", "amountBilled",
+                "poLineDescription", "vendorSerialNumberYN", "itemCategoryInventory",
+                "inventoryCategoryDescription", "itemCategoryFA", "FACategoryDescription",
+                "descopedLinePriceInPoCurrency", "newLinePriceInPoCurrency");
+        Map<String, Map<String, Object>> grouped = new LinkedHashMap<>();
+        for (Map<String, Object> lineItem : lineItems) {
+            String poNumber = (String) lineItem.get("poNumber");
+            if (!grouped.containsKey(poNumber)) {
+                Map<String, Object> groupedRow = new LinkedHashMap<>(lineItem);
+                for (String field : lineSpecificFields) groupedRow.remove(field);
+                groupedRow.put("lineCancelFlag", lineItem.get("lineCancelFlag").toString().equalsIgnoreCase("false") ? "N" : "Y");
+                groupedRow.put("prSubAllow", lineItem.get("prSubAllow").toString().equalsIgnoreCase("false") ? "N" : "Y");
+                groupedRow.put("totalPoQtyNew", 0.0);
+                groupedRow.put("totalQuantityReceived", 0.0);
+                groupedRow.put("totalQuantityDueOld", 0.0);
+                groupedRow.put("totalQuantityDueNew", 0.0);
+                groupedRow.put("totalQuantityBilled", 0.0);
+                groupedRow.put("totalpoOrderQuantity", 0.0);
+                groupedRow.put("totalunitPriceInPoCurrency", 0.0);
+                groupedRow.put("totalunitPriceInSAR", 0.0);
+                groupedRow.put("totallinePriceInPoCurrency", 0.0);
+                groupedRow.put("totallinePriceInSAR", 0.0);
+                groupedRow.put("totalamountReceived", 0.0);
+                groupedRow.put("totalamountDue", 0.0);
+                groupedRow.put("totalamountDueNew", 0.0);
+                groupedRow.put("totalamountBilled", 0.0);
+                groupedRow.put("totalDescopedLinePriceInPoCurrency", 0.0);
+                groupedRow.put("totalNewLinePriceInPoCurrency", 0.0);
+                groupedRow.put("POlineItems", new ArrayList<Map<String, Object>>());
+                grouped.put(poNumber, groupedRow);
+            }
+            ((List<Map<String, Object>>) grouped.get(poNumber).get("POlineItems")).add(buildPoLineItem(lineItem));
+            Map<String, Object> r = grouped.get(poNumber);
+            r.put("totalPoQtyNew", (double) r.get("totalPoQtyNew") + toDouble(lineItem.get("poQtyNew")));
+            r.put("totalQuantityReceived", (double) r.get("totalQuantityReceived") + toDouble(lineItem.get("quantityReceived")));
+            r.put("totalQuantityDueOld", (double) r.get("totalQuantityDueOld") + toDouble(lineItem.get("quantityDueOld")));
+            r.put("totalQuantityDueNew", (double) r.get("totalQuantityDueNew") + toDouble(lineItem.get("quantityDueNew")));
+            r.put("totalQuantityBilled", (double) r.get("totalQuantityBilled") + toDouble(lineItem.get("quantityBilled")));
+            r.put("totalpoOrderQuantity", (double) r.get("totalpoOrderQuantity") + toDouble(lineItem.get("poOrderQuantity")));
+            r.put("totalunitPriceInPoCurrency", (double) r.get("totalunitPriceInPoCurrency") + toDouble(lineItem.get("unitPriceInPoCurrency")));
+            r.put("totalunitPriceInSAR", (double) r.get("totalunitPriceInSAR") + toDouble(lineItem.get("unitPriceInSAR")));
+            r.put("totallinePriceInPoCurrency", (double) r.get("totallinePriceInPoCurrency") + toDouble(lineItem.get("linePriceInPoCurrency")));
+            r.put("totallinePriceInSAR", (double) r.get("totallinePriceInSAR") + toDouble(lineItem.get("linePriceInSAR")));
+            r.put("totalamountReceived", (double) r.get("totalamountReceived") + toDouble(lineItem.get("amountReceived")));
+            r.put("totalamountDue", (double) r.get("totalamountDue") + toDouble(lineItem.get("amountDue")));
+            r.put("totalamountDueNew", (double) r.get("totalamountDueNew") + toDouble(lineItem.get("amountDueNew")));
+            r.put("totalamountBilled", (double) r.get("totalamountBilled") + toDouble(lineItem.get("amountBilled")));
+            r.put("totalDescopedLinePriceInPoCurrency", (double) r.get("totalDescopedLinePriceInPoCurrency") + toDouble(lineItem.get("descopedLinePriceInPoCurrency")));
+            r.put("totalNewLinePriceInPoCurrency", (double) r.get("totalNewLinePriceInPoCurrency") + toDouble(lineItem.get("newLinePriceInPoCurrency")));
+        }
+        return grouped;
+    }
+
+    // ===== END SHARED PO NESTING HELPERS =====
+
     @PostMapping(value = "/reports/getNestedDccData", produces = "application/json")
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
     public Map<String, Object> getNestedDccData(@RequestBody String req) {
@@ -1307,7 +1162,7 @@ private String convertToSqlDate(String input) {
         page = Math.max(page, 1);
         size = Math.max(size, 1);
 
-        jdbcTemplate.execute("SET SESSION sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''))");
+        // ONLY_FULL_GROUP_BY is disabled via datasource connection-init-sql in application.properties
 
         String paginationSql = "";
         String whereClause = " WHERE 1=1 ";
@@ -1596,7 +1451,7 @@ private String convertToSqlDate(String input) {
         page = Math.max(page, 1);
         size = Math.max(size, 1);
 
-        jdbcTemplate.execute("SET SESSION sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''))");
+        // ONLY_FULL_GROUP_BY is disabled via datasource connection-init-sql in application.properties
 
         String paginationSql = "";
         String whereClause = " WHERE 1=1 ";
@@ -1821,7 +1676,7 @@ private String convertToSqlDate(String input) {
         page = Math.max(page, 0);
         size = Math.max(size, 0);
 
-        jdbcTemplate.execute("SET SESSION sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''))");
+        // ONLY_FULL_GROUP_BY is disabled via datasource connection-init-sql in application.properties
 
         String paginationSql = "";
         String whereClause = " WHERE 1=1 ";
@@ -1891,7 +1746,7 @@ private String convertToSqlDate(String input) {
         String dateFrom = obj.has("dateFrom") ? obj.get("dateFrom").getAsString() : "";
         String dateTo = obj.has("dateTo") ? obj.get("dateTo").getAsString() : "";
 
-        jdbcTemplate.execute("SET SESSION sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''))");
+        // ONLY_FULL_GROUP_BY is disabled via datasource connection-init-sql in application.properties
 
         int page = obj.has("page") ? obj.get("page").getAsInt() : 1;
         int size = obj.has("size") ? obj.get("size").getAsInt() : 20000;
@@ -1921,31 +1776,33 @@ private String convertToSqlDate(String input) {
             params.add("%" + searchQuery + "%");
         }
 
-        String countSql = "SELECT COUNT(*) FROM combinedPurchaseOrderView" + whereClause;
-        int totalRecords = jdbcTemplate.queryForObject(countSql, Integer.class,
-                params.toArray());
+        int totalRecords;
+        List<Map<String, Object>> result;
 
-        //  int totalRecords = jdbcTemplate.queryForObject(countSql, Integer.class);
-        if (page == 0 && size == 0) {
-            paginationSql = "";
-        } else if (page == 1 && size == 20000) {
-            page = 0;
-            size = totalRecords;
-            page = Math.max(page, 1);
-            size = Math.max(size, 1);
-            int offset = (page - 1) * size;
-
-            paginationSql = " LIMIT " + size + " OFFSET " + offset;
+        if (page == 1 && size == 20000) {
+            // Fetch-all mode: single query, no COUNT needed
+            String sql = "SELECT * FROM combinedPurchaseOrderView" + whereClause;
+            result = jdbcTemplate.queryForList(sql, params.toArray());
+            totalRecords = result.size();
+            page = 1;
+            size = Math.max(totalRecords, 1);
         } else {
-            page = Math.max(page, 1);
-            size = Math.max(size, 1);
-            int offset = (page - 1) * size;
-            paginationSql = " LIMIT " + size + " OFFSET " + offset;
+            String countSql = "SELECT COUNT(*) FROM combinedPurchaseOrderView" + whereClause;
+            totalRecords = jdbcTemplate.queryForObject(countSql, Integer.class, params.toArray());
+
+            if (page == 0 && size == 0) {
+                paginationSql = "";
+            } else {
+                page = Math.max(page, 1);
+                size = Math.max(size, 1);
+                int offset = (page - 1) * size;
+                paginationSql = " LIMIT " + size + " OFFSET " + offset;
+            }
+
+            String sql = "SELECT * FROM combinedPurchaseOrderView" + whereClause + paginationSql;
+            result = jdbcTemplate.queryForList(sql, params.toArray());
         }
-
-        String sql = "SELECT * FROM combinedPurchaseOrderView" + whereClause + paginationSql;
-        List<Map<String, Object>> result = jdbcTemplate.queryForList(sql, params.toArray());
-
+        loggger.info("Fetch record query :  " + whereClause);
         Map<String, Object> response = new HashMap<>();
         response.put("data", result);
         response.put("totalRecords", totalRecords);
@@ -1970,7 +1827,7 @@ private String convertToSqlDate(String input) {
         int page = obj.has("page") ? obj.get("page").getAsInt() : 1;
         int size = obj.has("size") ? obj.get("size").getAsInt() : 20000;
 
-        jdbcTemplate.execute("SET SESSION sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''))");
+        // ONLY_FULL_GROUP_BY is disabled via datasource connection-init-sql in application.properties
 
         page = Math.max(page, 0);
         size = Math.max(size, 0);
@@ -2038,7 +1895,7 @@ private String convertToSqlDate(String input) {
         String columnName = obj.has("columnName") ? obj.get("columnName").getAsString() : "";
         String searchQuery = obj.has("searchQuery") ? obj.get("searchQuery").getAsString() : "";
 
-        jdbcTemplate.execute("SET SESSION sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''))");
+        // ONLY_FULL_GROUP_BY is disabled via datasource connection-init-sql in application.properties
 
         String whereClause = " WHERE 1=1 ";
 
@@ -3012,18 +2869,12 @@ private String convertToSqlDate(String input) {
             @RequestParam(defaultValue = "poNumber") String sortBy,
             @RequestParam(defaultValue = "asc") String sortDir) {
         try {
-            // Validate page and size
             page = Math.max(page, 0);
             size = Math.max(size, 1);
 
-            // Initialize WHERE clause for non-aggregate filters (strings, dates, poNumber, etc.)
             String baseWhereClause = " WHERE 1=1";
             List<Object> baseParams = new ArrayList<>();
 
-            // Build base WHERE for line-level non-aggregate filters
-            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
-
-            // String filters
             if (filters.containsKey("poNumber") && !filters.get("poNumber").isEmpty()) {
                 baseWhereClause += " AND PO.poNumber = ?";
                 baseParams.add(filters.get("poNumber"));
@@ -3048,8 +2899,10 @@ private String convertToSqlDate(String input) {
                 baseWhereClause += " AND PO.currencyCode = ?";
                 baseParams.add(filters.get("currencyCode"));
             }
-
-            // Date range filters (non-aggregate)
+            if (filters.containsKey("supplierId") && !filters.get("supplierId").isEmpty()) {
+                baseWhereClause += " AND PO.vendorNumber = ?";
+                baseParams.add(filters.get("supplierId"));
+            }
             try {
                 if (filters.containsKey("createdDateStart") && !filters.get("createdDateStart").isEmpty()) {
                     baseWhereClause += " AND PO.createdDate >= ?";
@@ -3071,268 +2924,91 @@ private String convertToSqlDate(String input) {
                 loggger.error("Error parsing date filters", e);
             }
 
-            // Build HAVING clause for aggregate numeric filters
             String havingClause = "";
             List<Object> havingParams = new ArrayList<>();
-
             if (filters.containsKey("totalPoQtyNew") && !filters.get("totalPoQtyNew").isEmpty()) {
-                try {
-                    Double value = Double.parseDouble(filters.get("totalPoQtyNew"));
-                    havingClause += " AND SUM(PO.poQtyNew) = ?";
-                    havingParams.add(value);
-                } catch (NumberFormatException e) {
-                    loggger.error("Invalid totalPoQtyNew format: " + filters.get("totalPoQtyNew"), e);
-                }
+                try { havingClause += " AND SUM(PO.poQtyNew) = ?"; havingParams.add(Double.parseDouble(filters.get("totalPoQtyNew"))); }
+                catch (NumberFormatException e) { loggger.error("Invalid totalPoQtyNew", e); }
             }
             if (filters.containsKey("totalpoOrderQuantity") && !filters.get("totalpoOrderQuantity").isEmpty()) {
-                try {
-                    Double value = Double.parseDouble(filters.get("totalpoOrderQuantity"));
-                    havingClause += " AND SUM(PO.poOrderQuantity) = ?";
-                    havingParams.add(value);
-                } catch (NumberFormatException e) {
-                    loggger.error("Invalid totalpoOrderQuantity format: " + filters.get("totalpoOrderQuantity"), e);
-                }
+                try { havingClause += " AND SUM(PO.poOrderQuantity) = ?"; havingParams.add(Double.parseDouble(filters.get("totalpoOrderQuantity"))); }
+                catch (NumberFormatException e) { loggger.error("Invalid totalpoOrderQuantity", e); }
             }
             if (filters.containsKey("totalQuantityReceived") && !filters.get("totalQuantityReceived").isEmpty()) {
-                try {
-                    Double value = Double.parseDouble(filters.get("totalQuantityReceived"));
-                    havingClause += " AND SUM(PO.quantityReceived) = ?";
-                    havingParams.add(value);
-                } catch (NumberFormatException e) {
-                    loggger.error("Invalid totalQuantityReceived format: " + filters.get("totalQuantityReceived"), e);
-                }
+                try { havingClause += " AND SUM(PO.quantityReceived) = ?"; havingParams.add(Double.parseDouble(filters.get("totalQuantityReceived"))); }
+                catch (NumberFormatException e) { loggger.error("Invalid totalQuantityReceived", e); }
             }
             if (filters.containsKey("totalQuantityDueOld") && !filters.get("totalQuantityDueOld").isEmpty()) {
-                try {
-                    Double value = Double.parseDouble(filters.get("totalQuantityDueOld"));
-                    havingClause += " AND SUM(PO.quantityDueOld) = ?";
-                    havingParams.add(value);
-                } catch (NumberFormatException e) {
-                    loggger.error("Invalid totalQuantityDueOld format: " + filters.get("totalQuantityDueOld"), e);
-                }
+                try { havingClause += " AND SUM(PO.quantityDueOld) = ?"; havingParams.add(Double.parseDouble(filters.get("totalQuantityDueOld"))); }
+                catch (NumberFormatException e) { loggger.error("Invalid totalQuantityDueOld", e); }
             }
             if (filters.containsKey("totalQuantityDueNew") && !filters.get("totalQuantityDueNew").isEmpty()) {
-                try {
-                    Double value = Double.parseDouble(filters.get("totalQuantityDueNew"));
-                    havingClause += " AND SUM(PO.quantityDueNew) = ?";
-                    havingParams.add(value);
-                } catch (NumberFormatException e) {
-                    loggger.error("Invalid totalQuantityDueNew format: " + filters.get("totalQuantityDueNew"), e);
-                }
+                try { havingClause += " AND SUM(PO.quantityDueNew) = ?"; havingParams.add(Double.parseDouble(filters.get("totalQuantityDueNew"))); }
+                catch (NumberFormatException e) { loggger.error("Invalid totalQuantityDueNew", e); }
             }
             if (filters.containsKey("totalQuantityBilled") && !filters.get("totalQuantityBilled").isEmpty()) {
-                try {
-                    Double value = Double.parseDouble(filters.get("totalQuantityBilled"));
-                    havingClause += " AND SUM(PO.quantityBilled) = ?";
-                    havingParams.add(value);
-                } catch (NumberFormatException e) {
-                    loggger.error("Invalid totalQuantityBilled format: " + filters.get("totalQuantityBilled"), e);
-                }
+                try { havingClause += " AND SUM(PO.quantityBilled) = ?"; havingParams.add(Double.parseDouble(filters.get("totalQuantityBilled"))); }
+                catch (NumberFormatException e) { loggger.error("Invalid totalQuantityBilled", e); }
             }
             if (filters.containsKey("totallinePriceInSAR") && !filters.get("totallinePriceInSAR").isEmpty()) {
-                try {
-                    Double value = Double.parseDouble(filters.get("totallinePriceInSAR"));
-                    havingClause += " AND SUM(PO.linePriceInSAR) = ?";
-                    havingParams.add(value);
-                } catch (NumberFormatException e) {
-                    loggger.error("Invalid totallinePriceInSAR format: " + filters.get("totallinePriceInSAR"), e);
-                }
+                try { havingClause += " AND SUM(PO.linePriceInSAR) = ?"; havingParams.add(Double.parseDouble(filters.get("totallinePriceInSAR"))); }
+                catch (NumberFormatException e) { loggger.error("Invalid totallinePriceInSAR", e); }
             }
 
-            // Combined params for subquery
             List<Object> subqueryParams = new ArrayList<>(baseParams);
             subqueryParams.addAll(havingParams);
 
-            // Subquery for aggregated POs
-            String subquery = "SELECT PO.poNumber FROM tb_PurchaseOrder PO " + baseWhereClause +
-                    " GROUP BY PO.poNumber " +
-                    (havingClause.isEmpty() ? "" : "HAVING " + havingClause.substring(5));  // Remove leading " AND "
+            String havingFragment = havingClause.isEmpty() ? "" : " HAVING " + havingClause.substring(5);
+            String subquery = "SELECT PO.poNumber FROM tb_PurchaseOrder PO" + baseWhereClause +
+                    " GROUP BY PO.poNumber" + havingFragment;
 
             // Count total unique POs
             String countSql = "SELECT COUNT(*) FROM (" + subquery + ") sub";
-            int totalRecords = jdbcTemplate.queryForObject(countSql, subqueryParams.toArray(), Integer.class);
-
-            // Build pagination and sorting for unique POs
-            List<Object> poParams = new ArrayList<>(subqueryParams);
-            String poPaginationSql = "";
-            int offset = page * size;
-            if (size > 0) {
-                poPaginationSql = " LIMIT ? OFFSET ?";
-                poParams.add(size);
-                poParams.add(offset);
+            Integer totalRecords = jdbcTemplate.queryForObject(countSql, subqueryParams.toArray(), Integer.class);
+            if (totalRecords == null || totalRecords == 0) {
+                Map<String, Object> empty = new HashMap<>();
+                empty.put("reports", Collections.emptyList());
+                empty.put("currentPage", page);
+                empty.put("totalItems", 0);
+                empty.put("totalPages", 0);
+                empty.put("first", true);
+                empty.put("last", true);
+                empty.put("size", size);
+                empty.put("sort", sortBy + "," + sortDir);
+                return new ResponseEntity<>(empty, HttpStatus.OK);
             }
 
-            // For sorting aggregated POs, include the sort column in subquery if it's a header field
-
-
-            // Define numeric columns for sorting (those that require SUM for aggregation)
+            // Build sorted subquery and fetch line items for the current page in one query
             Set<String> numericColumns = new HashSet<>(Arrays.asList(
                     "totalPoQtyNew", "totalpoOrderQuantity", "totalQuantityReceived", "totalQuantityDueOld",
-                    "totalQuantityDueNew", "totalQuantityBilled", "totallinePriceInSAR"
-            ));
+                    "totalQuantityDueNew", "totalQuantityBilled", "totallinePriceInSAR"));
 
-            String subqueryWithSort = subquery;
-            if (!sortBy.isEmpty() && !havingClause.contains(sortBy)) {  // If not already aggregated
-                String sortField = sortBy.startsWith("total") ? sortBy.substring(5).toLowerCase() : sortBy;  // Map totalX to underlying field (e.g., totalQuantityReceived -> quantityReceived)
-                subqueryWithSort = "SELECT PO.poNumber, " + (numericColumns.contains(sortBy) ? "SUM(PO." + sortField + ") AS sortVal" : "PO." + sortBy + " AS sortVal") +
-                        " FROM tb_PurchaseOrder PO " + baseWhereClause +
-                        " GROUP BY PO.poNumber " +
-                        (havingClause.isEmpty() ? "" : "HAVING " + havingClause.substring(5));
-                // Then ORDER BY sortVal in outer
-            }
+            int offset = page * size;
+            String sortClause = sortDir.equalsIgnoreCase("asc") ? "ASC" : "DESC";
+            List<Object> lineParams = new ArrayList<>(subqueryParams);
+            lineParams.add(size);
+            lineParams.add(offset);
 
-            // Fetch paginated unique PO numbers
-            String poSelectSql;
-            if (!sortBy.isEmpty() && subqueryWithSort.contains("sortVal")) {
-                poSelectSql = "SELECT poNumber FROM (" + subqueryWithSort + ") sub ORDER BY sortVal " + (sortDir.equalsIgnoreCase("asc") ? "ASC" : "DESC") + poPaginationSql;
+            String lineSql;
+            // Wrap paged subquery in a derived table — MySQL does not allow LIMIT directly inside IN(...)
+            if (numericColumns.contains(sortBy)) {
+                String sortField = sortBy.substring(5).toLowerCase();
+                String sortedSubquery = "SELECT PO.poNumber, SUM(PO." + sortField + ") AS sortVal" +
+                        " FROM tb_PurchaseOrder PO" + baseWhereClause +
+                        " GROUP BY PO.poNumber" + havingFragment;
+                lineSql = "SELECT PO.* FROM tb_PurchaseOrder PO WHERE PO.poNumber IN (" +
+                        "SELECT poNumber FROM (SELECT poNumber FROM (" + sortedSubquery + ") s1 ORDER BY sortVal " + sortClause + " LIMIT ? OFFSET ?) paged_pos" +
+                        ") ORDER BY PO.poNumber, PO.lineNumber";
             } else {
-                poSelectSql = "SELECT poNumber FROM (" + subquery + ") sub " + (sortBy.isEmpty() ? "" : "ORDER BY poNumber " + (sortDir.equalsIgnoreCase("asc") ? "ASC" : "DESC")) + poPaginationSql;
-            }
-            List<String> poNumbers = jdbcTemplate.queryForList(poSelectSql, poParams.toArray(), String.class);
-
-            List<Map<String, Object>> nestedReports = new ArrayList<>();
-
-            if (!poNumbers.isEmpty()) {
-                // Fetch all line items for these POs (without aggregate filter, full nesting)
-                String placeholders = String.join(",", Collections.nCopies(poNumbers.size(), "?"));
-                String lineSql = "SELECT * FROM tb_PurchaseOrder PO WHERE PO.poNumber IN (" + placeholders + ") ORDER BY PO.poNumber, PO.lineNumber";
-                List<Object> lineParams = new ArrayList<>(poNumbers);
-                List<Map<String, Object>> lineItems = jdbcTemplate.queryForList(lineSql, lineParams.toArray());
-
-                // Group and calculate totals (same as before)
-                Map<String, Map<String, Object>> groupedResults = new LinkedHashMap<>();
-                for (Map<String, Object> lineItem : lineItems) {
-                    String poNumber = (String) lineItem.get("poNumber");
-
-                    if (!groupedResults.containsKey(poNumber)) {
-                        Map<String, Object> groupedRow = new LinkedHashMap<>(lineItem);
-                        // Remove line-specific fields for parent
-                        groupedRow.remove("recordNo");
-                        groupedRow.remove("lineNumber");
-                        groupedRow.remove("countryOfOrigin");
-                        groupedRow.remove("poOrderQuantity");
-                        groupedRow.remove("poQtyNew");
-                        groupedRow.remove("quantityReceived");
-                        groupedRow.remove("quantityDueOld");
-                        groupedRow.remove("quantityDueNew");
-                        groupedRow.remove("quantityBilled");
-                        groupedRow.remove("unitPriceInPoCurrency");
-                        groupedRow.remove("unitPriceInSAR");
-                        groupedRow.remove("linePriceInPoCurrency");
-                        groupedRow.remove("linePriceInSAR");
-                        groupedRow.remove("amountReceived");
-                        groupedRow.remove("amountDue");
-                        groupedRow.remove("amountDueNew");
-                        groupedRow.remove("amountBilled");
-                        groupedRow.remove("poLineDescription");
-                        groupedRow.remove("vendorSerialNumberYN");
-                        groupedRow.remove("itemCategoryInventory");
-                        groupedRow.remove("inventoryCategoryDescription");
-                        groupedRow.remove("itemCategoryFA");
-                        groupedRow.remove("FACategoryDescription");
-                        groupedRow.remove("descopedLinePriceInPoCurrency");
-                        groupedRow.remove("newLinePriceInPoCurrency");
-
-                        String lineCancel = lineItem.get("lineCancelFlag").toString();
-                        String subAllow = lineItem.get("prSubAllow").toString();
-
-                        groupedRow.put("lineCancelFlag", lineCancel.equalsIgnoreCase("false") ? "N" : "Y");
-                        groupedRow.put("prSubAllow", subAllow.equalsIgnoreCase("false") ? "N" : "Y");
-
-                        // Initialize totals
-                        groupedRow.put("totalPoQtyNew", 0.0);
-                        groupedRow.put("totalQuantityReceived", 0.0);
-                        groupedRow.put("totalQuantityDueOld", 0.0);
-                        groupedRow.put("totalQuantityDueNew", 0.0);
-                        groupedRow.put("totalQuantityBilled", 0.0);
-                        groupedRow.put("totalpoOrderQuantity", 0.0);
-                        groupedRow.put("totalunitPriceInPoCurrency", 0.0);
-                        groupedRow.put("totalunitPriceInSAR", 0.0);
-                        groupedRow.put("totallinePriceInPoCurrency", 0.0);
-                        groupedRow.put("totallinePriceInSAR", 0.0);
-                        groupedRow.put("totalamountReceived", 0.0);
-                        groupedRow.put("totalamountDue", 0.0);
-                        groupedRow.put("totalamountDueNew", 0.0);
-                        groupedRow.put("totalamountBilled", 0.0);
-                        groupedRow.put("totalDescopedLinePriceInPoCurrency", 0.0);
-                        groupedRow.put("totalNewLinePriceInPoCurrency", 0.0);
-                        groupedRow.put("POlineItems", new ArrayList<Map<String, Object>>());
-                        groupedResults.put(poNumber, groupedRow);
-                    }
-
-                    // Add line item to POlineItems
-                    Map<String, Object> poLineItem = new LinkedHashMap<>();
-                    poLineItem.put("recordNo", lineItem.get("recordNo"));
-                    poLineItem.put("poNumber", lineItem.get("poNumber"));
-                    poLineItem.put("lineNumber", lineItem.get("lineNumber"));
-                    poLineItem.put("itemPartNumber", lineItem.get("itemPartNumber"));
-                    poLineItem.put("countryOfOrigin", lineItem.get("countryOfOrigin"));
-                    poLineItem.put("poOrderQuantity", lineItem.get("poOrderQuantity"));
-                    poLineItem.put("poQtyNew", lineItem.get("poQtyNew"));
-                    poLineItem.put("quantityReceived", lineItem.get("quantityReceived"));
-                    poLineItem.put("quantityDueOld", lineItem.get("quantityDueOld"));
-                    poLineItem.put("quantityDueNew", lineItem.get("quantityDueNew"));
-                    poLineItem.put("quantityBilled", lineItem.get("quantityBilled"));
-                    poLineItem.put("unitPriceInPoCurrency", lineItem.get("unitPriceInPoCurrency"));
-                    poLineItem.put("unitPriceInSAR", lineItem.get("unitPriceInSAR"));
-                    poLineItem.put("linePriceInPoCurrency", lineItem.get("linePriceInPoCurrency"));
-                    poLineItem.put("linePriceInSAR", lineItem.get("linePriceInSAR"));
-                    poLineItem.put("amountReceived", lineItem.get("amountReceived"));
-                    poLineItem.put("amountDue", lineItem.get("amountDue"));
-                    poLineItem.put("amountDueNew", lineItem.get("amountDueNew"));
-                    poLineItem.put("amountBilled", lineItem.get("amountBilled"));
-                    poLineItem.put("poLineDescription", lineItem.get("poLineDescription"));
-                    poLineItem.put("vendorSerialNumberYN", lineItem.get("vendorSerialNumberYN"));
-                    poLineItem.put("itemCategoryInventory", lineItem.get("itemCategoryInventory"));
-                    poLineItem.put("inventoryCategoryDescription", lineItem.get("inventoryCategoryDescription"));
-                    poLineItem.put("itemCategoryFA", lineItem.get("itemCategoryFA"));
-                    poLineItem.put("FACategoryDescription", lineItem.get("FACategoryDescription"));
-                    poLineItem.put("descopedLinePriceInPoCurrency", lineItem.get("descopedLinePriceInPoCurrency"));
-                    poLineItem.put("newLinePriceInPoCurrency", lineItem.get("newLinePriceInPoCurrency"));
-
-                    ((List<Map<String, Object>>) groupedResults.get(poNumber).get("POlineItems")).add(poLineItem);
-
-                    // Update totals
-                    Map<String, Object> groupedRow = groupedResults.get(poNumber);
-                    Double poOrderQuantity = (lineItem.get("poOrderQuantity") != null) ? ((Number) lineItem.get("poOrderQuantity")).doubleValue() : 0.0;
-                    Double poQtyNew = (lineItem.get("poQtyNew") != null) ? ((Number) lineItem.get("poQtyNew")).doubleValue() : 0.0;
-                    Double quantityReceived = (lineItem.get("quantityReceived") != null) ? ((Number) lineItem.get("quantityReceived")).doubleValue() : 0.0;
-                    Double quantityDueOld = (lineItem.get("quantityDueOld") != null) ? ((Number) lineItem.get("quantityDueOld")).doubleValue() : 0.0;
-                    Double quantityDueNew = (lineItem.get("quantityDueNew") != null) ? ((Number) lineItem.get("quantityDueNew")).doubleValue() : 0.0;
-                    Double quantityBilled = (lineItem.get("quantityBilled") != null) ? ((Number) lineItem.get("quantityBilled")).doubleValue() : 0.0;
-                    Double unitPriceInPoCurrency = (lineItem.get("unitPriceInPoCurrency") != null) ? ((Number) lineItem.get("unitPriceInPoCurrency")).doubleValue() : 0.0;
-                    Double unitPriceInSAR = (lineItem.get("unitPriceInSAR") != null) ? ((Number) lineItem.get("unitPriceInSAR")).doubleValue() : 0.0;
-                    Double linePriceInPoCurrency = (lineItem.get("linePriceInPoCurrency") != null) ? ((Number) lineItem.get("linePriceInPoCurrency")).doubleValue() : 0.0;
-                    Double linePriceInSAR = (lineItem.get("linePriceInSAR") != null) ? ((Number) lineItem.get("linePriceInSAR")).doubleValue() : 0.0;
-                    Double amountReceived = (lineItem.get("amountReceived") != null) ? ((Number) lineItem.get("amountReceived")).doubleValue() : 0.0;
-                    Double amountDue = (lineItem.get("amountDue") != null) ? ((Number) lineItem.get("amountDue")).doubleValue() : 0.0;
-                    Double amountDueNew = (lineItem.get("amountDueNew") != null) ? ((Number) lineItem.get("amountDueNew")).doubleValue() : 0.0;
-                    Double amountBilled = (lineItem.get("amountBilled") != null) ? ((Number) lineItem.get("amountBilled")).doubleValue() : 0.0;
-                    Double descopedLinePriceInPoCurrency = (lineItem.get("descopedLinePriceInPoCurrency") != null) ? ((Number) lineItem.get("descopedLinePriceInPoCurrency")).doubleValue() : 0.0;
-                    Double newLinePriceInPoCurrency = (lineItem.get("newLinePriceInPoCurrency") != null) ? ((Number) lineItem.get("newLinePriceInPoCurrency")).doubleValue() : 0.0;
-
-                    groupedRow.put("totalPoQtyNew", (Double) groupedRow.get("totalPoQtyNew") + poQtyNew);
-                    groupedRow.put("totalQuantityReceived", (Double) groupedRow.get("totalQuantityReceived") + quantityReceived);
-                    groupedRow.put("totalQuantityDueOld", (Double) groupedRow.get("totalQuantityDueOld") + quantityDueOld);
-                    groupedRow.put("totalQuantityDueNew", (Double) groupedRow.get("totalQuantityDueNew") + quantityDueNew);
-                    groupedRow.put("totalQuantityBilled", (Double) groupedRow.get("totalQuantityBilled") + quantityBilled);
-                    groupedRow.put("totalpoOrderQuantity", (Double) groupedRow.get("totalpoOrderQuantity") + poOrderQuantity);
-                    groupedRow.put("totalunitPriceInPoCurrency", (Double) groupedRow.get("totalunitPriceInPoCurrency") + unitPriceInPoCurrency);
-                    groupedRow.put("totalunitPriceInSAR", (Double) groupedRow.get("totalunitPriceInSAR") + unitPriceInSAR);
-                    groupedRow.put("totallinePriceInPoCurrency", (Double) groupedRow.get("totallinePriceInPoCurrency") + linePriceInPoCurrency);
-                    groupedRow.put("totallinePriceInSAR", (Double) groupedRow.get("totallinePriceInSAR") + linePriceInSAR);
-                    groupedRow.put("totalamountReceived", (Double) groupedRow.get("totalamountReceived") + amountReceived);
-                    groupedRow.put("totalamountDue", (Double) groupedRow.get("totalamountDue") + amountDue);
-                    groupedRow.put("totalamountDueNew", (Double) groupedRow.get("totalamountDueNew") + amountDueNew);
-                    groupedRow.put("totalamountBilled", (Double) groupedRow.get("totalamountBilled") + amountBilled);
-                    groupedRow.put("totalDescopedLinePriceInPoCurrency", (Double) groupedRow.get("totalDescopedLinePriceInPoCurrency") + descopedLinePriceInPoCurrency);
-                    groupedRow.put("totalNewLinePriceInPoCurrency", (Double) groupedRow.get("totalNewLinePriceInPoCurrency") + newLinePriceInPoCurrency);
-                }
-
-                nestedReports.addAll(groupedResults.values());
+                String orderClause = sortBy.isEmpty() ? "" : " ORDER BY poNumber " + sortClause;
+                lineSql = "SELECT PO.* FROM tb_PurchaseOrder PO WHERE PO.poNumber IN (" +
+                        "SELECT poNumber FROM (SELECT poNumber FROM (" + subquery + ") s1" + orderClause + " LIMIT ? OFFSET ?) paged_pos" +
+                        ") ORDER BY PO.poNumber, PO.lineNumber";
             }
 
-            // Prepare response (totalItems is unique PO count)
+            List<Map<String, Object>> lineItems = jdbcTemplate.queryForList(lineSql, lineParams.toArray());
+            List<Map<String, Object>> nestedReports = new ArrayList<>(groupLineItemsByPO(lineItems).values());
+
             Map<String, Object> response = new HashMap<>();
             response.put("reports", nestedReports);
             response.put("currentPage", page);
@@ -3343,7 +3019,7 @@ private String convertToSqlDate(String input) {
             response.put("size", size);
             response.put("sort", sortBy + "," + sortDir);
 
-            loggger.info("Purchase Order Filter Query (Nested): Count SQL: " + countSql + ", PO Select SQL: " + poSelectSql);
+            loggger.info("filterNestedPurchaseOrders: Count SQL: " + countSql + ", Line SQL: " + lineSql);
             return new ResponseEntity<>(response, HttpStatus.OK);
         } catch (Exception e) {
             loggger.error("Error filtering purchase orders", e);
@@ -3593,7 +3269,7 @@ private String convertToSqlDate(String input) {
             page = Math.max(page, 0);
             size = Math.max(size, 1);
 
-            jdbcTemplate.execute("SET SESSION sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''))");
+            // ONLY_FULL_GROUP_BY is disabled via datasource connection-init-sql in application.properties
 
             // Whitelist and map searchable columns to SQL with proper table aliases
             Map<String, String> searchableColumns = new HashMap<>();
@@ -3793,7 +3469,7 @@ private String convertToSqlDate(String input) {
             @RequestParam(defaultValue = "requestId") String sortBy,
             @RequestParam(defaultValue = "asc") String sortDir) {
         try {
-            jdbcTemplate.execute("SET SESSION sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''))");
+            // ONLY_FULL_GROUP_BY is disabled via datasource connection-init-sql in application.properties
 
             // Whitelist and map searchable columns to SQL
             Map<String, String> searchableColumns = new HashMap<>();

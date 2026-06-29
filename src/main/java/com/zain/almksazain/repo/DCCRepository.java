@@ -35,19 +35,40 @@ public interface DCCRepository extends JpaRepository<DCC, Long>, JpaSpecificatio
     List<DCC> findAllByStatus(String status);
     List<DCC> findAllBySupplierIdAndStatus(String supplierId, String status);
 
-@Query(
-  value = "SELECT DISTINCT d.* FROM tb_DCC d " +
-          "INNER JOIN tb_PurchaseOrder po ON d.poNumber = po.poNumber " +
-          "WHERE LOWER(d.status) = LOWER(:status) AND po.vendorNumber = :supplierId",
-  countQuery = "SELECT COUNT(DISTINCT d.recordNo) FROM tb_DCC d " +
-               "INNER JOIN tb_PurchaseOrder po ON d.poNumber = po.poNumber " +
-               "WHERE LOWER(d.status) = LOWER(:status) AND po.vendorNumber = :supplierId",
-  nativeQuery = true
-)
-Page<DCC> findAllBySupplierVendorAndStatus(
-    @Param("supplierId") String supplierId,
-    @Param("status") String status,
-    Pageable pageable
-);
-                                           
+    @Query(
+      value = "SELECT DISTINCT d.* FROM tb_DCC d " +
+              "INNER JOIN tb_PurchaseOrder po ON d.poNumber = po.poNumber " +
+              "WHERE LOWER(d.status) = LOWER(:status) AND po.vendorNumber = :supplierId",
+      countQuery = "SELECT COUNT(DISTINCT d.recordNo) FROM tb_DCC d " +
+                   "INNER JOIN tb_PurchaseOrder po ON d.poNumber = po.poNumber " +
+                   "WHERE LOWER(d.status) = LOWER(:status) AND po.vendorNumber = :supplierId",
+      nativeQuery = true
+    )
+    Page<DCC> findAllBySupplierVendorAndStatus(
+        @Param("supplierId") String supplierId,
+        @Param("status") String status,
+        Pageable pageable
+    );
+
+    @Query(
+        value = "SELECT d FROM DCC d WHERE LOWER(d.status) <> LOWER(:status)",
+        countQuery = "SELECT COUNT(d) FROM DCC d WHERE LOWER(d.status) <> LOWER(:status)"
+    )
+    Page<DCC> findAllByStatusNot(@Param("status") String status, Pageable pageable);
+
+    @Query(
+        value = "SELECT DISTINCT d.* FROM tb_DCC d " +
+                "INNER JOIN tb_PurchaseOrder po ON d.poNumber = po.poNumber " +
+                "WHERE LOWER(d.status) <> LOWER(:status) AND po.vendorNumber = :supplierId",
+        countQuery = "SELECT COUNT(DISTINCT d.recordNo) FROM tb_DCC d " +
+                     "INNER JOIN tb_PurchaseOrder po ON d.poNumber = po.poNumber " +
+                     "WHERE LOWER(d.status) <> LOWER(:status) AND po.vendorNumber = :supplierId",
+        nativeQuery = true
+    )
+    Page<DCC> findAllBySupplierVendorAndStatusNot(
+        @Param("supplierId") String supplierId,
+        @Param("status") String status,
+        Pageable pageable
+    );
+
 }

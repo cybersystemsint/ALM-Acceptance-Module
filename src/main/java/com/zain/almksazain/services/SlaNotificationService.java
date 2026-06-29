@@ -32,6 +32,8 @@ public class SlaNotificationService {
     private static final Logger logger = LoggerFactory.getLogger(SlaNotificationService.class);
     
     private final ObjectMapper objectMapper = new ObjectMapper();
+    
+   private static final String RESOLVED_ESC_MGR_KEY = "_resolvedEscalationManager";
 
     @Autowired private DccPoCombinedService dccPoCombinedService;
     @Autowired private EmailService emailService;
@@ -43,7 +45,6 @@ public class SlaNotificationService {
     public void runStage1Reminders() {
         runStage1RemindersWithFilters(Collections.emptyMap());
     }
-
 
 
    public void runStage1RemindersWithFilters(Map<String, Object> filters) {
@@ -233,15 +234,17 @@ public void runStage2EscalationsWithFilters(Map<String, Object> filters) {
 
                 if (days < effectiveThreshold) return false;
 
-                  String resolvedEscalationUsername = resolveEscalationUsernameForRow(row);
-        if (resolvedEscalationUsername == null || resolvedEscalationUsername.isBlank() || "UNASSIGNED".equalsIgnoreCase(resolvedEscalationUsername)) {
-            if (logger.isDebugEnabled()) {
-                logger.debug("Stage2 skipping row dccId={} recordNo={} because escalation manager could not be resolved from approver(s) {}",
-                        row.get("dccId"), row.get("recordNo"), safeString(row.get("pendingApprovers"), ""));
-            }
-            return false;
-        }
+                
 
+            String resolvedEscalationUsername = resolveEscalationUsernameForRow(row);
+            if (resolvedEscalationUsername == null || resolvedEscalationUsername.isBlank() || "UNASSIGNED".equalsIgnoreCase(resolvedEscalationUsername)) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Stage2 skipping row dccId={} recordNo={} because escalation manager could not be resolved from approver(s) {}",
+                            row.get("dccId"), row.get("recordNo"), safeString(row.get("pendingApprovers"), ""));
+                }
+                return false;
+            }
+            row.put(RESOLVED_ESC_MGR_KEY, resolvedEscalationUsername);
                 return true;
             })
             .collect(Collectors.toList());
@@ -326,7 +329,8 @@ public void runStage2EscalationsWithFilters(Map<String, Object> filters) {
         logger.error("Error running SLA Stage 2 job", e);
     }
 }
-    private String resolveRecipientsToEmails(Object v) {
+
+private String resolveRecipientsToEmails(Object v) {
         if (v == null) return null;
 
         List<String> tokens = new ArrayList<>();
@@ -399,29 +403,40 @@ public void runStage2EscalationsWithFilters(Map<String, Object> filters) {
 
 
 
+
 private Map<String, List<Map<String, Object>>> groupRowsByManager(List<Map<String, Object>> rows) {
-    Map<String, List<Map<String, Object>>> map = new LinkedHashMap<>();
-    if (rows == null || rows.isEmpty()) return map;
-    final String UNASSIGNED = "UNASSIGNED";
+    Map<String, Set<Map<String, Object>>> temp = new LinkedHashMap<>();
+
     for (Map<String, Object> row : rows) {
-        String mgr = resolveEscalationUsernameForRow(row);
-        String key = (mgr == null || mgr.isBlank()) ? UNASSIGNED : mgr;
-        map.computeIfAbsent(key, k -> new ArrayList<>()).add(row);
+        // String mgr = resolveEscalationUsernameForRow(row);
+        String mgr = safeString(row.get(RESOLVED_ESC_MGR_KEY), null);
+
+        if (mgr == null || mgr.isBlank()) continue;
+
+        temp.computeIfAbsent(mgr, k -> new LinkedHashSet<>()).add(row);
     }
-    return map;
+
+    Map<String, List<Map<String, Object>>> result = new LinkedHashMap<>();
+    temp.forEach((k, v) -> result.put(k, new ArrayList<>(v)));
+    return result;
 }
 
-    private Map<String, List<Map<String, Object>>> groupRowsByApprover(List<Map<String, Object>> rows) {
-        Map<String, List<Map<String, Object>>> map = new LinkedHashMap<>();
-        if (rows == null || rows.isEmpty()) return map;
 
+
+    private Map<String, List<Map<String, Object>>> groupRowsByApprover(List<Map<String, Object>> rows) {
+        Map<String, Set<Map<String, Object>>> temp = new LinkedHashMap<>();
+        if (rows == null || rows.isEmpty()) return Collections.emptyMap();
+    
         for (Map<String, Object> row : rows) {
             List<String> keys = extractApproverKeysFromRow(row);
             for (String k : keys) {
-                map.computeIfAbsent(k, kk -> new ArrayList<>()).add(row);
+                temp.computeIfAbsent(k, kk -> new LinkedHashSet<>()).add(row);
             }
         }
-        return map;
+    
+        Map<String, List<Map<String, Object>>> result = new LinkedHashMap<>();
+        temp.forEach((k, v) -> result.put(k, new ArrayList<>(v)));
+        return result;
     }
 
     private List<String> extractApproverKeysFromRow(Map<String, Object> row) {
@@ -499,7 +514,8 @@ private Map<String, List<Map<String, Object>>> groupRowsByManager(List<Map<Strin
         Optional<User> byRow = findUserByFullName(fullName);
         return byRow.map(User::getEmailAddress).filter(Objects::nonNull).filter(s -> !s.isBlank());
     }
-private String normalizeToken(String t) {
+
+    private String normalizeToken(String t) {
     if (t == null) return null;
     // replace common invisible chars and normalize whitespace
     String s = t.replace('\u00A0', ' ')  // NBSP
@@ -509,153 +525,154 @@ private String normalizeToken(String t) {
                 .trim();
     s = s.replaceAll("\\s+", " ");
     return s;
-}
+   }
 
-private Optional<User> tryFindUserByUsername(String username) {
-    if (username == null) return Optional.empty();
-    String trimmed = normalizeToken(username);
-    if (trimmed == null || trimmed.isEmpty()) return Optional.empty();
-
-    try {
-        Optional<User> direct = userRepository.findByUsername(trimmed);
-        if (direct != null && direct.isPresent()) return direct;
-    } catch (Throwable t) {
-        logger.debug("tryFindUserByUsername: repo.findByUsername failed for '{}': {}", trimmed, t.getMessage());
-    }
-
-    try {
-        return userRepository.findAll().stream()
-                .filter(u -> u.getUsername() != null && u.getUsername().equalsIgnoreCase(trimmed))
-                .findFirst();
-    } catch (Throwable t) {
-        logger.debug("tryFindUserByUsername: fallback scan failed for '{}': {}", trimmed, t.getMessage());
-    }
-    return Optional.empty();
-}
-
-private Optional<User> findUserByEmail(String email) {
-    if (email == null) return Optional.empty();
-    String e = normalizeToken(email);
-    if (e == null || e.isEmpty()) return Optional.empty();
-    try {
-        // If you have a repository method findByEmail you can prefer it:
-        // Optional<User> byRepo = userRepository.findByEmail(e);
-        // if (byRepo != null && byRepo.isPresent()) return byRepo;
-        return userRepository.findAll().stream()
-                .filter(u -> u.getEmailAddress() != null && u.getEmailAddress().equalsIgnoreCase(e))
-                .findFirst();
-    } catch (Throwable t) {
-        logger.debug("findUserByEmail fallback scan failed for '{}': {}", e, t.getMessage());
+        private Optional<User> tryFindUserByUsername(String username) {
+        if (username == null) return Optional.empty();
+        String trimmed = normalizeToken(username);
+        if (trimmed == null || trimmed.isEmpty()) return Optional.empty();
+    
+        try {
+            Optional<User> direct = userRepository.findByUsername(trimmed);
+            if (direct != null && direct.isPresent()) return direct;
+        } catch (Throwable t) {
+            logger.debug("tryFindUserByUsername: repo.findByUsername failed for '{}': {}", trimmed, t.getMessage());
+        }
+    
+        try {
+            return userRepository.findAll().stream()
+                    .filter(u -> u.getUsername() != null && u.getUsername().equalsIgnoreCase(trimmed))
+                    .findFirst();
+        } catch (Throwable t) {
+            logger.debug("tryFindUserByUsername: fallback scan failed for '{}': {}", trimmed, t.getMessage());
+        }
         return Optional.empty();
     }
-}
-
-private String resolveEscalationUsernameForRow(Map<String, Object> row) {
-    if (row == null) return null;
-    List<String> approverKeys = extractApproverKeysFromRow(row);
-    for (String ak : approverKeys) {
-        if (ak == null) continue;
-        String normalizedKey = normalizeToken(ak);
-        if (normalizedKey == null || normalizedKey.isBlank() || "Unassigned".equalsIgnoreCase(normalizedKey)) continue;
-
+    
+    private Optional<User> findUserByEmail(String email) {
+        if (email == null) return Optional.empty();
+        String e = normalizeToken(email);
+        if (e == null || e.isEmpty()) return Optional.empty();
         try {
-            // 1) Try to find approver by username
-            Optional<User> approverUserOpt = tryFindUserByUsername(normalizedKey);
-
-            // 2) If not found by username, try by full name
-            if (approverUserOpt.isEmpty()) {
-                Optional<User> byFull = findUserByFullName(normalizedKey);
-                if (byFull != null && byFull.isPresent()) {
-                    approverUserOpt = byFull;
+            return userRepository.findAll().stream()
+                    .filter(u -> u.getEmailAddress() != null && u.getEmailAddress().equalsIgnoreCase(e))
+                    .findFirst();
+        } catch (Throwable t) {
+            logger.debug("findUserByEmail fallback scan failed for '{}': {}", e, t.getMessage());
+            return Optional.empty();
+        }
+    }
+    
+ 
+    private String resolveEscalationUsernameForRow(Map<String, Object> row) {
+        if (row == null) return null;
+        List<String> approverKeys = extractApproverKeysFromRow(row);
+        for (String ak : approverKeys) {
+            if (ak == null) continue;
+            String normalizedKey = normalizeToken(ak);
+            if (normalizedKey == null || normalizedKey.isBlank() || "Unassigned".equalsIgnoreCase(normalizedKey)) continue;
+    
+            try {
+                // 1) Try to find approver by username
+                Optional<User> approverUserOpt = tryFindUserByUsername(normalizedKey);
+    
+                // 2) If not found by username, try by full name
+                if (approverUserOpt.isEmpty()) {
+                    Optional<User> byFull = findUserByFullName(normalizedKey);
+                    if (byFull != null && byFull.isPresent()) {
+                        approverUserOpt = byFull;
+                    }
                 }
-            }
-
-            if (approverUserOpt.isEmpty()) {
-                if (logger.isDebugEnabled()) {
-                    logger.debug("Approver key '{}' not found as username or full name in User repo", normalizedKey);
+    
+                if (approverUserOpt.isEmpty()) {
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Approver key '{}' not found as username or full name in User repo", normalizedKey);
+                    }
+                    continue; // try next approver token
                 }
-                continue; // try next approver token
-            }
-
-            User approverUser = approverUserOpt.get();
-            String esc = approverUser.getEscalationManager();
-            if (esc == null || esc.trim().isEmpty()) {
-                if (logger.isDebugEnabled()) {
-                    logger.debug("Approver '{}' has no escalationManager configured on their user record (email={})",
-                            normalizedKey, safeString(approverUser.getEmailAddress(), "<no-email>"));
+    
+                User approverUser = approverUserOpt.get();
+                String esc = approverUser.getEscalationManager();
+                if (esc == null || esc.trim().isEmpty()) {
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Approver '{}' has no escalationManager configured on their user record (email={})",
+                                normalizedKey, safeString(approverUser.getEmailAddress(), "<no-email>"));
+                    }
+                    continue; // try next approver token
                 }
-                continue; // try next approver token
-            }
-
-            String escTrim = normalizeToken(esc);
-
-            // If escalationManager is an email -> find user by email
-            if (escTrim.contains("@")) {
-                Optional<User> mgrByEmail = findUserByEmail(escTrim);
-                if (mgrByEmail.isPresent()) {
-                    String resolved = mgrByEmail.get().getUsername();
-                    if (logger.isDebugEnabled()) logger.debug("Resolved approver '{}' -> escalation manager by email '{}' -> username '{}'",
+    
+                String escTrim = normalizeToken(esc);
+    
+                // If escalationManager is an email -> find user by email
+                if (escTrim.contains("@")) {
+                    Optional<User> mgrByEmail = findUserByEmail(escTrim);
+                    if (mgrByEmail.isPresent()) {
+                        String resolved = mgrByEmail.get().getUsername();
+                        if (logger.isDebugEnabled()) logger.debug("Resolved approver '{}' -> escalation manager by email '{}' -> username '{}'",
+                                normalizedKey, escTrim, resolved);
+                        return resolved;
+                    }
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Escalation manager value '{}' for approver '{}' looks like an email but no user found by that email",
+                                escTrim, normalizedKey);
+                    }
+                }
+    
+                // If escalationManager is a username -> return username if user exists
+                Optional<User> mgrByUsername = tryFindUserByUsername(escTrim);
+                if (mgrByUsername.isPresent()) {
+                    String resolved = mgrByUsername.get().getUsername();
+                    if (logger.isDebugEnabled()) logger.debug("Resolved approver '{}' -> escalation manager username '{}'", normalizedKey, resolved);
+                    return resolved;
+                }
+    
+                // Try resolving escalationManager as full name
+                Optional<User> mgrByFullName = findUserByFullName(escTrim);
+                if (mgrByFullName.isPresent()) {
+                    String resolved = mgrByFullName.get().getUsername();
+                    if (logger.isDebugEnabled()) logger.debug("Resolved approver '{}' -> escalation manager fullName '{}' -> username '{}'",
                             normalizedKey, escTrim, resolved);
                     return resolved;
                 }
+    
+                // Last resort: return the normalized raw value (so grouping will still work by that key)
                 if (logger.isDebugEnabled()) {
-                    logger.debug("Escalation manager value '{}' for approver '{}' looks like an email but no user found by that email",
+                    logger.debug("Escalation manager '{}' for approver '{}' could not be resolved to a User record - returning raw value",
                             escTrim, normalizedKey);
                 }
+                return escTrim;
+            } catch (Throwable t) {
+                logger.debug("resolveEscalationUsernameForRow error for approver '{}': {}", ak, t.getMessage());
             }
-
-            // If escalationManager is a username -> return username if user exists
-            Optional<User> mgrByUsername = tryFindUserByUsername(escTrim);
-            if (mgrByUsername.isPresent()) {
-                String resolved = mgrByUsername.get().getUsername();
-                if (logger.isDebugEnabled()) logger.debug("Resolved approver '{}' -> escalation manager username '{}'", normalizedKey, resolved);
-                return resolved;
-            }
-
-            // Try resolving escalationManager as full name
-            Optional<User> mgrByFullName = findUserByFullName(escTrim);
-            if (mgrByFullName.isPresent()) {
-                String resolved = mgrByFullName.get().getUsername();
-                if (logger.isDebugEnabled()) logger.debug("Resolved approver '{}' -> escalation manager fullName '{}' -> username '{}'",
-                        normalizedKey, escTrim, resolved);
-                return resolved;
-            }
-
-            // Last resort: return the normalized raw value (so grouping will still work by that key)
-            if (logger.isDebugEnabled()) {
-                logger.debug("Escalation manager '{}' for approver '{}' could not be resolved to a User record - returning raw value",
-                        escTrim, normalizedKey);
-            }
-            return escTrim;
-        } catch (Throwable t) {
-            logger.debug("resolveEscalationUsernameForRow error for approver '{}': {}", ak, t.getMessage());
+        }
+        return null;
+    }
+    
+     
+    private Optional<User> findUserByFullName(String fullName) {
+            if (fullName == null) return Optional.empty();
+            try {
+                Optional<User> byRepo = userRepository.findFirstByFullName(fullName);
+                if (byRepo != null && byRepo.isPresent()) return byRepo;
+            } catch (Throwable ignored) { }
+            return userRepository.findAll().stream()
+                    .filter(u -> u.getFullName() != null && u.getFullName().equalsIgnoreCase(fullName))
+                    .findFirst();
+        }
+    
+      
+    private String buildStage1Subject(int count, String recordNo, String poNumber, String requestId, int agingDays) {
+        try {
+            return String.format("Reminder: Pending acceptance requests exceeded SLA",
+                    Math.max(0, count),
+                    Math.max(0, agingDays));
+        } catch (Exception e) {
+            return "Reminder: Pending acceptance requests exceeded SLA";
         }
     }
-    return null;
-}
 
-    private Optional<User> findUserByFullName(String fullName) {
-        if (fullName == null) return Optional.empty();
-        try {
-            Optional<User> byRepo = userRepository.findFirstByFullName(fullName);
-            if (byRepo != null && byRepo.isPresent()) return byRepo;
-        } catch (Throwable ignored) { }
-        return userRepository.findAll().stream()
-                .filter(u -> u.getFullName() != null && u.getFullName().equalsIgnoreCase(fullName))
-                .findFirst();
-    }
 
-    private String buildStage1Subject(int count, String recordNo, String poNumber, String requestId, int agingDays) {
-    try {
-        return String.format("Reminder: Pending acceptance requests exceeded SLA",
-                Math.max(0, count),
-                Math.max(0, agingDays));
-    } catch (Exception e) {
-        return "Reminder: Pending acceptance requests exceeded SLA";
-    }
-}
-
-private String buildStage2Subject(int count, int agingDays) {
+    private String buildStage2Subject(int count, int agingDays) {
     try {
         return String.format("Notification: Pending acceptance requests exceeded SLA",
                 Math.max(0, count),
@@ -733,7 +750,7 @@ private String constructSlaReminderHtml(String approverFullName, String rowsPrev
               %s
               <tr><td style="font-weight:700;">Note:</td><td>These requests have exceeded (user aging &ge; %d days).</td></tr>
             </table>
-            <p>Please review and action the requests listed below. A full aging dashboard-style attachment is included below.</p>
+            <p>Please review and action the requests listed below.</p>
             %s
             <p class="footer">Warning: This is an automated email. Please do not reply or forward.</p>
           </body>
@@ -795,7 +812,7 @@ private String constructSlaEscalationHtml(String managerFullName, int requestCou
               %s
               <tr><td style="font-weight:700;">Note:</td><td>Requests shown below have exceeded (user aging &ge; %d days).</td></tr>
             </table>
-            <p>Please coordinate with your approvers for immediate action. A full aging report is attached to this email.</p>
+            <p>Please coordinate with your approvers for immediate action.</p>
             %s
             %s
             <p class="footer">Warning: This is an automated email. Please do not reply or forward.</p>
@@ -849,9 +866,9 @@ private String constructSlaEscalationHtml(String managerFullName, int requestCou
         // Group rows by approver key (use same extraction logic as other places)
         Map<String, List<Map<String, Object>>> byApprover = new LinkedHashMap<>();
         for (Map<String, Object> row : rows) {
-            String approver = safeString(row.get("pendingApproverUsername"),
-                    safeString(row.get("pendingApprovers"), "")).trim();
-            if (approver.isBlank()) approver = "Unassigned";
+        List<String> keys = extractApproverKeysFromRow(row);
+        String approver = keys.isEmpty() ? "Unassigned" : keys.get(0);
+
             byApprover.computeIfAbsent(approver, k -> new ArrayList<>()).add(row);
         }
 
