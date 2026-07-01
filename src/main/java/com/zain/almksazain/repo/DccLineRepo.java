@@ -67,4 +67,11 @@ public interface DccLineRepo extends JpaRepository<DCCLineItem, Long> {
     @Transactional
     @Query("delete from DCCLineItem d where d.recordNo in :recordNos")
     void deleteByRecordNoIn(@Param("recordNos") List<Long> recordNos);
+
+    @Query("SELECT ln FROM DCCLineItem ln JOIN ln.dcc d "
+            + "WHERE LOWER(ln.tagNumber) IN :tagNumbers "
+            + "AND LOWER(d.status) NOT IN :excludedStatuses")
+    List<DCCLineItem> findActiveTagConflicts(
+            @Param("tagNumbers") List<String> tagNumbers,
+            @Param("excludedStatuses") List<String> excludedStatuses);
 }

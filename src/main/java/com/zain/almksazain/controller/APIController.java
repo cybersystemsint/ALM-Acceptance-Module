@@ -1039,7 +1039,7 @@ public class APIController {
         }
         JSONObject firstRecord = jsonArray.getJSONObject(0);
         String poNumber = firstRecord.getString("poNumber");
-        List<String> allowedExtensions = Arrays.asList(".pdf", ".doc", ".csv", ".docx", ".xlsx", ".jpeg", ".msg", ".jpg", ".png", ".xlsm", ".xls", ".zip", ".rar");
+        List<String> allowedExtensions = Arrays.asList(".pdf", ".doc", ".csv", ".docx", ".xlsx", ".jpeg", ".msg", ".jpg", ".png", ".xlsm", ".xls", ".zip", ".rar", ".eml");
 
 //        String uploadDir = "/home/app/logs/ALM/POUPL/";
         String uploadDir = "/data/app/logs/ALM/POUPL/";
@@ -1699,6 +1699,53 @@ public class APIController {
                 }
             }
 
+            List<String> excludedDccStatuses = Arrays.asList("incomplete", "rejected", "returned");
+            Set<String> incomingTagNumbersLower = new LinkedHashSet<>();
+            Set<String> duplicateTagsInRequest = new LinkedHashSet<>();
+            Set<String> seenTagsLower = new HashSet<>();
+            Set<Long> currentDccRecordNos = new HashSet<>();
+
+            for (int i = 0; i < jsonArray.length(); i++) {
+                JSONObject header = jsonArray.getJSONObject(i);
+                long headerRecordNo = Long.parseLong(header.getString("recordNo"));
+                if (headerRecordNo > 0) {
+                    currentDccRecordNos.add(headerRecordNo);
+                }
+                JSONArray lineItems = header.getJSONArray("lineItems");
+                for (int j = 0; j < lineItems.length(); j++) {
+                    String tagNumber = lineItems.getJSONObject(j).optString("tagNumber", "").trim();
+                    if (tagNumber.isEmpty()) {
+                        continue;
+                    }
+                    String tagLower = tagNumber.toLowerCase();
+                    if (!seenTagsLower.add(tagLower)) {
+                        duplicateTagsInRequest.add(tagNumber);
+                    }
+                    incomingTagNumbersLower.add(tagLower);
+                }
+            }
+
+            Set<String> duplicateTagNumbers = new LinkedHashSet<>();
+            if (!incomingTagNumbersLower.isEmpty()) {
+                List<DCCLineItem> tagConflicts = dcclnrepo.findActiveTagConflicts(
+                        new ArrayList<>(incomingTagNumbersLower),
+                        excludedDccStatuses);
+                for (DCCLineItem conflict : tagConflicts) {
+                    if (conflict.getDccId() != null && !conflict.getDccId().isBlank()) {
+                        try {
+                            long conflictDccId = Long.parseLong(conflict.getDccId().trim());
+                            if (currentDccRecordNos.contains(conflictDccId)) {
+                                continue;
+                            }
+                        } catch (NumberFormatException ignored) {
+                        }
+                    }
+                    if (conflict.getTagNumber() != null && !conflict.getTagNumber().isBlank()) {
+                        duplicateTagNumbers.add(conflict.getTagNumber());
+                    }
+                }
+            }
+
             List<String> errorMessages = new ArrayList<>();
             Set<String> uniqueScope = new HashSet<>(ScopeOfworkList);
 
@@ -1759,6 +1806,16 @@ public class APIController {
             if (!acceptanceQuantity.isEmpty()) {
                 errorMessages.add("The delivery quantity entered for this acceptance request will exceed the po Pending quantity. The total po delivered quantity is  " + acceptanceQuantity + " . ");
             }
+
+            if (!duplicateTagsInRequest.isEmpty()) {
+                errorMessages.add("Duplicate tag number(s) in request: " + String.join(", ", duplicateTagsInRequest));
+            }
+
+            if (!duplicateTagNumbers.isEmpty()) {
+                errorMessages.add("Acceptance request for tag number(s) " + String.join(", ", duplicateTagNumbers)
+                        + " has already been raised. Kindly use a different tag number.");
+            }
+
             // If any errors found, return all in one response
             if (!errorMessages.isEmpty()) {
                 return response("Error", String.join(" | ", errorMessages));
