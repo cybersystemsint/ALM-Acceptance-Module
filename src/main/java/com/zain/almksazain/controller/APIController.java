@@ -1903,7 +1903,8 @@ public class APIController {
                     }
                 
                     // Continue with post-processing for remaining/updated line items
-                    postdccln(poNumber, newRecordNo, status, createdBy, createdByName, vendorName, dcc_line_data.toString());
+                    String headerRegion = jsonObject.optString("region", "").trim();
+                    postdccln(poNumber, newRecordNo, status, createdBy, createdByName, vendorName, headerRegion, dcc_line_data.toString());
                 }
                 // if (result.contains("Success")) {
                 //     postdccln(poNumber, newRecordNo, status, createdBy, createdByName, vendorName, dcc_line_data.toString());
@@ -2163,7 +2164,7 @@ public class APIController {
     }
 
     //Add Edit DCC
-    private String postdccln(String poNumber, String recordId, String status, Integer createdBy, String createdByName, String vendorName, String req) {
+    private String postdccln(String poNumber, String recordId, String status, Integer createdBy, String createdByName, String vendorName, String headerRegion, String req) {
 
         JSONArray jsonArrayresponse = new JSONArray();
         List<String> ItemCategoryCodes = new ArrayList<>();
@@ -2207,9 +2208,15 @@ public class APIController {
                 }
             }
 
-            tb_Site topRecord = siteRepo.findFirstBySiteId(locationName);
-            Integer regionrecordId = topRecord != null ? (topRecord.getRegionId()) : null;
-            tb_Region regionRecord = regionRepo.findByRecordNo(regionrecordId);
+            String workflowRegion;
+            if (headerRegion != null && !headerRegion.isEmpty()) {
+                workflowRegion = headerRegion;
+            } else {
+                tb_Site topRecord = siteRepo.findFirstBySiteId(locationName);
+                Integer regionrecordId = topRecord != null ? (topRecord.getRegionId()) : null;
+                tb_Region regionRecord = regionrecordId != null ? regionRepo.findByRecordNo(regionrecordId) : null;
+                workflowRegion = regionRecord != null ? regionRecord.getRegionName() : "";
+            }
 
             Set<String> uniqueItemCategoryCodes = new LinkedHashSet<>(ItemCategoryCodes);
 
@@ -2226,7 +2233,7 @@ public class APIController {
                 params.put("requestedBy", createdByName);
                 params.put("vendorName", vendorName);
                 params.put("createdBy", createdBy.toString());
-                params.put("regions", regionRecord.getRegionName());
+                params.put("regions", workflowRegion);
                 if (status.equalsIgnoreCase("request-info")) {
                     params.put("status", "request-info");
                 } else {
