@@ -15,4 +15,6 @@ public interface tbRegionRepo extends JpaRepository<tb_Region, Long> {
 
     tb_Region findByRecordNo(long recordNo);
 
+    tb_Region findByRegionName(String regionName);
+
 }

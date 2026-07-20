@@ -4,10 +4,13 @@ import com.zain.almksazain.model.supplierdata;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 import java.util.List;
+import java.util.Optional;
 
 public interface supplierrepo extends JpaRepository<supplierdata,Long> {
     List<supplierdata> findBySupplierIdAndSupplierPhone(String supplierId, String supplierPhone);
 
     supplierdata findBySupplierId(String SupplierId);
     supplierdata findByRecordNo(long recordNo);
+
+    Optional<supplierdata> findBySupplierNameIgnoreCase(String supplierName);
 }
