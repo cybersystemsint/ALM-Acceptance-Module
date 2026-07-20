@@ -36,10 +36,12 @@ import com.zain.almksazain.model.tb_ChargeAccount;
 import com.zain.almksazain.model.tb_ErrorMessage;
 import com.zain.almksazain.model.tb_Site;
 import com.zain.almksazain.model.tb_Region;
+import com.zain.almksazain.model.tbCategory;
 import com.zain.almksazain.model.tbItemCodeSubstitute;
 import com.zain.almksazain.model.tbNode;
 import com.zain.almksazain.repo.tbSiteRepo;
 import com.zain.almksazain.repo.tbRegionRepo;
+import com.zain.almksazain.repo.tbCategoryRepo;
 import com.zain.almksazain.repo.tbItemCodeSubstituteRepo;
 import com.zain.almksazain.repo.tbErrorMessageRepo;
 import com.zain.almksazain.repo.tbChargeAccountRepo;
@@ -136,6 +138,9 @@ public class APIController {
 //    tbCategoryApprovalLevelRepo categoryApprovalLevelRepo;
     @Autowired
     tbItemCodeSubstituteRepo itemCodeSubstituteRepo;
+
+    @Autowired
+    tbCategoryRepo categoryRepo;
 
     @Autowired
     tbScopeRepo scopeRepo;
@@ -1162,6 +1167,7 @@ public class APIController {
             List<String> serialnumberItemCode = new ArrayList<>();
             List<String> serialnumberActualItemCode = new ArrayList<>();
             List<String> acceptanceQuantity = new ArrayList<>();
+            Set<String> mismatchedScopeUplLines = new LinkedHashSet<>();
             List<Integer> recordNumbers = new ArrayList<>();
             String actualItemCode = "";
             String itemCode = "";
@@ -1314,6 +1320,17 @@ public class APIController {
                             logger.info("itemCode: " + itemCode);
                             logger.info("newItemCode: " + itemCode);
                             logger.info("UPL LINE QTY : " + uplQty);
+
+                            String zainCategory = topRecord != null ? topRecord.getZainItemCategoryCode() : null;
+                            if (topRecord == null || zainCategory == null || zainCategory.isBlank()) {
+                                mismatchedScopeUplLines.add(polineitem + "+" + upllineitem);
+                            } else {
+                                List<tbCategory> cats = categoryRepo.findByItemCategoryCodeAndScope(
+                                        zainCategory.trim(), scopeofWork.trim());
+                                if (cats.isEmpty()) {
+                                    mismatchedScopeUplLines.add(polineitem + "+" + upllineitem);
+                                }
+                            }
 
                             if (itemSerialized.equalsIgnoreCase("Yes") && activeOrPassive.equalsIgnoreCase("Active")) {
                                 //CHECK FROM INVENTORY SIDE
@@ -1582,6 +1599,17 @@ public class APIController {
                             String activeOrPassive = topRecord != null ? String.valueOf(topRecord.getActiveOrPassive()) : "";
                             String uplItemCode = topRecord != null ? String.valueOf(topRecord.getUplLineItemCode()) : "";
 
+                            String zainCategory = topRecord != null ? topRecord.getZainItemCategoryCode() : null;
+                            if (topRecord == null || zainCategory == null || zainCategory.isBlank()) {
+                                mismatchedScopeUplLines.add(polineitem + "+" + upllineitem);
+                            } else {
+                                List<tbCategory> cats = categoryRepo.findByItemCategoryCodeAndScope(
+                                        zainCategory.trim(), scopeofWork.trim());
+                                if (cats.isEmpty()) {
+                                    mismatchedScopeUplLines.add(polineitem + "+" + upllineitem);
+                                }
+                            }
+
                             if (itemSerialized.equalsIgnoreCase("Yes") && activeOrPassive.equalsIgnoreCase("Active")) {
                                 //CHECK FROM INVENTORY SIDE
                                 if (serialNumber.length() > 1 && UpdateItemCode.length() > 1) {
@@ -1800,6 +1828,13 @@ public class APIController {
 
             if (!oldDateService.isEmpty()) {
                 errorMessages.add("The dateInService for Upl Line Items(s) " + oldDateService + " is more than 6 months old. Validation failed.");
+            }
+
+            if (!mismatchedScopeUplLines.isEmpty()) {
+                String submittedScope = uniqueScope.isEmpty() ? scopeofWork.trim() : String.join(", ", uniqueScope);
+                errorMessages.add("PO line + UPL line (" + String.join(", ", mismatchedScopeUplLines)
+                        + ") for PO " + poNumber
+                        + " does not belong to the submitted scope " + submittedScope + ".");
             }
 
             //commenting for UAT
