@@ -395,8 +395,9 @@ public class DccPOApproverExportService {
                                     r.getRecordNo(), Collections.emptyList()).stream())
                             .collect(Collectors.toList());
 
-                    if (dccLnList.isEmpty() || uplList.isEmpty()) {
-                        logger.debug("No line items or UPL for DCC {}", dcc.getRecordNo());
+                    // Line items required; UPL optional (UPL-derived fields stay null/blank).
+                    if (dccLnList.isEmpty()) {
+                        logger.debug("No line items for DCC {}", dcc.getRecordNo());
                         return Stream.empty();
                     }
 
@@ -426,29 +427,27 @@ public class DccPOApproverExportService {
 
         List<DccPOCombinedViewDTO> dtos = new ArrayList<>();
 
-        Map<String, tb_PurchaseOrderUPL> uplByKey = uplList.stream()
+        Map<String, tb_PurchaseOrderUPL> uplByKey = uplList == null ? Collections.emptyMap() : uplList.stream()
                 .collect(Collectors.toMap(
                         u -> (u.getUplLine() != null ? u.getUplLine() : "") + "-" +
                                 u.getPoLineNumber() + "-" + u.getPoNumber(),
-                        u -> u));
+                        u -> u,
+                        (a, b) -> a));
 
         for (DCCLineItem dccLn : dccLnList) {
             String key = (dccLn.getUplLineNumber() != null ? dccLn.getUplLineNumber() : "") + "-" +
                     dccLn.getLineNumber() + "-" + dcc.getPoNumber();
             tb_PurchaseOrderUPL upl = uplByKey.get(key);
-            if (upl == null) {
-                logger.debug("No matching UPL record for DCC {}", dcc.getRecordNo());
-                continue;
+
+            if (upl != null) {
+                boolean condition = (dccLn.getUplLineNumber() != null && !dccLn.getUplLineNumber().isEmpty())
+                        ? (dccLn.getUplLineNumber().equals(upl.getUplLine()) &&
+                        upl.getPoLineNumber().equals(dccLn.getLineNumber()) &&
+                        upl.getPoNumber().equals(dcc.getPoNumber()))
+                        : (purchaseOrder.getLineNumber().equals(dccLn.getLineNumber()) &&
+                        purchaseOrder.getPoNumber().equals(dcc.getPoNumber()));
+                if (!condition) upl = null;
             }
-
-            boolean condition = (dccLn.getUplLineNumber() != null && !dccLn.getUplLineNumber().isEmpty())
-                    ? (dccLn.getUplLineNumber().equals(upl.getUplLine()) &&
-                    upl.getPoLineNumber().equals(dccLn.getLineNumber()) &&
-                    upl.getPoNumber().equals(dcc.getPoNumber()))
-                    : (purchaseOrder.getLineNumber().equals(dccLn.getLineNumber()) &&
-                    purchaseOrder.getPoNumber().equals(dcc.getPoNumber()));
-
-            if (!condition) continue;
 
             DccPOCombinedViewDTO dto = new DccPOCombinedViewDTO();
             populateDccFields(dto, dcc, dateFormat, latestApprovalRequest);
@@ -534,6 +533,13 @@ public class DccPOApproverExportService {
         dto.setVendorNumber(purchaseOrder.getVendorNumber());
         dto.setVendorName(purchaseOrder.getVendorName());
 
+        if (upl == null) {
+            double poOrderQty = parsePoOrderQuantity(purchaseOrder);
+            dto.setPoLineQuantity(poOrderQty);
+            dto.setPoOrderQuantity(poOrderQty);
+            return;
+        }
+
         double poOrderQty = (dccLn.getUplLineNumber() != null && !dccLn.getUplLineNumber().isEmpty())
                 ? upl.getPoLineQuantity()
                 : parsePoOrderQuantity(purchaseOrder);
@@ -555,6 +561,23 @@ public class DccPOApproverExportService {
                                                  Set<String> hasDccLnSet, TbCategoryApprovalRequests latestApprovalRequest,
                                                  List<TbCategoryApprovalRequests> allRelatedRequests,
                                                  List<TbCategoryApprovals> allRelatedApprovals) {
+        if (upl == null) {
+            dto.setUPLACPTRequestValue(null);
+            dto.setPOLineAcceptanceQty(null);
+            dto.setPoPendingQuantity(null);
+            dto.setUplPendingQuantity(null);
+            if (latestApprovalRequest != null) {
+                calculateApprovalFields(dto, latestApprovalRequest, allRelatedRequests, allRelatedApprovals);
+            } else {
+                dto.setApprovalCount(0L);
+                dto.setPendingApprovers(null);
+                dto.setApproverComment(null);
+                dto.setUserAging("0 days 0 hrs 0 mins");
+                dto.setTotalAging("0 days 0 hrs 0 mins");
+            }
+            return;
+        }
+
         String deliveredKey = upl.getPoNumber() + "-" + upl.getPoLineNumber() + "-" +
                 (upl.getUplLine() != null ? upl.getUplLine() : "");
         double totalDelivered = deliveredMap.getOrDefault(deliveredKey, 0.0);

@@ -389,10 +389,15 @@ public CompletableFuture<List<DccPOCombinedViewDTO>> getExportData(DccPORequest 
             if (pos.isEmpty()) throw new DccPOProcessingException(
                     "Missing PO for DCC record: " + dcc.getRecordNo());
 
-            List<tb_PurchaseOrderUPL> uplList = ctx.uplMap.getOrDefault(dcc.getPoNumber(), List.of());
-            List<DCCLineItem>         lnList  = ctx.lnMap.getOrDefault(dcc.getRecordNo(), List.of());
+            List<tb_PurchaseOrderUPL> uplList = ctx.uplMap != null
+                    ? ctx.uplMap.getOrDefault(dcc.getPoNumber(), List.of())
+                    : List.of();
+            List<DCCLineItem> lnList = ctx.lnMap != null
+                    ? ctx.lnMap.getOrDefault(dcc.getRecordNo(), List.of())
+                    : List.of();
 
-            if (lnList.isEmpty() || uplList.isEmpty()) {
+            // Line items are required; UPL is optional (UPL-derived fields stay null/blank).
+            if (lnList.isEmpty()) {
                 processed.add(dcc.getRecordNo());
                 continue;
             }
@@ -418,31 +423,52 @@ public CompletableFuture<List<DccPOCombinedViewDTO>> getExportData(DccPORequest 
         List<DccPOCombinedViewDTO> dtos = new ArrayList<>();
 
         for (DCCLineItem ln : lnList) {
-            for (tb_PurchaseOrderUPL upl : uplList) {
-                boolean matches = hasValue(ln.getUplLineNumber())
-                        ? (ln.getUplLineNumber().equals(upl.getUplLine())
-                           && upl.getPoLineNumber().equals(ln.getLineNumber())
-                           && upl.getPoNumber().equals(dcc.getPoNumber()))
-                        : (po.getLineNumber().equals(ln.getLineNumber())
-                           && po.getPoNumber().equals(dcc.getPoNumber()));
-                if (!matches) continue;
-
-                DccPOCombinedViewDTO dto = new DccPOCombinedViewDTO();
-                populateDccFields(dto, dcc, fmt, latestReq);
-                populateLineItemFields(dto, ln, siteBySiteId, fmt);
-                populatePoAndUplFields(dto, ln, po, upl);
-                // ── Zero DB calls — uses pre-computed QuantityContext ──────────
-                calculateQuantitiesFromContext(dto, upl, qtyCtx);
-
-                if (latestReq != null) {
-                    calculateApprovalFieldsBatched(dto, latestReq, allReqs, allApprovals);
-                } else {
-                    setDefaultApprovalFields(dto);
+            List<tb_PurchaseOrderUPL> matchedUpls = new ArrayList<>();
+            if (uplList != null) {
+                for (tb_PurchaseOrderUPL upl : uplList) {
+                    boolean matches = hasValue(ln.getUplLineNumber())
+                            ? (ln.getUplLineNumber().equals(upl.getUplLine())
+                               && upl.getPoLineNumber().equals(ln.getLineNumber())
+                               && upl.getPoNumber().equals(dcc.getPoNumber()))
+                            : (po.getLineNumber().equals(ln.getLineNumber())
+                               && po.getPoNumber().equals(dcc.getPoNumber()));
+                    if (matches) matchedUpls.add(upl);
                 }
-                dtos.add(dto);
+            }
+
+            // No UPL match → still emit the line with PO + LN data; UPL fields remain null/blank.
+            if (matchedUpls.isEmpty()) {
+                dtos.add(buildSingleLineRow(dcc, po, ln, null, latestReq, allReqs, allApprovals,
+                        fmt, qtyCtx, siteBySiteId));
+                continue;
+            }
+
+            for (tb_PurchaseOrderUPL upl : matchedUpls) {
+                dtos.add(buildSingleLineRow(dcc, po, ln, upl, latestReq, allReqs, allApprovals,
+                        fmt, qtyCtx, siteBySiteId));
             }
         }
         return dtos;
+    }
+
+    private DccPOCombinedViewDTO buildSingleLineRow(
+            DCC dcc, tbPurchaseOrder po, DCCLineItem ln, tb_PurchaseOrderUPL upl,
+            TbCategoryApprovalRequests latestReq,
+            List<TbCategoryApprovalRequests> allReqs, List<TbCategoryApprovals> allApprovals,
+            SimpleDateFormat fmt, QuantityContext qtyCtx, Map<String, tb_Site> siteBySiteId) {
+
+        DccPOCombinedViewDTO dto = new DccPOCombinedViewDTO();
+        populateDccFields(dto, dcc, fmt, latestReq);
+        populateLineItemFields(dto, ln, siteBySiteId, fmt);
+        populatePoAndUplFields(dto, ln, po, upl);
+        calculateQuantitiesFromContext(dto, upl, qtyCtx);
+
+        if (latestReq != null) {
+            calculateApprovalFieldsBatched(dto, latestReq, allReqs, allApprovals);
+        } else {
+            setDefaultApprovalFields(dto);
+        }
+        return dto;
     }
 
     // ─── RESPONSE GROUPING ────────────────────────────────────────────────────
@@ -635,6 +661,14 @@ public CompletableFuture<List<DccPOCombinedViewDTO>> getExportData(DccPORequest 
         dto.setSupplierId(po.getVendorNumber());
         dto.setVendorNumber(po.getVendorNumber());
         dto.setVendorName(po.getVendorName());
+
+        if (upl == null) {
+            // No UPL row: keep UPL-derived fields null/blank; fall back to PO qty when available.
+            dto.setPoLineQuantity(parsePoQty(po));
+            dto.setPoOrderQuantity(parsePoQty(po));
+            return;
+        }
+
         double orderQty = hasValue(ln.getUplLineNumber()) ? upl.getPoLineQuantity() : parsePoQty(po);
         dto.setPoLineQuantity(orderQty);
         dto.setPoOrderQuantity(orderQty);
@@ -651,10 +685,19 @@ public CompletableFuture<List<DccPOCombinedViewDTO>> getExportData(DccPORequest 
     /**
      * Replaces the old {@code calculateQuantities} method.
      * Zero DB queries — reads everything from the pre-built {@link QuantityContext}.
+     * When {@code upl} is null, UPL-derived quantity fields are left null/blank.
      */
     private void calculateQuantitiesFromContext(DccPOCombinedViewDTO dto,
                                                 tb_PurchaseOrderUPL upl,
                                                 QuantityContext qtyCtx) {
+        if (upl == null || qtyCtx == null) {
+            dto.setUPLACPTRequestValue(null);
+            dto.setPOLineAcceptanceQty(null);
+            dto.setPoPendingQuantity(null);
+            dto.setUplPendingQuantity(null);
+            return;
+        }
+
         // ── totalDelivered (was: N queries per row) ───────────────────────────
         double totalDelivered = 0.0;
         if (hasValue(upl.getUplLine())) {
