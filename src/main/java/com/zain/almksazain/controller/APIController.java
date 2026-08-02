@@ -1168,6 +1168,7 @@ public class APIController {
             List<String> serialnumberActualItemCode = new ArrayList<>();
             List<String> acceptanceQuantity = new ArrayList<>();
             Set<String> mismatchedScopeUplLines = new LinkedHashSet<>();
+            Set<String> mismatchedScopeNonUplLines = new LinkedHashSet<>();
             List<Integer> recordNumbers = new ArrayList<>();
             String actualItemCode = "";
             String itemCode = "";
@@ -1394,6 +1395,32 @@ public class APIController {
                             Double poqtyNew = podetails != null ? podetails.getPoQtyNew() : 0;
                             Double quantityDueNew = podetails != null ? podetails.getQuantityDueNew() : 0;
                             Double quantityDueOld = podetails != null ? podetails.getQuantityDueOld() : 0;
+
+                            String itemCategoryInventory = podetails != null ? podetails.getItemCategoryInventory() : null;
+                            if (podetails == null || itemCategoryInventory == null || itemCategoryInventory.isBlank()) {
+                                mismatchedScopeNonUplLines.add(polineitem);
+                            } else {
+                                List<tbCategory> cats = categoryRepo.findByItemCategoryCodeAndScope(
+                                        itemCategoryInventory.trim(), scopeofWork.trim());
+                                if (cats.isEmpty()) {
+                                    mismatchedScopeNonUplLines.add(polineitem);
+                                }
+                            }
+
+                            String serialized = dcclinejsonObject.optString("serialized", "").trim();
+                            String activeOrPassive = dcclinejsonObject.optString("activeOrPassive", "").trim();
+                            if (serialized.equalsIgnoreCase("Yes") && activeOrPassive.equalsIgnoreCase("Active")) {
+                                String partNumberForInventory = actualItemCode.length() > 1
+                                        ? actualItemCode
+                                        : dcclinejsonObject.optString("itemPartNumber", "").trim();
+                                if (serialNumber.length() > 1 && partNumberForInventory.length() > 1) {
+                                    logger.info("validating Active Inventory (NON-UPL): ");
+                                    List<tbNode> validateInventorylist = nodeRepo.findByPartNumberAndSerialNumber(partNumberForInventory, serialNumber);
+                                    if (validateInventorylist.isEmpty()) {
+                                        validateInventory.add(serialNumber);
+                                    }
+                                }
+                            }
 
                             if (!serialcontrol.equalsIgnoreCase("NO CONTROL")) {
                                 List<tbSerialNumber> validateSerialNumberforPo = serialNumberRepo.findBySerialNumber(serialNumber);
@@ -1635,6 +1662,32 @@ public class APIController {
                             tbPurchaseOrder podetails = PurchaseOrderRepo.findTopByPoNumberAndLineNumber(poNumber, polineitem);
 
                             String serialcontrol = podetails != null ? String.valueOf(podetails.getSerialControl()) : "";
+                            String itemCategoryInventory = podetails != null ? podetails.getItemCategoryInventory() : null;
+                            if (podetails == null || itemCategoryInventory == null || itemCategoryInventory.isBlank()) {
+                                mismatchedScopeNonUplLines.add(polineitem);
+                            } else {
+                                List<tbCategory> cats = categoryRepo.findByItemCategoryCodeAndScope(
+                                        itemCategoryInventory.trim(), scopeofWork.trim());
+                                if (cats.isEmpty()) {
+                                    mismatchedScopeNonUplLines.add(polineitem);
+                                }
+                            }
+
+                            String serialized = dcclineUpdatejsonObject.optString("serialized", "").trim();
+                            String activeOrPassive = dcclineUpdatejsonObject.optString("activeOrPassive", "").trim();
+                            if (serialized.equalsIgnoreCase("Yes") && activeOrPassive.equalsIgnoreCase("Active")) {
+                                String partNumberForInventory = UpdateActualItemCode.length() > 1
+                                        ? UpdateActualItemCode.trim()
+                                        : dcclineUpdatejsonObject.optString("itemPartNumber", "").trim();
+                                if (serialNumber.length() > 1 && partNumberForInventory.length() > 1) {
+                                    logger.info("validating Active Inventory (NON-UPL): ");
+                                    List<tbNode> validateInventorylist = nodeRepo.findByPartNumberAndSerialNumber(partNumberForInventory, serialNumber);
+                                    if (validateInventorylist.isEmpty()) {
+                                        validateInventory.add(serialNumber);
+                                    }
+                                }
+                            }
+
                             if (!serialcontrol.equalsIgnoreCase("NO CONTROL")) {
                                 List<tbSerialNumber> validateSerialNumberforPo = serialNumberRepo.findBySerialNumber(serialNumber);
                                 if (!validateSerialNumberforPo.isEmpty()) {
@@ -1833,6 +1886,13 @@ public class APIController {
             if (!mismatchedScopeUplLines.isEmpty()) {
                 String submittedScope = uniqueScope.isEmpty() ? scopeofWork.trim() : String.join(", ", uniqueScope);
                 errorMessages.add("PO line + UPL line (" + String.join(", ", mismatchedScopeUplLines)
+                        + ") for PO " + poNumber
+                        + " does not belong to the submitted scope " + submittedScope + ".");
+            }
+
+            if (!mismatchedScopeNonUplLines.isEmpty()) {
+                String submittedScope = uniqueScope.isEmpty() ? scopeofWork.trim() : String.join(", ", uniqueScope);
+                errorMessages.add("PO line (" + String.join(", ", mismatchedScopeNonUplLines)
                         + ") for PO " + poNumber
                         + " does not belong to the submitted scope " + submittedScope + ".");
             }
