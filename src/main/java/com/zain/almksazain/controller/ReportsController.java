@@ -1097,6 +1097,7 @@ private String convertToSqlDate(String input) {
         li.put("poNumber", lineItem.get("poNumber"));
         li.put("lineNumber", lineItem.get("lineNumber"));
         li.put("itemPartNumber", lineItem.get("itemPartNumber"));
+        li.put("activeOrPassive", lineItem.get("activeOrPassive"));
         li.put("countryOfOrigin", lineItem.get("countryOfOrigin"));
         li.put("poOrderQuantity", lineItem.get("poOrderQuantity"));
         li.put("poQtyNew", lineItem.get("poQtyNew"));
