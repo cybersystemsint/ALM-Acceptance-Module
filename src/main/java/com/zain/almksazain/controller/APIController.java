@@ -1911,9 +1911,87 @@ public class APIController {
                         + " has already been raised. Kindly use a different tag number.");
             }
 
+            // ===== NEW VALIDATION: submitted batch quantity vs live UPL Pending Quantity =====
+            // For UPL-based line items, sum the "Acceptance Quantity" (deliveredQty) requested in THIS
+            // submission per (poNumber, poLineNumber, uplLineNumber), and make sure it does not exceed
+            // that UPL line's live Pending Quantity — recomputed here from the database rather than
+            // trusted from the payload, since the client-supplied uplPendingQuantity can be stale.
+            // If any UPL line fails this check, the whole submission is rejected (added to
+            // errorMessages, which the check just below already returns as one combined error).
+            {
+                List<String> allowedStatusesForPendingCheck = Arrays.asList("approved-received", "inprocess", "approved", "request-info");
+                Map<String, Double> submittedQtyByUplKey = new LinkedHashMap<>();
+                Map<String, String[]> uplKeyParts = new LinkedHashMap<>(); // key -> [poNumber, poLineNumber, uplLineNumber]
+
+                for (int qi = 0; qi < jsonArray.length(); qi++) {
+                    JSONObject dccObject = jsonArray.getJSONObject(qi);
+                    if (Integer.parseInt(dccObject.getString("recordNo")) != 0) {
+                        continue; // only applies to new acceptance requests being created
+                    }
+                    String batchPoNumber = dccObject.getString("poNumber");
+                    JSONArray lineItemsForQtyCheck = dccObject.getJSONArray("lineItems");
+                    for (int qh = 0; qh < lineItemsForQtyCheck.length(); qh++) {
+                        JSONObject lineItem = lineItemsForQtyCheck.getJSONObject(qh);
+                        String lineUplLineNumber = lineItem.optString("uplLineNumber", "");
+                        if (lineUplLineNumber.isEmpty()) {
+                            continue; // not UPL-based, out of scope for this check
+                        }
+                        String linePoLineNumber = lineItem.getString("poLineNumber");
+                        double lineDeliveredQty = Double.parseDouble(lineItem.getString("deliveredQty"));
+
+                        String uplKey = batchPoNumber + "|" + linePoLineNumber + "|" + lineUplLineNumber;
+                        submittedQtyByUplKey.put(uplKey, submittedQtyByUplKey.getOrDefault(uplKey, 0.0) + lineDeliveredQty);
+                        uplKeyParts.putIfAbsent(uplKey, new String[]{batchPoNumber, linePoLineNumber, lineUplLineNumber});
+                    }
+                }
+
+                List<String> uplQuantityExceededMessages = new ArrayList<>();
+                for (Map.Entry<String, Double> submittedEntry : submittedQtyByUplKey.entrySet()) {
+                    String[] parts = uplKeyParts.get(submittedEntry.getKey());
+                    String keyPoNumber = parts[0];
+                    String keyPoLineNumber = parts[1];
+                    String keyUplLineNumber = parts[2];
+                    double submittedSum = submittedEntry.getValue();
+
+                    tb_PurchaseOrderUPL uplRecord = purchaseOrderUPLRepo.findTopByPoNumberAndPoLineNumberAndUplLine(keyPoNumber, keyPoLineNumber, keyUplLineNumber);
+                    double uplLineQuantity = uplRecord != null ? uplRecord.getUplLineQuantity() : 0.0;
+
+                    List<Integer> activeDccRecordNos = dccrepo.findByPoNumberAndStatus(keyPoNumber, allowedStatusesForPendingCheck);
+                    double alreadyRaisedQty = 0.0;
+                    if (!activeDccRecordNos.isEmpty()) {
+                        List<String> activeDccIdStrings = activeDccRecordNos.stream()
+                                .map(String::valueOf)
+                                .collect(Collectors.toList());
+                        Double summed = dcclnrepo.sumDeliveredQtyByDccIdsAndPoLineInfo(activeDccIdStrings, keyPoNumber, keyPoLineNumber, keyUplLineNumber);
+                        alreadyRaisedQty = summed != null ? summed : 0.0;
+                    }
+
+                    double uplLinePendingQuantity = uplLineQuantity - alreadyRaisedQty;
+
+                    logger.info("UPL Pending Qty check [PO " + keyPoNumber + ", Line " + keyPoLineNumber + ", UPL " + keyUplLineNumber + "]: "
+                            + "submitted=" + submittedSum + ", alreadyRaised=" + alreadyRaisedQty
+                            + ", uplLineQuantity=" + uplLineQuantity + ", pendingQuantity=" + uplLinePendingQuantity);
+
+                    if (submittedSum > uplLinePendingQuantity) {
+                        uplQuantityExceededMessages.add(
+                                "Acceptance quantity exceeds pending quantity for: PO " + keyPoNumber
+                                        + " Line " + keyPoLineNumber + " UPL " + keyUplLineNumber
+                                        + ": requested " + formatQty(submittedSum)
+                                        + " exceeds pending " + formatQty(uplLinePendingQuantity)
+                                        + " (already raised " + formatQty(alreadyRaisedQty) + ")"
+                        );
+                    }
+                }
+
+                if (!uplQuantityExceededMessages.isEmpty()) {
+                    errorMessages.add(String.join("\n", uplQuantityExceededMessages));
+                }
+            }
+            // ===== END NEW VALIDATION =====
+
             // If any errors found, return all in one response
             if (!errorMessages.isEmpty()) {
-                return response("Error", String.join(" | ", errorMessages));
+                return response("Error", String.join("\n", errorMessages));
             }
 
             String createdByName = "";
@@ -2256,6 +2334,14 @@ public class APIController {
             response.put("supplierName", supplierName);
             return response("Error", jsonArrayresponse.toString());
         }
+    }
+
+    // Formats a quantity without a trailing ".0" for whole numbers, used in validation error messages.
+    private String formatQty(double qty) {
+        if (qty == Math.floor(qty) && !Double.isInfinite(qty)) {
+            return String.valueOf((long) qty);
+        }
+        return String.format("%.2f", qty);
     }
 
     //Add Edit DCC
