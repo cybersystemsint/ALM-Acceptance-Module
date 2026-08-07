@@ -23,7 +23,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonSyntaxException;
+import com.zain.almksazain.dto.AcceptanceCreateResult;
+import com.zain.almksazain.dto.WorkflowInitResult;
+import com.zain.almksazain.services.AcceptanceRequestService;
 import com.zain.almksazain.services.DCCService;
+import com.zain.almksazain.services.WorkflowInitializationService;
 import com.zain.almzainksa.helper.helper;
 import com.zain.almksazain.model.FileRecord;
 import com.zain.almksazain.model.tb_Approval_Log;
@@ -50,7 +54,6 @@ import com.zain.almksazain.repo.tbScopeRepo;
 import com.zain.almksazain.repo.tbNodeRepo;
 import com.zain.almksazain.repo.tbPassiveInventoryRepo;
 import com.zain.almksazain.repo.tbSerialNumberRepo;
-import com.zain.almksazain.utlities.Httpcall;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -61,8 +64,6 @@ import org.springframework.web.bind.annotation.RestController;
 import java.io.*;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.net.InetAddress;
-import java.net.UnknownHostException;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.sql.Timestamp;
@@ -74,7 +75,6 @@ import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
@@ -163,12 +163,15 @@ public class APIController {
     @Autowired
     private DCCService dccService;
 
+    @Autowired
+    private AcceptanceRequestService acceptanceRequestService;
+
+    @Autowired
+    private WorkflowInitializationService workflowInitializationService;
+
     // UNCOMMENT THIS PATH TO CHANGE THE FILE DIRECTORY PATH
     //    @Value("${alm.uploadpath}")
     //    private String docsuploadpath;
-    Httpcall utils = new Httpcall();
-
-    HashMap requestMap = new HashMap();
 
     String genHeader(String msisdn, String reqid, String Channel) {
         return " | " + reqid + " | " + Channel + " | " + msisdn + " | ";
@@ -1916,114 +1919,29 @@ public class APIController {
                 return response("Error", String.join(" | ", errorMessages));
             }
 
-            String createdByName = "";
-
             for (int i = 0; i < jsonArray.length(); i++) {
                 JSONObject jsonObject = jsonArray.getJSONObject(i);
                 recordNo = Integer.parseInt(jsonObject.getString("recordNo"));
-
                 poNumber = jsonObject.getString("poNumber");
                 vendorName = jsonObject.getString("vendorName");
                 status = jsonObject.getString("status");
-                createdBy = jsonObject.getInt("createdById");// createdById
-                createdByName = jsonObject.getString("createdByName");
-                JSONArray dcc_line_data = jsonObject.getJSONArray("lineItems");
-                String result = addEditDCC(recordNo, jsonObject);
-                DCC topRecord = dccrepo.findTopByPoNumber(poNumber);
-                String recordId = topRecord != null ? String.valueOf(topRecord.getRecordNo()) : "";
+                createdBy = jsonObject.getInt("createdById");
 
-                String newRecordNo = "";
-
-                DCC checkdcc = dccrepo.findByRecordNo(recordNo);
-                if (checkdcc != null) {
-                    newRecordNo = jsonObject.getString("recordNo");
-                } else {
-                    newRecordNo = recordId;
-                }
-
-                if (files != null) {
-                    for (MultipartFile file : files) {
-                        String originalFileName = file.getOriginalFilename();
-                        logger.info("Received file: " + originalFileName);
-                        String fileExtension = "";
-                        if (originalFileName != null) {
-                            int dotIndex = originalFileName.lastIndexOf('.');
-                            if (dotIndex > 0) {
-                                fileExtension = originalFileName.substring(dotIndex);
-                            }
-                        }
-                        String newFileName = originalFileName + "_" + System.currentTimeMillis() + fileExtension;
-                        File destinationFile = new File(uploadDir + newFileName);
-                        if (destinationFile.exists()) {
-                            return response("Error", "File already exists: " + newFileName);
-                        }
-                        try {
-                            Files.copy(file.getInputStream(), destinationFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-                            FileRecord fileRecord = new FileRecord();
-                            fileRecord.setFileName(newFileName);
-                            fileRecord.setPoNumber(poNumber);
-                            fileRecord.setFilePath(destinationFile.getAbsolutePath());
-                            fileRecord.setDccId(Integer.parseInt(newRecordNo));
-                            fileRepo.save(fileRecord);
-                        } catch (IOException e) {
-                            return response("Error", "File upload failed: " + e.getMessage());
-                        }
+                try {
+                    AcceptanceCreateResult createResult =
+                            acceptanceRequestService.createAcceptanceRequest(jsonObject, files, uploadDir);
+                    for (WorkflowInitResult initResult : createResult.getWorkflowInitResults()) {
+                        workflowInitializationService.notifyFirstApprover(initResult);
                     }
-                }
-                if (result.contains("Success")) {
-                    Set<Long> incomingRecordNos = new HashSet<>();
-                    for (int x = 0; x < dcc_line_data.length(); x++) {
-                        JSONObject lineObj = dcc_line_data.getJSONObject(x);
-                        long lineRecordNo = 0L;
-                        try {
-                            String rn = lineObj.optString("recordNo", "0");
-                            if (rn != null && !rn.isBlank()) {
-                                lineRecordNo = Long.parseLong(rn);
-                            }
-                        } catch (Exception e) {
-                        }
-                        if (lineRecordNo > 0L) {
-                            incomingRecordNos.add(lineRecordNo);
-                        }
-                    }
-                
-                    List<DCCLineItem> existingLines = dcclnrepo.findByDccId(newRecordNo);
-                    Set<Long> existingRecordNos = existingLines.stream()
-                            .map(DCCLineItem::getRecordNo) 
-                            .collect(Collectors.toSet());
-                    existingRecordNos.removeAll(incomingRecordNos);
-                    if (!existingRecordNos.isEmpty()) {
-                        List<Long> toDelete = new ArrayList<>(existingRecordNos);
-                        dcclnrepo.deleteByRecordNoIn(toDelete);
-                    }
-                
-                    // Continue with post-processing for remaining/updated line items
-                    String headerRegion = jsonObject.optString("region", "").trim();
-                    postdccln(poNumber, newRecordNo, status, createdBy, createdByName, vendorName, headerRegion, dcc_line_data.toString());
-                }
-                // if (result.contains("Success")) {
-                //     postdccln(poNumber, newRecordNo, status, createdBy, createdByName, vendorName, dcc_line_data.toString());
-
-                // } 
-                else {
-                    net.minidev.json.JSONObject responsedata = new net.minidev.json.JSONObject();
-                    responsedata.put("dccId", dccId);
-                    responsedata.put("recordNo", recordNo);
-                    responsedata.put("DBresponse", result);
-                    jsonArrayresponse.put(responsedata.toJSONString());
+                } catch (RuntimeException ex) {
+                    logger.error("POST DCC failed for recordNo={} poNumber={}: {}",
+                            recordNo, poNumber, ex.getMessage(), ex);
+                    return response("Error", ex.getMessage() != null ? ex.getMessage() : "Failed to create acceptance request");
                 }
             }
-            if (jsonArrayresponse.length() > 0) {
-                batchfilename = getbatchfilename("FailedUpload");
-                helper.logBatchFile(jsonArrayresponse.toString(), true, batchfilename);
-                return response("Error", jsonArrayresponse.toString());
-            } else {
-                return response("Success", "Complete");
-            }
+            return response("Success", "Complete");
         } catch (NumberFormatException | ParseException | JSONException excc) {
-
             logger.info("POST DCC EXCEPTION" + excc);
-
             System.out.println(excc.toString());
         }
         return response("Error", jsonArrayresponse.toString());
@@ -2102,91 +2020,6 @@ public class APIController {
         }
     }
 
-    public String getIPAddress() {
-        String ipAddress = "";
-        try {
-            InetAddress inetAddress = InetAddress.getLocalHost();
-
-            ipAddress = inetAddress.getHostAddress();
-            System.out.println("ipAddress " + ipAddress);
-
-        } catch (UnknownHostException ex) {
-            helper.logBatchFile(ex.getMessage(), true, "");
-        }
-        return ipAddress;
-    }
-
-    private String addEditDCC(long recordno, JSONObject jsonObject) {
-        String dataadded = "Failed to save";
-        String requesttime = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(Calendar.getInstance().getTime());
-
-        try {
-            DCC checkdcc = dccrepo.findByRecordNo(recordno);
-            if (checkdcc != null) {
-                //createdById
-                checkdcc.setCreatedBy(jsonObject.getString("createdByName"));
-                checkdcc.setPoNumber(jsonObject.getString("poNumber"));
-                checkdcc.setProjectName(jsonObject.getString("projectName"));
-                checkdcc.setAcceptanceType(jsonObject.getString("acceptanceType"));
-                checkdcc.setStatus(jsonObject.getString("status"));
-                if (jsonObject.getString("status").equalsIgnoreCase("request-info")) {
-                    checkdcc.setStatus("inprocess");
-                }
-
-                if (jsonObject.has("vendorComment")) {
-                    checkdcc.setVendorComment(jsonObject.getString("vendorComment"));
-                }
-
-                checkdcc.setVendorName(jsonObject.getString("vendorName"));
-                checkdcc.setVendorNumber(jsonObject.getString("vendorNumber"));
-                try {
-                    dccrepo.save(checkdcc);
-                    dataadded = "Data updated Success";
-                } catch (Exception exc) {
-                    logger.info("POST DCC EXCEPTION" + exc);
-
-                    dataadded = exc.getCause().toString();
-                }
-            } else {
-                DCC nwcheckdcc = new DCC();
-                nwcheckdcc.setCreatedBy(jsonObject.getString("createdByName"));
-                nwcheckdcc.setPoNumber(jsonObject.getString("poNumber"));
-                nwcheckdcc.setProjectName(jsonObject.getString("projectName"));
-                nwcheckdcc.setAcceptanceType(jsonObject.getString("acceptanceType"));
-                nwcheckdcc.setStatus(jsonObject.getString("status"));
-                nwcheckdcc.setVendorName(jsonObject.getString("vendorName"));
-                nwcheckdcc.setVendorNumber(jsonObject.getString("vendorNumber"));
-                SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd"); // Adjust the pattern as per your date format
-                LocalDateTime now = LocalDateTime.now();
-
-                ZoneId eatZone = ZoneId.of("Africa/Nairobi");
-                ZonedDateTime eatZonedDateTime = now.atZone(ZoneId.systemDefault()).withZoneSameInstant(eatZone);
-                // Convert ZonedDateTime to LocalDateTime
-                LocalDateTime eatLocalDateTime = eatZonedDateTime.toLocalDateTime();
-                Timestamp timestamp = Timestamp.valueOf(eatLocalDateTime);
-                java.util.Date parsedDate;
-                try {
-                    parsedDate = dateFormat.parse(now.toString());
-                    java.sql.Date newDate = new java.sql.Date(parsedDate.getTime());
-                    nwcheckdcc.setCreatedDate(timestamp);
-                } catch (ParseException ex) {
-                    Logger.getLogger(APIController.class.getName()).log(Level.SEVERE, null, ex);
-                }
-
-                try {
-                    dccrepo.save(nwcheckdcc);
-                    dataadded = "Data updated Success";
-                } catch (Exception exc) {
-                    dataadded = exc.getCause().toString();
-                }
-            }
-        } catch (JSONException excc) {
-            logger.info("POST DCC EXCEPTION" + excc);
-            dataadded = "Error " + excc.getCause().toString();
-        }
-        return dataadded;
-    }
-
     @PostMapping(value = "/postsupplier")
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
     public Map<String, String> postsupplier(@RequestBody String req) {
@@ -2259,278 +2092,6 @@ public class APIController {
     }
 
     //Add Edit DCC
-    private String postdccln(String poNumber, String recordId, String status, Integer createdBy, String createdByName, String vendorName, String headerRegion, String req) {
-
-        JSONArray jsonArrayresponse = new JSONArray();
-        List<String> ItemCategoryCodes = new ArrayList<>();
-
-        String itemcategorycode = "";
-        String poLineDecription = "";
-        long recordNo = 0;
-        String productName = "";
-        String productSerialNo = "";
-        int deliveredQty = 0;
-        String locationName = "";
-        String inserviceDate = "";
-        String scopeOfWork = "";
-        String remarks = "";
-        BigDecimal unitPrice;
-        String dccId = "";
-        String itemCode = "";
-
-        try {
-            DateTimeFormatter myFormatObj = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm:ss");
-            LocalDateTime now = LocalDateTime.now();
-            String requesttime = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(Calendar.getInstance().getTime());
-            JSONArray jsonArray = new JSONArray(req);
-            for (int i = 0; i < jsonArray.length(); i++) {
-                JSONObject jsonObject = jsonArray.getJSONObject(i);
-                recordNo = Integer.parseInt(jsonObject.getString("recordNo"));
-                poLineDecription = jsonObject.getString("poLineItemDescription");
-                locationName = jsonObject.getString("locationName");
-                scopeOfWork = jsonObject.getString("scopeOfWork");
-                if (scopeOfWork.length() > 1) {
-                    ItemCategoryCodes.add(scopeOfWork);
-                }
-
-                String jsresp = addDCCLineItem(poNumber, recordNo, recordId, status, createdBy, createdByName, vendorName, jsonObject);
-                if (!jsresp.contains("Success")) {
-                    net.minidev.json.JSONObject responsedata = new net.minidev.json.JSONObject();
-                    responsedata.put("recordNo", recordNo);
-                    responsedata.put("dccId", dccId);
-                    responsedata.put("DBresponse", jsresp);
-                    jsonArrayresponse.put(responsedata.toJSONString());
-                }
-            }
-
-            String workflowRegion;
-            if (headerRegion != null && !headerRegion.isEmpty()) {
-                workflowRegion = headerRegion;
-            } else {
-                tb_Site topRecord = siteRepo.findFirstBySiteId(locationName);
-                Integer regionrecordId = topRecord != null ? (topRecord.getRegionId()) : null;
-                tb_Region regionRecord = regionrecordId != null ? regionRepo.findByRecordNo(regionrecordId) : null;
-                workflowRegion = regionRecord != null ? regionRecord.getRegionName() : "";
-            }
-
-            Set<String> uniqueItemCategoryCodes = new LinkedHashSet<>(ItemCategoryCodes);
-
-            net.minidev.json.JSONArray jsonArraynew = new net.minidev.json.JSONArray();
-
-            for (String newitemCategoryCode : uniqueItemCategoryCodes) {
-                // Create a new JSONObject for each unique itemCategoryCode
-                net.minidev.json.JSONObject params = new net.minidev.json.JSONObject();
-                params.put("acceptanceRequestRecordNo", recordId);
-                params.put("tableName", "tb_DCC");
-                params.put("poNumber", poNumber);
-                params.put("poLineItemDescription", poLineDecription);
-                params.put("scope", newitemCategoryCode);
-                params.put("requestedBy", createdByName);
-                params.put("vendorName", vendorName);
-                params.put("createdBy", createdBy.toString());
-                params.put("regions", workflowRegion);
-                if (status.equalsIgnoreCase("request-info")) {
-                    params.put("status", "request-info");
-                } else {
-                    params.put("status", "");
-                }
-                jsonArraynew.add(params);
-            }
-
-            logger.info("| POST WORKFLOW REQUEST " + jsonArraynew.toString());
-            String ipaddress = getIPAddress();
-            CompletableFuture.runAsync(() -> {
-                try {
-                    if (!status.equalsIgnoreCase("incomplete")) {
-                        requestMap = utils.httpPOST(jsonArraynew.toString(), "http://" + ipaddress + ":8080/alm-zain-ksa/workflow/initialize-approval", requestMap);
-                    }
-                    if (status.equalsIgnoreCase("request-info")) {
-                        //Update the DCC table
-                    }
-                    logger.info("| POST WORKFLOW RESPONSE  " + requestMap);
-                } catch (Exception ex) {
-                    logger.info("| POST WORKFLOW EXCEPTION " + ex.toString());
-                }
-            });
-
-            if (jsonArrayresponse.length() > 0) {
-                return (jsonArrayresponse.toString());
-            } else {
-                return ("Complete");
-            }
-        } catch (NumberFormatException | JSONException exc) {
-            net.minidev.json.JSONObject response = new net.minidev.json.JSONObject();
-            response.put("productSerialNo", productSerialNo);
-            response.put("dccId", dccId);
-            logger.info("POST DCC EXCEPTION" + exc);
-            return (jsonArrayresponse.toString());
-        }
-    }
-
-    public String addDCCLineItem(String poNumber, long recordno, String recordId, String status, Integer createdBy, String createdByName, String vendorName, JSONObject jsonObject) {
-
-        System.out.println("DCC LIne " + jsonObject.toString());
-
-        logger.info("| DCC LIne " + jsonObject.toString());
-
-        String result = "Failed to save";
-        SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd"); // Adjust the pattern as per your date format
-        LocalDateTime now = LocalDateTime.now();
-
-        DCCLineItem eddccLineItem = dcclnrepo.findByRecordNo(recordno);
-        if (eddccLineItem != null) {
-            // eddccLineItem.setDccId(recordId);
-            eddccLineItem.setLineNumber(jsonObject.getString("poLineNumber"));
-            eddccLineItem.setUplLineNumber(jsonObject.getString("uplLineNumber"));
-            eddccLineItem.setItemCode(jsonObject.getString("itemCode"));
-            eddccLineItem.setSerialNumber(jsonObject.getString("serialNumber"));
-            Double delivered = Double.parseDouble(jsonObject.getString("deliveredQty"));
-            if (jsonObject.has("actualItemCode")) {
-                eddccLineItem.setActualItemCode(jsonObject.getString("actualItemCode"));
-            }
-
-            if (jsonObject.getString("uplLineNumber").length() != 0) {
-
-                tb_PurchaseOrderUPL topRecord = purchaseOrderUPLRepo.findTopByPoNumberAndPoLineNumberAndUplLine(poNumber, jsonObject.getString("poLineNumber"), jsonObject.getString("uplLineNumber"));
-                String unitOfMeasure = topRecord != null ? String.valueOf(topRecord.getUom()) : "";
-                tbPurchaseOrder podetails = PurchaseOrderRepo.findTopByPoNumberAndLineNumber(poNumber, jsonObject.getString("poLineNumber"));
-                eddccLineItem.setUoM(unitOfMeasure);
-
-                //ADD THE CALCULATION HERE 20250625
-                double uplLineUnitPrice = topRecord != null ? topRecord.getUplLineUnitPrice() : 0;
-                double poLineUnitPriceCalc = topRecord != null ? topRecord.getPoLineUnitPrice() : 0;
-                double lineTotal = uplLineUnitPrice * delivered;
-
-                double poacceptanceQty = 0;
-
-                if (poLineUnitPriceCalc != 0) {
-                    BigDecimal bdLineTotal = BigDecimal.valueOf(lineTotal);
-                    BigDecimal bdPoLineUnitPrice = BigDecimal.valueOf(poLineUnitPriceCalc);
-
-                    poacceptanceQty = bdLineTotal.divide(bdPoLineUnitPrice, 20, RoundingMode.HALF_UP)                            .doubleValue();
-                }
-
-                //SAVE THE NEW COLUMN  KWA DB 20250625
-                eddccLineItem.setPoAcceptanceQty(poacceptanceQty);
-
-            } else {
-                eddccLineItem.setUoM("Each");//20250919 james
-            }
-
-            eddccLineItem.setPoId(poNumber);
-            eddccLineItem.setDeliveredQty(delivered);
-            eddccLineItem.setLocationName(jsonObject.getString("locationName"));
-            String dateInServiceString = jsonObject.getString("dateInService");
-            if (jsonObject.has("uplLineItemCode")) {
-                eddccLineItem.setUplItemCode(jsonObject.getString("uplLineItemCode"));
-            }
-            if (jsonObject.has("uplLineDescription")) {
-                eddccLineItem.setUplItemDescription(jsonObject.getString("uplLineDescription"));
-            }
-            try {
-                java.util.Date parsedDate = dateFormat.parse(dateInServiceString);
-                java.sql.Date sqlDate = new java.sql.Date(parsedDate.getTime());
-                eddccLineItem.setDateInService(sqlDate);
-            } catch (ParseException ex) {
-                logger.info("Exception " + ex.getMessage());
-
-                java.util.logging.Logger.getLogger(APIController.class.getName()).log(Level.SEVERE, null, ex);
-            }
-            eddccLineItem.setScopeOfWork(jsonObject.getString("scopeOfWork"));
-            eddccLineItem.setRemarks(jsonObject.getString("remarks"));
-            eddccLineItem.setLinkId(jsonObject.getString("linkId"));
-            eddccLineItem.setTagNumber(jsonObject.getString("tagNumber"));
-
-            try {
-                dcclnrepo.save(eddccLineItem);
-                result = "Record update Success";
-            } catch (Exception ex) {
-                logger.info("Exception " + ex.getMessage());
-
-                System.out.println(ex.getMessage());
-                result = ex.getCause().toString();
-            }
-
-        } else {
-            DCCLineItem dccLineItem = new DCCLineItem();
-            dccLineItem.setDccId(recordId);
-            dccLineItem.setLineNumber(jsonObject.getString("poLineNumber"));
-            dccLineItem.setUplLineNumber(jsonObject.getString("uplLineNumber"));
-            dccLineItem.setItemCode(jsonObject.getString("itemCode"));
-            dccLineItem.setSerialNumber(jsonObject.getString("serialNumber"));
-            dccLineItem.setLocationName(jsonObject.getString("locationName"));
-            String dateInServiceString = jsonObject.getString("dateInService");
-            Double delivered = Double.parseDouble(jsonObject.getString("deliveredQty"));
-            if (jsonObject.has("actualItemCode")) {
-                dccLineItem.setActualItemCode(jsonObject.getString("actualItemCode"));
-            }
-
-            if (jsonObject.getString("uplLineNumber").length() != 0) {
-
-                tb_PurchaseOrderUPL topRecord = purchaseOrderUPLRepo.findTopByPoNumberAndPoLineNumberAndUplLine(poNumber, jsonObject.getString("poLineNumber"), jsonObject.getString("uplLineNumber"));
-                String unitOfMeasure = topRecord != null ? String.valueOf(topRecord.getUom()) : "";
-                tbPurchaseOrder podetails = PurchaseOrderRepo.findTopByPoNumberAndLineNumber(poNumber, jsonObject.getString("poLineNumber"));
-                dccLineItem.setUoM(unitOfMeasure);
-
-                //ADD THE CALCULATION HERE 20250625
-                double uplLineUnitPrice = topRecord != null ? topRecord.getUplLineUnitPrice() : 0;
-                double poLineUnitPriceCalc = topRecord != null ? topRecord.getPoLineUnitPrice() : 0;
-                double lineTotal = uplLineUnitPrice * delivered;
-
-                double poacceptanceQty = 0;
-
-                if (poLineUnitPriceCalc != 0) {
-                    BigDecimal bdLineTotal = BigDecimal.valueOf(lineTotal);
-                    BigDecimal bdPoLineUnitPrice = BigDecimal.valueOf(poLineUnitPriceCalc);
-
-                    poacceptanceQty = bdLineTotal.divide(bdPoLineUnitPrice, 20, RoundingMode.HALF_UP)                            .doubleValue();
-                }
-
-                //SAVE THE NEW COLUMN  KWA DB 20250625
-                dccLineItem.setPoAcceptanceQty(poacceptanceQty);
-            }
-
-            if (jsonObject.has("uplLineItemCode")) {
-                dccLineItem.setUplItemCode(jsonObject.getString("uplLineItemCode"));
-            }
-            if (jsonObject.has("uplLineDescription")) {
-                dccLineItem.setUplItemDescription(jsonObject.getString("uplLineDescription"));
-            }
-            dccLineItem.setPoId(poNumber);
-            dccLineItem.setDeliveredQty(delivered);
-            try {
-                java.util.Date parsedDate = dateFormat.parse(dateInServiceString);
-                java.sql.Date sqlDate = new java.sql.Date(parsedDate.getTime());
-                dccLineItem.setDateInService(sqlDate);
-            } catch (ParseException ex) {
-                java.util.logging.Logger.getLogger(APIController.class.getName()).log(Level.SEVERE, null, ex);
-            }
-            dccLineItem.setScopeOfWork(jsonObject.getString("scopeOfWork"));
-            dccLineItem.setRemarks(jsonObject.getString("remarks"));
-            dccLineItem.setLinkId(jsonObject.getString("linkId"));
-            dccLineItem.setTagNumber(jsonObject.getString("tagNumber"));
-
-            System.out.println("DCC LIne save  " + dccLineItem);
-
-            try {
-                dcclnrepo.save(dccLineItem);
-                result = "Record add Success";
-
-//                tb_Arc_ApprovalRecords topRecordNo = arcApprovalRecordsRepo.findTopByRecordId(Integer.parseInt(recordId));
-//                String approvalRecordNo = topRecordNo != null ? String.valueOf(topRecordNo.getRecordNo()) : "";
-                java.util.Date parsedDate = dateFormat.parse(now.toString());
-                java.sql.Date newDate = new java.sql.Date(parsedDate.getTime());
-                //CHECK UP BASED
-
-            } catch (NumberFormatException | ParseException | JSONException exc) {
-                logger.info("POST DCC EXCEPTION" + exc);
-                System.out.println(exc.getMessage());
-                result = exc.getCause().toString();
-            }
-        }
-        return result;
-    }
-
     private String addeditDccStatus(long recordno, String status, String userId, String dccId, int lnRecordNo) {
         String dataadded = "Failed to save";
         try {

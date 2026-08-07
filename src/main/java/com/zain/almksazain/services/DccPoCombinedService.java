@@ -5,6 +5,7 @@ import java.text.SimpleDateFormat;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -365,7 +366,7 @@ public class DccPoCombinedService {
         row.put("vendorEmail", dcc.getVendorEmail());
         row.put("supplierId", po != null ? po.getVendorNumber() : null);
         row.put("dccCreatedDate", formatDate(dcc.getCreatedDate()));
-        row.put("dateApproved", formatDate(approvalRequest != null ? approvalRequest.getApprovedDate() : null));
+        row.put("dateApproved", formatLocalDateTime(approvalRequest != null ? approvalRequest.getApprovedDate() : null));
         row.put("poNumber", dcc.getPoNumber());
         row.put("dccAcceptanceType", dcc.getAcceptanceType());
         row.put("dccStatus", dcc.getStatus());
@@ -546,6 +547,10 @@ private Double calculateRequestAmountSAR(List<DCCLineItem> lineItems, Map<String
 
     private String formatDate(Date date) {
         return date == null ? null : new SimpleDateFormat(DATE_FORMAT).format(date);
+    }
+
+    private String formatLocalDateTime(LocalDateTime dateTime) {
+        return dateTime == null ? null : dateTime.format(DateTimeFormatter.ofPattern(DATE_FORMAT));
     }
 
 

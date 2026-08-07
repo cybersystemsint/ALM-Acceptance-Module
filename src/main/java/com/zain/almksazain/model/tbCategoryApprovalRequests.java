@@ -5,11 +5,13 @@
 package com.zain.almksazain.model;
 
 import java.io.Serializable;
-import java.sql.Date;
+import java.time.LocalDateTime;
+import javax.persistence.Column;
 import javax.persistence.Entity;
 import javax.persistence.GeneratedValue;
 import javax.persistence.GenerationType;
 import javax.persistence.Id;
+import javax.persistence.PrePersist;
 import javax.persistence.Table;
 
 /**
@@ -24,7 +26,8 @@ public class tbCategoryApprovalRequests implements Serializable {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private int recordNo;
 
-    private Date recordDateTime;
+    @Column(name = "recordDatetime")
+    private LocalDateTime recordDateTime;
 
     private int acceptanceRequestRecordNo;
 
@@ -38,7 +41,8 @@ public class tbCategoryApprovalRequests implements Serializable {
 
     private String requestedBy;
 
-    private int createdBy;
+    /** Matches WFM / DB: createdBy is stored as a string user id. */
+    private String createdBy;
 
     private String itemCategoryCode;
 
@@ -48,7 +52,14 @@ public class tbCategoryApprovalRequests implements Serializable {
 
     private boolean received;
 
-    private Date approvedDate;
+    private LocalDateTime approvedDate;
+
+    @PrePersist
+    protected void onCreate() {
+        if (this.recordDateTime == null) {
+            this.recordDateTime = LocalDateTime.now();
+        }
+    }
 
     public int getRecordNo() {
         return recordNo;
@@ -58,11 +69,11 @@ public class tbCategoryApprovalRequests implements Serializable {
         this.recordNo = recordNo;
     }
 
-    public Date getRecordDateTime() {
+    public LocalDateTime getRecordDateTime() {
         return recordDateTime;
     }
 
-    public void setRecordDateTime(Date recordDateTime) {
+    public void setRecordDateTime(LocalDateTime recordDateTime) {
         this.recordDateTime = recordDateTime;
     }
 
@@ -114,11 +125,11 @@ public class tbCategoryApprovalRequests implements Serializable {
         this.requestedBy = requestedBy;
     }
 
-    public int getCreatedBy() {
+    public String getCreatedBy() {
         return createdBy;
     }
 
-    public void setCreatedBy(int createdBy) {
+    public void setCreatedBy(String createdBy) {
         this.createdBy = createdBy;
     }
 
@@ -154,11 +165,11 @@ public class tbCategoryApprovalRequests implements Serializable {
         this.received = received;
     }
 
-    public Date getApprovedDate() {
+    public LocalDateTime getApprovedDate() {
         return approvedDate;
     }
 
-    public void setApprovedDate(Date approvedDate) {
+    public void setApprovedDate(LocalDateTime approvedDate) {
         this.approvedDate = approvedDate;
     }
 
