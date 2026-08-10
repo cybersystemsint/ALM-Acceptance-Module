@@ -50,6 +50,16 @@ public class ReportsController {
 
     private final Logger loggger = LogManager.getLogger(ReportsController.class);
     private final JdbcTemplate jdbcTemplate;
+
+    // acceptanceReceivingRequestReport() runs the same expensive 7-table join twice per request
+    // (once to count, once for the page of keys) - the count doesn't need to be exact to the
+    // second, so a short-lived cache keyed by the exact filter criteria lets repeated page turns
+    // / the same default view skip re-running it. Per-instance only (no cross-host coordination);
+    // that's fine, staleness is bounded to COUNT_CACHE_TTL_MS regardless of which host answers.
+    private static final long COUNT_CACHE_TTL_MS = 30_000;
+    private static final int COUNT_CACHE_MAX_ENTRIES = 500;
+    private static final java.util.concurrent.ConcurrentHashMap<String, long[]> countCache =
+            new java.util.concurrent.ConcurrentHashMap<>(); // value = {count, expiresAtEpochMs}
     @Autowired
     uplrepo uprepo;
 
@@ -373,10 +383,20 @@ public class ReportsController {
             }
         }
         // Base from/joins used by both queries (only selecting keys in first query)
+        // HD is joined on lineNumber too (not poNumber alone) - a PO with N lines was otherwise
+        // fanning every acceptance line out to all N of that PO's rows before the GROUP BY could
+        // collapse it back down (~10.6x on average, confirmed via EXPLAIN ANALYZE). AR is deduped
+        // to its latest row per DCC the same way exportCapitalizationReport already does, since a
+        // DCC having multiple approval-request rows was fanning this join out too (~1.52x).
         String baseFrom = " FROM tb_DCC DCC " +
-                "JOIN tb_PurchaseOrder HD ON DCC.poNumber = HD.poNumber " +
-                "JOIN tb_Category_Approval_Requests AR ON DCC.recordNo = AR.acceptanceRequestRecordNo " +
                 "JOIN tb_DCC_LN LN2 ON DCC.recordNo = LN2.dccId " +
+                "JOIN tb_PurchaseOrder HD ON DCC.poNumber = HD.poNumber AND HD.lineNumber = LN2.lineNumber " +
+                "JOIN ( " +
+                "    SELECT acceptanceRequestRecordNo, MAX(recordNo) AS recordNo " +
+                "    FROM tb_Category_Approval_Requests " +
+                "    GROUP BY acceptanceRequestRecordNo " +
+                ") AR_latest ON DCC.recordNo = AR_latest.acceptanceRequestRecordNo " +
+                "JOIN tb_Category_Approval_Requests AR ON AR.recordNo = AR_latest.recordNo " +
                 "LEFT JOIN tb_PurchaseOrderUPL upl ON DCC.poNumber = upl.poNumber AND LN2.uplLineNumber = upl.uplLine AND upl.poLineNumber = LN2.lineNumber " +
                 "LEFT JOIN tb_Site site ON LN2.locationName COLLATE utf8mb4_general_ci = site.siteId COLLATE utf8mb4_general_ci " +
                 "LEFT JOIN tb_Site_Type siteType ON site.siteTypeId COLLATE utf8mb4_general_ci = siteType.recordNo COLLATE utf8mb4_general_ci " +
@@ -385,22 +405,34 @@ public class ReportsController {
                 "  THEN (LN2.uplLineNumber = upl.uplLine AND upl.poLineNumber = LN2.lineNumber AND upl.poNumber = DCC.poNumber) " +
                 "  ELSE (HD.lineNumber = LN2.lineNumber AND HD.poNumber = DCC.poNumber) END))";
 
-        // 1) Count total using a grouped-subquery that only projects keys (lighter)
-        String countSubquery = "SELECT 1 " + baseFrom + where.toString() + " GROUP BY DCC.recordNo, LN2.recordNo";
-        String countSql = "SELECT COUNT(*) FROM (" + countSubquery + ") t";
+        // 1) Count total using a grouped-subquery that only projects keys (lighter) - cached
+        // briefly since this runs the same expensive join as the keys query below.
+        String countCacheKey = where.toString() + "|" + whereParams;
         int totalRecords = 0;
-        try {
-            Object cnt = jdbcTemplate.queryForObject(countSql, Integer.class, whereParams.toArray());
-            totalRecords = cnt == null ? 0 : (Integer) cnt;
-        } catch (Exception e) {
-            // fallback - log and proceed with 0
-            totalRecords = 0;
+        long[] cachedCount = countCache.get(countCacheKey);
+        long now = System.currentTimeMillis();
+        if (cachedCount != null && cachedCount[1] > now) {
+            totalRecords = (int) cachedCount[0];
+        } else {
+            String countSubquery = "SELECT 1 " + baseFrom + where.toString() + " GROUP BY DCC.recordNo, LN2.recordNo";
+            String countSql = "SELECT COUNT(*) FROM (" + countSubquery + ") t";
+            try {
+                Object cnt = jdbcTemplate.queryForObject(countSql, Integer.class, whereParams.toArray());
+                totalRecords = cnt == null ? 0 : (Integer) cnt;
+                if (countCache.size() >= COUNT_CACHE_MAX_ENTRIES) {
+                    countCache.entrySet().removeIf(e -> e.getValue()[1] <= now);
+                }
+                countCache.put(countCacheKey, new long[]{totalRecords, now + COUNT_CACHE_TTL_MS});
+            } catch (Exception e) {
+                // fallback - log and proceed with 0
+                totalRecords = 0;
+            }
         }
 
         // 2) Select keys for requested page (only keys, cheap)
         String keysSql = "SELECT DCC.recordNo AS requestId, LN2.recordNo AS dccLnRecordNo " +
                 baseFrom + where.toString() + " GROUP BY DCC.recordNo, LN2.recordNo " +
-                " ORDER BY DCC.recordNo, LN2.recordNo LIMIT ? OFFSET ?";
+                " ORDER BY DCC.recordNo DESC, LN2.recordNo DESC LIMIT ? OFFSET ?";
         List<Object> keysParams = new ArrayList<>(whereParams);
         keysParams.add(size);
         keysParams.add(offset);

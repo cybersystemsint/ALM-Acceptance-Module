@@ -41,12 +41,15 @@ public class AgingEmailSchedulerService implements DisposableBean {
             : "unknown-instance";
 
     // These jobs run once a day (or a handful of times at most), so there is no benefit to releasing
-    // the cluster lock early once the run completes - holding it for the full lockAtMostFor window
-    // is what actually guards against a second scheduler instance/trigger picking up the same run
-    // moments later. A short lockAtLeastFor previously let a second trigger re-acquire the lock (and
-    // re-send the batch) seconds to over a minute after the first run finished.
+    // the cluster lock early once the run completes - holding it for close to the full lockAtMostFor
+    // window is what actually guards against a second scheduler instance/trigger picking up the same
+    // run moments later. A short lockAtLeastFor previously let a second trigger re-acquire the lock
+    // (and re-send the batch) seconds to over a minute after the first run finished.
+    // lockAtLeastFor must be strictly shorter than lockAtMostFor: ShedLock's LockConfiguration derives
+    // each bound from its own Instant.now() call, so equal durations can make lockAtLeastUntil land a
+    // hair after lockAtMostUntil and fail validation.
     private static final Duration LOCK_AT_MOST_FOR = Duration.ofMinutes(5);
-    private static final Duration LOCK_AT_LEAST_FOR = Duration.ofMinutes(5);
+    private static final Duration LOCK_AT_LEAST_FOR = Duration.ofMinutes(4).plusSeconds(30);
 
     private final ThreadPoolTaskScheduler taskScheduler;
     private final AgingEmailConfigRepository configRepo;
@@ -120,10 +123,11 @@ public synchronized void scheduleConfig(AgingEmailConfig cfg, boolean persistMet
     // per-config lock name so each config has its own cluster lock
     String lockName = "aging-email-config-" + configId;
 
+    java.time.Instant lockCreatedAt = java.time.Instant.now();
     LockConfiguration lockConfig = new LockConfiguration(
             lockName,
-            java.time.Instant.now().plus(LOCK_AT_MOST_FOR),
-            java.time.Instant.now().plus(LOCK_AT_LEAST_FOR)
+            lockCreatedAt.plus(LOCK_AT_MOST_FOR),
+            lockCreatedAt.plus(LOCK_AT_LEAST_FOR)
     );
 
     Optional<SimpleLock> lock = Optional.empty();
