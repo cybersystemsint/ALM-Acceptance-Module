@@ -1736,6 +1736,14 @@ public class DccPOController {
                 CellStyle dateOnlyStyle = workbook.createCellStyle();
                 dateOnlyStyle.setDataFormat(createHelper.createDataFormat().getFormat("dd-MM-yyyy"));
 
+                // Excel's default "General" format only displays ~11 significant digits, silently
+                // rounding near-whole values (e.g. a corrupted 4.000000000000003 delivered qty) to
+                // a clean "4" on screen even though the stored cell value is unchanged. "#"
+                // placeholders (vs "0") don't force trailing zeros, so genuine whole numbers still
+                // show cleanly (80 not 80.0000...) while real fractional precision shows in full.
+                CellStyle preciseQtyStyle = workbook.createCellStyle();
+                preciseQtyStyle.setDataFormat(createHelper.createDataFormat().getFormat("0.####################"));
+
                 CellStyle headerStyle = workbook.createCellStyle();
                 Font headerFont = workbook.createFont();
                 headerFont.setBold(true);
@@ -1830,11 +1838,25 @@ public class DccPOController {
                         row.createCell(col++).setCellValue(dto.getItemPartNumber() != null ? dto.getItemPartNumber() : "");
                         row.createCell(col++).setCellValue(dto.getActualItemCode() != null ? dto.getActualItemCode() : "");
                         row.createCell(col++).setCellValue(dto.getUplLineItemCode() != null ? dto.getUplLineItemCode() : "");
-                        row.createCell(col++).setCellValue(dto.getpoAcceptanceQty() != null ? dto.getpoAcceptanceQty() : 0);
+                        Cell poAcceptanceQtyCell = row.createCell(col++);
+                        poAcceptanceQtyCell.setCellValue(dto.getpoAcceptanceQty() != null ? dto.getpoAcceptanceQty() : 0);
+                        poAcceptanceQtyCell.setCellStyle(preciseQtyStyle);
+
                         row.createCell(col++).setCellValue(dto.getPoLineDescription() != null ? dto.getPoLineDescription() : "");
                         row.createCell(col++).setCellValue(dto.getUplLineDescription() != null ? dto.getUplLineDescription() : "");
-                        row.createCell(col++).setCellValue(dto.getPoPendingQuantity() != null ? dto.getPoPendingQuantity() : 0.0);
-                        row.createCell(col++).setCellValue(dto.getPoOrderQuantity() != null ? dto.getPoOrderQuantity() : 0.0);
+
+                        Cell poPendingQtyCell = row.createCell(col++);
+                        poPendingQtyCell.setCellValue(dto.getPoPendingQuantity() != null ? dto.getPoPendingQuantity() : 0.0);
+                        poPendingQtyCell.setCellStyle(preciseQtyStyle);
+
+                        // Was dto.getPoOrderQuantity() - the PO/UPL line's ordered quantity, which is
+                        // constant across every line item sharing that PO Line + UPL Line, so every row
+                        // of a request showed the same broadcast value instead of its own delivered qty.
+                        // "Acceptance Qty" should be the per-line delivered quantity, matching the
+                        // correct Requests-tab exporter (DccPOV2Controller.buildExcel/buildCsv).
+                        Cell acceptanceQtyCell = row.createCell(col++);
+                        acceptanceQtyCell.setCellValue(dto.getLnDeliveredQty() != null ? dto.getLnDeliveredQty() : 0.0);
+                        acceptanceQtyCell.setCellStyle(preciseQtyStyle);
                         row.createCell(col++).setCellValue(dto.getLnLocationName() != null ? dto.getLnLocationName() : "");
                         row.createCell(col++).setCellValue(dto.getLnScopeOfWork() != null ? dto.getLnScopeOfWork() : "");
 

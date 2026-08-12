@@ -205,6 +205,14 @@ public class DccPOV2Controller {
             CellStyle dateStyle = wb.createCellStyle();
             dateStyle.setDataFormat(ch.createDataFormat().getFormat("dd-MM-yyyy"));
 
+            // Excel's default "General" format only displays ~11 significant digits, silently
+            // rounding near-whole values (e.g. a corrupted 4.000000000000003 delivered qty) to a
+            // clean "4" on screen even though the stored cell value is unchanged. "#" placeholders
+            // (vs "0") don't force trailing zeros, so genuine whole numbers still show cleanly
+            // (80 not 80.0000...) while values with real fractional precision show it in full.
+            CellStyle preciseQtyStyle = wb.createCellStyle();
+            preciseQtyStyle.setDataFormat(ch.createDataFormat().getFormat("0.####################"));
+
             // Header row
             Row headerRow = sheet.createRow(0);
             for (int i = 0; i < HEADERS.length; i++) {
@@ -244,11 +252,11 @@ public class DccPOV2Controller {
                     setCell(row, col++, dto.getItemPartNumber());
                     setCell(row, col++, dto.getActualItemCode());
                     setCell(row, col++, dto.getUplLineItemCode());
-                    setCell(row, col++, dto.getpoAcceptanceQty() != null ? dto.getpoAcceptanceQty() : 0);
+                    setCell(row, col++, dto.getpoAcceptanceQty() != null ? dto.getpoAcceptanceQty() : 0, preciseQtyStyle);
                     setCell(row, col++, dto.getPoLineDescription());
                     setCell(row, col++, dto.getUplLineDescription());
-                    setCell(row, col++, dto.getPoPendingQuantity());
-                    setCell(row, col++, dto.getLnDeliveredQty());
+                    setCell(row, col++, dto.getPoPendingQuantity(), preciseQtyStyle);
+                    setCell(row, col++, dto.getLnDeliveredQty(), preciseQtyStyle);
                     setCell(row, col++, dto.getLnLocationName());
                     setCell(row, col++, dto.getLnScopeOfWork());
                     col = setDateCell(row, col, dto.getLnInserviceDate(), dateStyle, dateFmt);
@@ -343,6 +351,11 @@ public class DccPOV2Controller {
         else                              cell.setCellValue(value.toString());
     }
 
+    private void setCell(Row row, int col, Object value, CellStyle style) {
+        setCell(row, col, value);
+        row.getCell(col).setCellStyle(style);
+    }
+
     private int setDateCell(Row row, int col, String dateStr,
                             CellStyle style, SimpleDateFormat fmt) {
         Cell cell = row.createCell(col);
@@ -359,8 +372,20 @@ public class DccPOV2Controller {
         return col + 1;
     }
 
+    // Number.toString()/Double.toString() always appends ".0" for whole-number doubles (e.g. 1.0,
+    // 45.0), which is a plain-text CSV artifact that doesn't apply to real Excel cells (those use
+    // the cell's number format, "General" by default, which already omits it). Strip it here for
+    // whole numbers while preserving full precision for genuine fractions (e.g. PO Acceptance Qty
+    // values like 2.625577056485133E-5) exactly as Double.toString() would render them.
     private String str(Object v) {
-        return v == null ? "" : v.toString();
+        if (v == null) return "";
+        if (v instanceof Double || v instanceof Float) {
+            double d = ((Number) v).doubleValue();
+            if (!Double.isNaN(d) && !Double.isInfinite(d) && d == Math.rint(d) && Math.abs(d) < 1e15) {
+                return String.valueOf((long) d);
+            }
+        }
+        return v.toString();
     }
 
     /** Wraps a CSV value in quotes and escapes internal quotes. */
