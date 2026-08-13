@@ -1,14 +1,13 @@
 package com.zain.almksazain.model;
 
-import javax.persistence.Column;
-import javax.persistence.Entity;
-import javax.persistence.Id;
-import javax.persistence.Lob;
-import javax.persistence.Table;
 import java.time.LocalDateTime;
 
-@Entity
-@Table(name = "tb_Export_Job")
+/**
+ * Plain POJO (not a JPA entity) - persisted as a JSON sidecar file per job on local disk
+ * (see ExportJobRepository), not as a row in the replicated MySQL database. The export
+ * servers are read-only replicas synced from the write-primary, so writing job bookkeeping
+ * into that DB would need super_read_only disabled instance-wide, risking the replication sync.
+ */
 public class ExportJob {
 
     public static final String STATUS_PENDING = "PENDING";
@@ -16,39 +15,16 @@ public class ExportJob {
     public static final String STATUS_DONE = "DONE";
     public static final String STATUS_FAILED = "FAILED";
 
-    @Id
-    @Column(name = "jobId", length = 36)
     private String jobId;
-
-    @Column(name = "reportType")
     private String reportType;
-
-    @Column(name = "status")
     private String status;
-
-    @Column(name = "rowsWritten")
     private long rowsWritten;
-
-    @Column(name = "sheetCount")
     private int sheetCount;
-
-    @Column(name = "fileName")
     private String fileName;
-
-    @Column(name = "filePath")
     private String filePath;
-
-    @Lob
-    @Column(name = "errorMessage")
     private String errorMessage;
-
-    @Column(name = "createdBy")
     private String createdBy;
-
-    @Column(name = "createdAt")
     private LocalDateTime createdAt;
-
-    @Column(name = "completedAt")
     private LocalDateTime completedAt;
 
     public String getJobId() {

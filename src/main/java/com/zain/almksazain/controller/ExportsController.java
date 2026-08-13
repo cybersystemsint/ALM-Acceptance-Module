@@ -356,8 +356,9 @@ public class ExportsController {
         job.setCompletedAt(completedAt);
         if (success) {
             job.setStatus(ExportJob.STATUS_DONE);
-            job.setFileName("ACCEPTANCE_REQUEST_REPORT_"
-                    + completedAt.format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")) + ".xlsx");
+            String filterTag = acceptanceReportHasFilters(obj, poNumber, columnName, searchQuery) ? "_FILTERED" : "";
+            job.setFileName("ACCEPTANCE_REQUEST_REPORT" + filterTag + "_"
+                    + completedAt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")) + ".xlsx");
             job.setFilePath(outFile.getAbsolutePath());
         } else {
             job.setStatus(ExportJob.STATUS_FAILED);
@@ -371,6 +372,15 @@ public class ExportsController {
 
     private String sheetName(int sheetNumber) {
         return sheetNumber == 1 ? "Acceptance Report" : "Acceptance Report (" + sheetNumber + ")";
+    }
+
+    /** True if the request narrows the result set beyond the report's unfiltered default. */
+    private boolean acceptanceReportHasFilters(JsonObject obj, String poNumber,
+                                               String columnName, String searchQuery) {
+        if (!"0".equalsIgnoreCase(poNumber)) return true;
+        if (!columnName.isEmpty() && !searchQuery.isEmpty()) return true;
+        return obj.has("filterBy") && obj.get("filterBy").isJsonObject()
+                && obj.getAsJsonObject("filterBy").size() > 0;
     }
 
     private void writeHeaderRow(Sheet sheet, List<String> headers, CellStyle headerStyle) {
