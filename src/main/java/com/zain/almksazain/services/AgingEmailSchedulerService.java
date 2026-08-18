@@ -36,6 +36,21 @@ import net.javacrumbs.shedlock.core.SimpleLock;
 public class AgingEmailSchedulerService implements DisposableBean {
     private static final Logger logger = LoggerFactory.getLogger(AgingEmailSchedulerService.class);
 
+    private static final String INSTANCE_ID = System.getenv("HOSTNAME") != null
+            ? System.getenv("HOSTNAME")
+            : "unknown-instance";
+
+    // These jobs run once a day (or a handful of times at most), so there is no benefit to releasing
+    // the cluster lock early once the run completes - holding it for close to the full lockAtMostFor
+    // window is what actually guards against a second scheduler instance/trigger picking up the same
+    // run moments later. A short lockAtLeastFor previously let a second trigger re-acquire the lock
+    // (and re-send the batch) seconds to over a minute after the first run finished.
+    // lockAtLeastFor must be strictly shorter than lockAtMostFor: ShedLock's LockConfiguration derives
+    // each bound from its own Instant.now() call, so equal durations can make lockAtLeastUntil land a
+    // hair after lockAtMostUntil and fail validation.
+    private static final Duration LOCK_AT_MOST_FOR = Duration.ofMinutes(5);
+    private static final Duration LOCK_AT_LEAST_FOR = Duration.ofMinutes(4).plusSeconds(30);
+
     private final ThreadPoolTaskScheduler taskScheduler;
     private final AgingEmailConfigRepository configRepo;
     private final SlaNotificationService slaNotificationService;
@@ -108,18 +123,18 @@ public synchronized void scheduleConfig(AgingEmailConfig cfg, boolean persistMet
     // per-config lock name so each config has its own cluster lock
     String lockName = "aging-email-config-" + configId;
 
-    // configure lock durations: adjust lockAtMostFor to be safely larger than the expected maximum run time.
+    java.time.Instant lockCreatedAt = java.time.Instant.now();
     LockConfiguration lockConfig = new LockConfiguration(
             lockName,
-            java.time.Instant.now().plus(Duration.ofMinutes(5)),
-            java.time.Instant.now().plus(Duration.ofSeconds(2))
+            lockCreatedAt.plus(LOCK_AT_MOST_FOR),
+            lockCreatedAt.plus(LOCK_AT_LEAST_FOR)
     );
 
     Optional<SimpleLock> lock = Optional.empty();
     try {
         lock = lockProvider.lock(lockConfig);
         if (lock.isEmpty()) {
-            logger.info("Could not acquire cluster lock for configId={} (instance={}) - skipping this run", configId, /*instanceId if present*/ "instance");
+            logger.info("Could not acquire cluster lock for configId={} (instance={}) - skipping this run", configId, INSTANCE_ID);
             return;
         }
 
@@ -143,7 +158,7 @@ public synchronized void scheduleConfig(AgingEmailConfig cfg, boolean persistMet
                     .orElse("approver");
 
             logger.info("Executing scheduled config id={} jobName='{}' targetType='{}' (instance={})",
-                    freshCfg.getId(), freshCfg.getJobName(), targetType, /*instanceId*/ "instance");
+                    freshCfg.getId(), freshCfg.getJobName(), targetType, INSTANCE_ID);
 
             Map<String, Object> filters = new HashMap<>();
             if (freshCfg.getDepartment() != null && !freshCfg.getDepartment().isBlank() && !"ALL".equalsIgnoreCase(freshCfg.getDepartment().trim())) {

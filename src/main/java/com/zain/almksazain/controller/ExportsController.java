@@ -2,6 +2,8 @@ package com.zain.almksazain.controller;
 
 import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -21,7 +23,9 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -43,6 +47,8 @@ import org.apache.poi.xssf.streaming.SXSSFWorkbook;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.FileSystemResource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -50,6 +56,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowCallbackHandler;
 import org.springframework.web.bind.annotation.CrossOrigin;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
@@ -59,15 +67,22 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
+import com.zain.almksazain.model.ExportJob;
+import com.zain.almksazain.repo.ExportJobRepository;
 import com.zain.almksazain.services.PurchaseOrderExportService;
 import com.zain.almksazain.specs.QueryFilterBuilder;
 
 @RestController
+// Note: this app registers a global CorsFilter (see GlobalCorsConfig) that handles CORS at the
+// filter level for every path, ahead of Spring MVC - so exposedHeaders here would be a no-op.
+// Content-Disposition exposure (needed for export filenames) is configured there instead.
 @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
 public class ExportsController {
 
     private static final Logger logger = LoggerFactory.getLogger(ExportsController.class);
     private static final int DEFAULT_FETCH_SIZE = 1000;
+    private static final int MAX_ROWS_PER_SHEET = 1_000_000;
+    private static final long PROGRESS_UPDATE_EVERY_N_ROWS = 5_000;
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
@@ -75,18 +90,90 @@ public class ExportsController {
     private DataSource dataSource;
     @Autowired
     private PurchaseOrderExportService exportService;
+    @Autowired
+    private ExportJobRepository exportJobRepository;
+
+    @Value("${app.export.dir:/data/app/logs/ALM/Exports/}")
+    private String exportDir;
 
     // ============================================================================
     // Acceptance Report Export
     // ============================================================================
 
-    @PostMapping(value = "/reports/v2/acceptanceReport/export",
-            produces = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    public DeferredResult<ResponseEntity<byte[]>> exportAcceptanceReport(
-            @RequestBody String req) {
-        logger.info("Acceptance report export request body : " + req);
-        // Returns to client immediately — 10 min async timeout
-        DeferredResult<ResponseEntity<byte[]>> deferredResult = new DeferredResult<>(600000L);
+    // Starts an export job and returns immediately with a jobId. The actual work happens in
+    // runAcceptanceReportExportJob(), off the request thread, and its result (the finished .xlsx)
+    // is persisted to disk keyed by jobId — so the export survives the browser navigating away,
+    // closing the tab, or losing connectivity. The client polls the status endpoint below and
+    // downloads once status=DONE.
+    @PostMapping(value = "/reports/v2/acceptanceReport/export")
+    public ResponseEntity<Map<String, String>> startAcceptanceReportExport(@RequestBody String req) {
+        logger.info("Acceptance report export requested : " + req);
+
+        String jobId = UUID.randomUUID().toString();
+        ExportJob job = new ExportJob();
+        job.setJobId(jobId);
+        job.setReportType("acceptanceReport");
+        job.setStatus(ExportJob.STATUS_PENDING);
+        job.setRowsWritten(0);
+        job.setSheetCount(0);
+        job.setCreatedAt(LocalDateTime.now());
+        exportJobRepository.save(job);
+
+        CompletableFuture.runAsync(() -> runAcceptanceReportExportJob(jobId, req));
+
+        Map<String, String> resp = new HashMap<>();
+        resp.put("jobId", jobId);
+        return ResponseEntity.accepted().body(resp);
+    }
+
+    @GetMapping(value = "/reports/v2/acceptanceReport/export/{jobId}/status")
+    public ResponseEntity<?> getAcceptanceReportExportStatus(@PathVariable String jobId) {
+        Optional<ExportJob> jobOpt = exportJobRepository.findById(jobId);
+        if (jobOpt.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        ExportJob job = jobOpt.get();
+        Map<String, Object> resp = new HashMap<>();
+        resp.put("jobId", job.getJobId());
+        resp.put("status", job.getStatus());
+        resp.put("rowsWritten", job.getRowsWritten());
+        resp.put("sheetCount", job.getSheetCount());
+        resp.put("fileName", job.getFileName());
+        resp.put("errorMessage", job.getErrorMessage());
+        return ResponseEntity.ok(resp);
+    }
+
+    @GetMapping(value = "/reports/v2/acceptanceReport/export/{jobId}/download")
+    public ResponseEntity<?> downloadAcceptanceReportExport(@PathVariable String jobId) {
+        Optional<ExportJob> jobOpt = exportJobRepository.findById(jobId);
+        if (jobOpt.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        ExportJob job = jobOpt.get();
+        if (!ExportJob.STATUS_DONE.equals(job.getStatus())) {
+            return ResponseEntity.status(HttpStatus.CONFLICT)
+                    .body("Export not ready yet, status=" + job.getStatus());
+        }
+        File file = new File(job.getFilePath());
+        if (!file.exists()) {
+            return ResponseEntity.status(HttpStatus.GONE).body("Export file no longer available");
+        }
+
+        HttpHeaders responseHeaders = new HttpHeaders();
+        responseHeaders.setContentType(MediaType.parseMediaType(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"));
+        responseHeaders.add("Content-Disposition", "attachment; filename=" + job.getFileName());
+        return ResponseEntity.ok().headers(responseHeaders).body(new FileSystemResource(file));
+    }
+
+    private void runAcceptanceReportExportJob(String jobId, String req) {
+        ExportJob job = exportJobRepository.findById(jobId).orElse(null);
+        if (job == null) {
+            logger.error("Export job {} disappeared before it could start", jobId);
+            return;
+        }
+        job.setStatus(ExportJob.STATUS_RUNNING);
+        exportJobRepository.save(job);
 
         JsonObject obj     = JsonParser.parseString(req).getAsJsonObject();
         String poNumber    = obj.has("poNumber")    ? obj.get("poNumber").getAsString()    : "0";
@@ -150,52 +237,66 @@ public class ExportsController {
         final List<String> headers     = buildHeaders();
         final List<String> fields      = buildFields();
         final List<Object> finalParams = new ArrayList<>(whereParams);
+        final int fieldCount           = fields.size();
 
         final Set<String> numericFields = new HashSet<>(Arrays.asList(
                 "poLineNumber", "unitPrice", "uplLineUnitPrice",
                 "acceptanceUplQty", "acceptancePoQty", "totalAcceptanceAmount"
         ));
 
-        // Process async — Tomcat thread freed immediately
-        CompletableFuture.runAsync(() -> {
-            SXSSFWorkbook workbook = new SXSSFWorkbook(2000);
-            try (Connection conn = dataSource.getConnection()) {
-                try { conn.setReadOnly(true);    } catch (Exception ignore) {}
-                try { conn.setAutoCommit(false); } catch (Exception ignore) {}
+        File dir = new File(exportDir);
+        if (!dir.exists()) {
+            dir.mkdirs();
+        }
+        // Stored file keeps a jobId suffix so two exports finishing in the same second never
+        // collide on disk. The user-facing download name (job.fileName, used for the
+        // Content-Disposition header) is computed separately, from the completion time, once
+        // the export has actually succeeded - it's never used as a path.
+        String storedFileName = "acceptance_report_"
+                + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
+                + "_" + jobId.substring(0, 8) + ".xlsx";
+        File outFile = new File(dir, storedFileName);
+
+        SXSSFWorkbook workbook = new SXSSFWorkbook(2000);
+        long[] totalRows = {0};
+        int[] sheetCount = {0};
+        boolean success = false;
+        String errorMessage = null;
+
+        try (Connection conn = dataSource.getConnection()) {
+            conn.setReadOnly(true);
+            conn.setAutoCommit(false);
+            boolean committed = false;
+            try {
                 try (PreparedStatement sqlMode = conn.prepareStatement(
                         "SET SESSION sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''))")) {
                     sqlMode.execute();
-                } catch (Exception ignore) {}
-                // ─
+                }
 
                 try (PreparedStatement ps = conn.prepareStatement(
-                        exportSql,
-                        ResultSet.TYPE_FORWARD_ONLY,
-                        ResultSet.CONCUR_READ_ONLY)) {
-
+                        exportSql, ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY)) {
                     ps.setFetchSize(Integer.MIN_VALUE); // MySQL true streaming
 
                     int idx = 1;
                     for (Object p : finalParams) ps.setObject(idx++, p);
 
-                    Sheet sheet = workbook.createSheet("Acceptance Report");
-
                     CellStyle headerStyle = buildHeaderStyle(workbook);
                     CellStyle numberStyle = buildNumberStyle(workbook);
 
-                    Row headerRow = sheet.createRow(0);
-                    for (int i = 0; i < headers.size(); i++) {
-                        Cell cell = headerRow.createCell(i);
-                        cell.setCellValue(headers.get(i));
-                        cell.setCellStyle(headerStyle);
-                    }
-
-                    int rowIdx = 1;
-                    final int fieldCount = fields.size();
+                    Sheet[] sheetRef = {workbook.createSheet(sheetName(1))};
+                    sheetCount[0] = 1;
+                    writeHeaderRow(sheetRef[0], headers, headerStyle);
+                    int[] rowIdx = {1};
 
                     try (ResultSet rs = ps.executeQuery()) {
                         while (rs.next()) {
-                            Row row = sheet.createRow(rowIdx++);
+                            if (rowIdx[0] > MAX_ROWS_PER_SHEET) {
+                                sheetCount[0]++;
+                                sheetRef[0] = workbook.createSheet(sheetName(sheetCount[0]));
+                                writeHeaderRow(sheetRef[0], headers, headerStyle);
+                                rowIdx[0] = 1;
+                            }
+                            Row row = sheetRef[0].createRow(rowIdx[0]++);
                             for (int i = 0; i < fieldCount; i++) {
                                 String field = fields.get(i);
                                 Cell cell    = row.createCell(i);
@@ -212,36 +313,83 @@ public class ExportsController {
                                     cell.setCellValue(val != null ? val : "");
                                 }
                             }
+                            totalRows[0]++;
+                            if (totalRows[0] % PROGRESS_UPDATE_EVERY_N_ROWS == 0) {
+                                job.setRowsWritten(totalRows[0]);
+                                job.setSheetCount(sheetCount[0]);
+                                exportJobRepository.save(job);
+                            }
                         }
                     }
-
-                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                    workbook.write(baos);
-
-                    String filename = "acceptance_report_"
-                            + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
-                            + ".xlsx";
-
-                    HttpHeaders responseHeaders = new HttpHeaders();
-                    responseHeaders.setContentType(MediaType.parseMediaType(
-                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"));
-                    responseHeaders.add("Content-Disposition", "attachment; filename=" + filename);
-
-                    deferredResult.setResult(new ResponseEntity<>(
-                            baos.toByteArray(), responseHeaders, HttpStatus.OK));
                 }
-
-            } catch (Exception e) {
-                logger.error("Acceptance report export failed", e);
-                deferredResult.setErrorResult(
-                        ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                                .body(("Export failed: " + e.getMessage()).getBytes()));
+                conn.commit();
+                committed = true;
             } finally {
-                workbook.dispose();
+                // Guarantee the transaction never lingers open on this pooled connection -
+                // an uncommitted transaction left on a returned connection can sit holding
+                // locks for hours (this is exactly what previously blocked schema changes
+                // on tb_DCC_LN for 3.5 hours).
+                if (!committed) {
+                    try {
+                        conn.rollback();
+                    } catch (Exception rollbackEx) {
+                        logger.warn("Rollback failed for export job {}: {}", jobId, rollbackEx.getMessage());
+                    }
+                }
             }
-        });
 
-        return deferredResult;
+            try (FileOutputStream fos = new FileOutputStream(outFile)) {
+                workbook.write(fos);
+            }
+            success = true;
+
+        } catch (Exception e) {
+            logger.error("Acceptance report export job {} failed", jobId, e);
+            errorMessage = e.getMessage();
+        } finally {
+            workbook.dispose();
+        }
+
+        LocalDateTime completedAt = LocalDateTime.now();
+        job.setRowsWritten(totalRows[0]);
+        job.setSheetCount(sheetCount[0]);
+        job.setCompletedAt(completedAt);
+        if (success) {
+            job.setStatus(ExportJob.STATUS_DONE);
+            String filterTag = acceptanceReportHasFilters(obj, poNumber, columnName, searchQuery) ? "_FILTERED" : "";
+            job.setFileName("ACCEPTANCE_REQUEST_REPORT" + filterTag + "_"
+                    + completedAt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")) + ".xlsx");
+            job.setFilePath(outFile.getAbsolutePath());
+        } else {
+            job.setStatus(ExportJob.STATUS_FAILED);
+            job.setErrorMessage(errorMessage);
+            if (outFile.exists()) {
+                outFile.delete();
+            }
+        }
+        exportJobRepository.save(job);
+    }
+
+    private String sheetName(int sheetNumber) {
+        return sheetNumber == 1 ? "Acceptance Report" : "Acceptance Report (" + sheetNumber + ")";
+    }
+
+    /** True if the request narrows the result set beyond the report's unfiltered default. */
+    private boolean acceptanceReportHasFilters(JsonObject obj, String poNumber,
+                                               String columnName, String searchQuery) {
+        if (!"0".equalsIgnoreCase(poNumber)) return true;
+        if (!columnName.isEmpty() && !searchQuery.isEmpty()) return true;
+        return obj.has("filterBy") && obj.get("filterBy").isJsonObject()
+                && obj.getAsJsonObject("filterBy").size() > 0;
+    }
+
+    private void writeHeaderRow(Sheet sheet, List<String> headers, CellStyle headerStyle) {
+        Row headerRow = sheet.createRow(0);
+        for (int i = 0; i < headers.size(); i++) {
+            Cell cell = headerRow.createCell(i);
+            cell.setCellValue(headers.get(i));
+            cell.setCellStyle(headerStyle);
+        }
     }
 
     // ============================================================================
@@ -947,11 +1095,21 @@ public class ExportsController {
         }
     }
 
+    // HD is joined on lineNumber too (not poNumber alone) - a PO with N lines was otherwise fanning
+    // every acceptance line out to all N of that PO's rows before the GROUP BY could collapse it
+    // back down (~10.6x on average, confirmed via EXPLAIN ANALYZE). AR is deduped to its latest row
+    // per DCC (same pattern exportCapitalizationReport already uses) since a DCC having multiple
+    // approval-request rows was fanning this join out too (~1.52x).
     private String buildBaseFrom() {
         return " FROM tb_DCC DCC "
-                + "JOIN tb_PurchaseOrder HD ON DCC.poNumber = HD.poNumber "
-                + "JOIN tb_Category_Approval_Requests AR ON DCC.recordNo = AR.acceptanceRequestRecordNo "
                 + "JOIN tb_DCC_LN LN2 ON DCC.recordNo = LN2.dccId "
+                + "JOIN tb_PurchaseOrder HD ON DCC.poNumber = HD.poNumber AND HD.lineNumber = LN2.lineNumber "
+                + "JOIN ( "
+                + "    SELECT acceptanceRequestRecordNo, MAX(recordNo) AS recordNo "
+                + "    FROM tb_Category_Approval_Requests "
+                + "    GROUP BY acceptanceRequestRecordNo "
+                + ") AR_latest ON DCC.recordNo = AR_latest.acceptanceRequestRecordNo "
+                + "JOIN tb_Category_Approval_Requests AR ON AR.recordNo = AR_latest.recordNo "
                 + "LEFT JOIN tb_PurchaseOrderUPL upl "
                 + "    ON DCC.poNumber = upl.poNumber "
                 + "    AND LN2.uplLineNumber = upl.uplLine "
