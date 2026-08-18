@@ -26,9 +26,13 @@ public class GlobalCorsConfig {
         CorsConfiguration config = new CorsConfiguration();
 
         config.setAllowCredentials(true);
-        config.addAllowedOriginPattern("*"); 
-        config.addAllowedHeader("*");       
-        config.addAllowedMethod("*");      
+        config.addAllowedOriginPattern("*");
+        config.addAllowedHeader("*");
+        config.addAllowedMethod("*");
+        // Without this, the browser's JS can't read Content-Disposition off the response
+        // (it's a CORS-restricted header by default), so the export download flow silently
+        // falls back to a client-generated filename instead of the server's job.fileName.
+        config.addExposedHeader("Content-Disposition");
 
         source.registerCorsConfiguration("/**", config);
         return new CorsFilter(source);
