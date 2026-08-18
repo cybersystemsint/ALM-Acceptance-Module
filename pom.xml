@@ -36,7 +36,7 @@
             <artifactId>sftp.client</artifactId>
             <version>1.0.0</version>
         </dependency>
-      
+   
         <dependency>
             <groupId>mysql</groupId>
             <artifactId>mysql-connector-java</artifactId>
@@ -133,6 +133,19 @@
     <groupId>org.apache.poi</groupId>
     <artifactId>poi</artifactId>
     <version>5.2.5</version> <!-- Use the latest stable version -->
+</dependency>
+<!-- ShedLock core -->
+<dependency>
+  <groupId>net.javacrumbs.shedlock</groupId>
+  <artifactId>shedlock-core</artifactId>
+  <version>4.36.0</version>
+</dependency>
+
+<!-- JDBC-based LockProvider (JdbcTemplate) -->
+<dependency>
+  <groupId>net.javacrumbs.shedlock</groupId>
+  <artifactId>shedlock-provider-jdbc-template</artifactId>
+  <version>4.36.0</version>
 </dependency>
 <dependency>
     <groupId>org.apache.poi</groupId>

@@ -26,6 +26,7 @@ public class tbPurchaseOrder implements Serializable {
     public Integer lineNumber;
     public String prNum;
     public String projectName;
+    public String newProjectName;
     public boolean lineCancelFlag;
     public String cancelReason;
     public String itemPartNumber;
@@ -76,6 +77,9 @@ public class tbPurchaseOrder implements Serializable {
     public String createdByName;
     public Double descopedLinePriceInPoCurrency;
     public Double newLinePriceInPoCurrency;
+
+    @Column(name = "isFavourite", nullable = false)
+    public boolean isFavourite;
 
     public Double getNewLinePriceInPoCurrency() {
         return newLinePriceInPoCurrency;
@@ -541,6 +545,22 @@ public class tbPurchaseOrder implements Serializable {
 
     public void setDescopedLinePriceInPoCurrency(Double descopedLinePriceInPoCurrency) {
         this.descopedLinePriceInPoCurrency = descopedLinePriceInPoCurrency;
+    }
+
+    public String getNewProjectName() {
+        return newProjectName;
+    }
+
+    public void setNewProjectName(String newProjectName) {
+        this.newProjectName = newProjectName;
+    }
+
+    public boolean isFavourite() {
+        return isFavourite;
+    }
+
+    public void setFavourite(boolean isFavourite) {
+        this.isFavourite = isFavourite;
     }
 
 

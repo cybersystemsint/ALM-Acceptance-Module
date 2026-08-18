@@ -36,10 +36,12 @@ import com.zain.almksazain.model.tb_ChargeAccount;
 import com.zain.almksazain.model.tb_ErrorMessage;
 import com.zain.almksazain.model.tb_Site;
 import com.zain.almksazain.model.tb_Region;
+import com.zain.almksazain.model.tbCategory;
 import com.zain.almksazain.model.tbItemCodeSubstitute;
 import com.zain.almksazain.model.tbNode;
 import com.zain.almksazain.repo.tbSiteRepo;
 import com.zain.almksazain.repo.tbRegionRepo;
+import com.zain.almksazain.repo.tbCategoryRepo;
 import com.zain.almksazain.repo.tbItemCodeSubstituteRepo;
 import com.zain.almksazain.repo.tbErrorMessageRepo;
 import com.zain.almksazain.repo.tbChargeAccountRepo;
@@ -136,6 +138,9 @@ public class APIController {
 //    tbCategoryApprovalLevelRepo categoryApprovalLevelRepo;
     @Autowired
     tbItemCodeSubstituteRepo itemCodeSubstituteRepo;
+
+    @Autowired
+    tbCategoryRepo categoryRepo;
 
     @Autowired
     tbScopeRepo scopeRepo;
@@ -1039,7 +1044,7 @@ public class APIController {
         }
         JSONObject firstRecord = jsonArray.getJSONObject(0);
         String poNumber = firstRecord.getString("poNumber");
-        List<String> allowedExtensions = Arrays.asList(".pdf", ".doc", ".csv", ".docx", ".xlsx", ".jpeg", ".msg", ".jpg", ".png", ".xlsm", ".xls", ".zip", ".rar");
+        List<String> allowedExtensions = Arrays.asList(".pdf", ".doc", ".csv", ".docx", ".xlsx", ".jpeg", ".msg", ".jpg", ".png", ".xlsm", ".xls", ".zip", ".rar", ".eml");
 
 //        String uploadDir = "/home/app/logs/ALM/POUPL/";
         String uploadDir = "/data/app/logs/ALM/POUPL/";
@@ -1162,6 +1167,8 @@ public class APIController {
             List<String> serialnumberItemCode = new ArrayList<>();
             List<String> serialnumberActualItemCode = new ArrayList<>();
             List<String> acceptanceQuantity = new ArrayList<>();
+            Set<String> mismatchedScopeUplLines = new LinkedHashSet<>();
+            Set<String> mismatchedScopeNonUplLines = new LinkedHashSet<>();
             List<Integer> recordNumbers = new ArrayList<>();
             String actualItemCode = "";
             String itemCode = "";
@@ -1185,6 +1192,9 @@ public class APIController {
                     //lets do something here for upl based first loop through all the line items
                     Map<String, Double> uplTotalsPerLine = new HashMap<>();
                     Map<String, Double> raisedUpldetails = new HashMap<>();
+                    // Prior DCC value per (PO line, UPL) must be added once; repeating the same PO/UPL on
+                    // multiple serialized rows would otherwise multiply Totalraised by the row count.
+                    Set<String> priorRaisedCountedForPoLineUpl = new HashSet<>();
 
                     //INTERNAL UAT
                     for (int h = 0; h < dcclineRequest.length(); h++) {
@@ -1204,16 +1214,19 @@ public class APIController {
                             List<Integer> validRecordNos = dccrepo.findByPoNumberAndStatus(poNumber, allowedStatuses);
                             logger.info("Matching RecordNos UPLBASED: " + validRecordNos);
                             if (!validRecordNos.isEmpty()) {
-                                List<String> dccIdStrings = validRecordNos.stream()
-                                        .map(String::valueOf)
-                                        .collect(Collectors.toList());
-                                logger.info("Matching dccIdStrings: " + dccIdStrings);
+                                String priorKey = validatelineNumber + "|" + validateuplline;
+                                if (priorRaisedCountedForPoLineUpl.add(priorKey)) {
+                                    List<String> dccIdStrings = validRecordNos.stream()
+                                            .map(String::valueOf)
+                                            .collect(Collectors.toList());
+                                    logger.info("Matching dccIdStrings: " + dccIdStrings);
 
-                                Double totalDeliveredQty = dcclnrepo.sumDeliveredQtyByDccIdsAndPoLineInfo(dccIdStrings, poNumber, validatelineNumber, validateuplline);
+                                    Double totalDeliveredQty = dcclnrepo.sumDeliveredQtyByDccIdsAndPoLineInfo(dccIdStrings, poNumber, validatelineNumber, validateuplline);
 
-                                deliveredlineTotal = totalDeliveredQty * uplLineUnitPrice;
+                                    deliveredlineTotal = totalDeliveredQty * uplLineUnitPrice;
 
-                                raisedUpldetails.put(validatelineNumber, raisedUpldetails.getOrDefault(validatelineNumber, 0.0) + deliveredlineTotal);
+                                    raisedUpldetails.put(validatelineNumber, raisedUpldetails.getOrDefault(validatelineNumber, 0.0) + deliveredlineTotal);
+                                }
                             }
                         }
                     }
@@ -1309,6 +1322,17 @@ public class APIController {
                             logger.info("newItemCode: " + itemCode);
                             logger.info("UPL LINE QTY : " + uplQty);
 
+                            String zainCategory = topRecord != null ? topRecord.getZainItemCategoryCode() : null;
+                            if (topRecord == null || zainCategory == null || zainCategory.isBlank()) {
+                                mismatchedScopeUplLines.add(polineitem + "+" + upllineitem);
+                            } else {
+                                List<tbCategory> cats = categoryRepo.findByItemCategoryCodeAndScope(
+                                        zainCategory.trim(), scopeofWork.trim());
+                                if (cats.isEmpty()) {
+                                    mismatchedScopeUplLines.add(polineitem + "+" + upllineitem);
+                                }
+                            }
+
                             if (itemSerialized.equalsIgnoreCase("Yes") && activeOrPassive.equalsIgnoreCase("Active")) {
                                 //CHECK FROM INVENTORY SIDE
                                 if (serialNumber.length() > 1 && itemCode.length() > 1) {
@@ -1371,6 +1395,32 @@ public class APIController {
                             Double poqtyNew = podetails != null ? podetails.getPoQtyNew() : 0;
                             Double quantityDueNew = podetails != null ? podetails.getQuantityDueNew() : 0;
                             Double quantityDueOld = podetails != null ? podetails.getQuantityDueOld() : 0;
+
+                            String itemCategoryInventory = podetails != null ? podetails.getItemCategoryInventory() : null;
+                            if (podetails == null || itemCategoryInventory == null || itemCategoryInventory.isBlank()) {
+                                mismatchedScopeNonUplLines.add(polineitem);
+                            } else {
+                                List<tbCategory> cats = categoryRepo.findByItemCategoryCodeAndScope(
+                                        itemCategoryInventory.trim(), scopeofWork.trim());
+                                if (cats.isEmpty()) {
+                                    mismatchedScopeNonUplLines.add(polineitem);
+                                }
+                            }
+
+                            String serialized = dcclinejsonObject.optString("serialized", "").trim();
+                            String activeOrPassive = dcclinejsonObject.optString("activeOrPassive", "").trim();
+                            if (serialized.equalsIgnoreCase("Yes") && activeOrPassive.equalsIgnoreCase("Active")) {
+                                String partNumberForInventory = actualItemCode.length() > 1
+                                        ? actualItemCode
+                                        : dcclinejsonObject.optString("itemPartNumber", "").trim();
+                                if (serialNumber.length() > 1 && partNumberForInventory.length() > 1) {
+                                    logger.info("validating Active Inventory (NON-UPL): ");
+                                    List<tbNode> validateInventorylist = nodeRepo.findByPartNumberAndSerialNumber(partNumberForInventory, serialNumber);
+                                    if (validateInventorylist.isEmpty()) {
+                                        validateInventory.add(serialNumber);
+                                    }
+                                }
+                            }
 
                             if (!serialcontrol.equalsIgnoreCase("NO CONTROL")) {
                                 List<tbSerialNumber> validateSerialNumberforPo = serialNumberRepo.findBySerialNumber(serialNumber);
@@ -1576,6 +1626,17 @@ public class APIController {
                             String activeOrPassive = topRecord != null ? String.valueOf(topRecord.getActiveOrPassive()) : "";
                             String uplItemCode = topRecord != null ? String.valueOf(topRecord.getUplLineItemCode()) : "";
 
+                            String zainCategory = topRecord != null ? topRecord.getZainItemCategoryCode() : null;
+                            if (topRecord == null || zainCategory == null || zainCategory.isBlank()) {
+                                mismatchedScopeUplLines.add(polineitem + "+" + upllineitem);
+                            } else {
+                                List<tbCategory> cats = categoryRepo.findByItemCategoryCodeAndScope(
+                                        zainCategory.trim(), scopeofWork.trim());
+                                if (cats.isEmpty()) {
+                                    mismatchedScopeUplLines.add(polineitem + "+" + upllineitem);
+                                }
+                            }
+
                             if (itemSerialized.equalsIgnoreCase("Yes") && activeOrPassive.equalsIgnoreCase("Active")) {
                                 //CHECK FROM INVENTORY SIDE
                                 if (serialNumber.length() > 1 && UpdateItemCode.length() > 1) {
@@ -1601,6 +1662,32 @@ public class APIController {
                             tbPurchaseOrder podetails = PurchaseOrderRepo.findTopByPoNumberAndLineNumber(poNumber, polineitem);
 
                             String serialcontrol = podetails != null ? String.valueOf(podetails.getSerialControl()) : "";
+                            String itemCategoryInventory = podetails != null ? podetails.getItemCategoryInventory() : null;
+                            if (podetails == null || itemCategoryInventory == null || itemCategoryInventory.isBlank()) {
+                                mismatchedScopeNonUplLines.add(polineitem);
+                            } else {
+                                List<tbCategory> cats = categoryRepo.findByItemCategoryCodeAndScope(
+                                        itemCategoryInventory.trim(), scopeofWork.trim());
+                                if (cats.isEmpty()) {
+                                    mismatchedScopeNonUplLines.add(polineitem);
+                                }
+                            }
+
+                            String serialized = dcclineUpdatejsonObject.optString("serialized", "").trim();
+                            String activeOrPassive = dcclineUpdatejsonObject.optString("activeOrPassive", "").trim();
+                            if (serialized.equalsIgnoreCase("Yes") && activeOrPassive.equalsIgnoreCase("Active")) {
+                                String partNumberForInventory = UpdateActualItemCode.length() > 1
+                                        ? UpdateActualItemCode.trim()
+                                        : dcclineUpdatejsonObject.optString("itemPartNumber", "").trim();
+                                if (serialNumber.length() > 1 && partNumberForInventory.length() > 1) {
+                                    logger.info("validating Active Inventory (NON-UPL): ");
+                                    List<tbNode> validateInventorylist = nodeRepo.findByPartNumberAndSerialNumber(partNumberForInventory, serialNumber);
+                                    if (validateInventorylist.isEmpty()) {
+                                        validateInventory.add(serialNumber);
+                                    }
+                                }
+                            }
+
                             if (!serialcontrol.equalsIgnoreCase("NO CONTROL")) {
                                 List<tbSerialNumber> validateSerialNumberforPo = serialNumberRepo.findBySerialNumber(serialNumber);
                                 if (!validateSerialNumberforPo.isEmpty()) {
@@ -1693,6 +1780,53 @@ public class APIController {
                 }
             }
 
+            List<String> excludedDccStatuses = Arrays.asList("incomplete", "rejected", "returned");
+            Set<String> incomingTagNumbersLower = new LinkedHashSet<>();
+            Set<String> duplicateTagsInRequest = new LinkedHashSet<>();
+            Set<String> seenTagsLower = new HashSet<>();
+            Set<Long> currentDccRecordNos = new HashSet<>();
+
+            for (int i = 0; i < jsonArray.length(); i++) {
+                JSONObject header = jsonArray.getJSONObject(i);
+                long headerRecordNo = Long.parseLong(header.getString("recordNo"));
+                if (headerRecordNo > 0) {
+                    currentDccRecordNos.add(headerRecordNo);
+                }
+                JSONArray lineItems = header.getJSONArray("lineItems");
+                for (int j = 0; j < lineItems.length(); j++) {
+                    String tagNumber = lineItems.getJSONObject(j).optString("tagNumber", "").trim();
+                    if (tagNumber.isEmpty()) {
+                        continue;
+                    }
+                    String tagLower = tagNumber.toLowerCase();
+                    if (!seenTagsLower.add(tagLower)) {
+                        duplicateTagsInRequest.add(tagNumber);
+                    }
+                    incomingTagNumbersLower.add(tagLower);
+                }
+            }
+
+            Set<String> duplicateTagNumbers = new LinkedHashSet<>();
+            if (!incomingTagNumbersLower.isEmpty()) {
+                List<DCCLineItem> tagConflicts = dcclnrepo.findActiveTagConflicts(
+                        new ArrayList<>(incomingTagNumbersLower),
+                        excludedDccStatuses);
+                for (DCCLineItem conflict : tagConflicts) {
+                    if (conflict.getDccId() != null && !conflict.getDccId().isBlank()) {
+                        try {
+                            long conflictDccId = Long.parseLong(conflict.getDccId().trim());
+                            if (currentDccRecordNos.contains(conflictDccId)) {
+                                continue;
+                            }
+                        } catch (NumberFormatException ignored) {
+                        }
+                    }
+                    if (conflict.getTagNumber() != null && !conflict.getTagNumber().isBlank()) {
+                        duplicateTagNumbers.add(conflict.getTagNumber());
+                    }
+                }
+            }
+
             List<String> errorMessages = new ArrayList<>();
             Set<String> uniqueScope = new HashSet<>(ScopeOfworkList);
 
@@ -1749,13 +1883,115 @@ public class APIController {
                 errorMessages.add("The dateInService for Upl Line Items(s) " + oldDateService + " is more than 6 months old. Validation failed.");
             }
 
+            if (!mismatchedScopeUplLines.isEmpty()) {
+                String submittedScope = uniqueScope.isEmpty() ? scopeofWork.trim() : String.join(", ", uniqueScope);
+                errorMessages.add("PO line + UPL line (" + String.join(", ", mismatchedScopeUplLines)
+                        + ") for PO " + poNumber
+                        + " does not belong to the submitted scope " + submittedScope + ".");
+            }
+
+            if (!mismatchedScopeNonUplLines.isEmpty()) {
+                String submittedScope = uniqueScope.isEmpty() ? scopeofWork.trim() : String.join(", ", uniqueScope);
+                errorMessages.add("PO line (" + String.join(", ", mismatchedScopeNonUplLines)
+                        + ") for PO " + poNumber
+                        + " does not belong to the submitted scope " + submittedScope + ".");
+            }
+
             //commenting for UAT
             if (!acceptanceQuantity.isEmpty()) {
                 errorMessages.add("The delivery quantity entered for this acceptance request will exceed the po Pending quantity. The total po delivered quantity is  " + acceptanceQuantity + " . ");
             }
+
+            if (!duplicateTagsInRequest.isEmpty()) {
+                errorMessages.add("Duplicate tag number(s) in request: " + String.join(", ", duplicateTagsInRequest));
+            }
+
+            if (!duplicateTagNumbers.isEmpty()) {
+                errorMessages.add("Acceptance request for tag number(s) " + String.join(", ", duplicateTagNumbers)
+                        + " has already been raised. Kindly use a different tag number.");
+            }
+
+            // ===== NEW VALIDATION: submitted batch quantity vs live UPL Pending Quantity =====
+            // For UPL-based line items, sum the "Acceptance Quantity" (deliveredQty) requested in THIS
+            // submission per (poNumber, poLineNumber, uplLineNumber), and make sure it does not exceed
+            // that UPL line's live Pending Quantity — recomputed here from the database rather than
+            // trusted from the payload, since the client-supplied uplPendingQuantity can be stale.
+            // If any UPL line fails this check, the whole submission is rejected (added to
+            // errorMessages, which the check just below already returns as one combined error).
+            {
+                List<String> allowedStatusesForPendingCheck = Arrays.asList("approved-received", "inprocess", "approved", "request-info");
+                Map<String, Double> submittedQtyByUplKey = new LinkedHashMap<>();
+                Map<String, String[]> uplKeyParts = new LinkedHashMap<>(); // key -> [poNumber, poLineNumber, uplLineNumber]
+
+                for (int qi = 0; qi < jsonArray.length(); qi++) {
+                    JSONObject dccObject = jsonArray.getJSONObject(qi);
+                    if (Integer.parseInt(dccObject.getString("recordNo")) != 0) {
+                        continue; // only applies to new acceptance requests being created
+                    }
+                    String batchPoNumber = dccObject.getString("poNumber");
+                    JSONArray lineItemsForQtyCheck = dccObject.getJSONArray("lineItems");
+                    for (int qh = 0; qh < lineItemsForQtyCheck.length(); qh++) {
+                        JSONObject lineItem = lineItemsForQtyCheck.getJSONObject(qh);
+                        String lineUplLineNumber = lineItem.optString("uplLineNumber", "");
+                        if (lineUplLineNumber.isEmpty()) {
+                            continue; // not UPL-based, out of scope for this check
+                        }
+                        String linePoLineNumber = lineItem.getString("poLineNumber");
+                        double lineDeliveredQty = Double.parseDouble(lineItem.getString("deliveredQty"));
+
+                        String uplKey = batchPoNumber + "|" + linePoLineNumber + "|" + lineUplLineNumber;
+                        submittedQtyByUplKey.put(uplKey, submittedQtyByUplKey.getOrDefault(uplKey, 0.0) + lineDeliveredQty);
+                        uplKeyParts.putIfAbsent(uplKey, new String[]{batchPoNumber, linePoLineNumber, lineUplLineNumber});
+                    }
+                }
+
+                List<String> uplQuantityExceededMessages = new ArrayList<>();
+                for (Map.Entry<String, Double> submittedEntry : submittedQtyByUplKey.entrySet()) {
+                    String[] parts = uplKeyParts.get(submittedEntry.getKey());
+                    String keyPoNumber = parts[0];
+                    String keyPoLineNumber = parts[1];
+                    String keyUplLineNumber = parts[2];
+                    double submittedSum = submittedEntry.getValue();
+
+                    tb_PurchaseOrderUPL uplRecord = purchaseOrderUPLRepo.findTopByPoNumberAndPoLineNumberAndUplLine(keyPoNumber, keyPoLineNumber, keyUplLineNumber);
+                    double uplLineQuantity = uplRecord != null ? uplRecord.getUplLineQuantity() : 0.0;
+
+                    List<Integer> activeDccRecordNos = dccrepo.findByPoNumberAndStatus(keyPoNumber, allowedStatusesForPendingCheck);
+                    double alreadyRaisedQty = 0.0;
+                    if (!activeDccRecordNos.isEmpty()) {
+                        List<String> activeDccIdStrings = activeDccRecordNos.stream()
+                                .map(String::valueOf)
+                                .collect(Collectors.toList());
+                        Double summed = dcclnrepo.sumDeliveredQtyByDccIdsAndPoLineInfo(activeDccIdStrings, keyPoNumber, keyPoLineNumber, keyUplLineNumber);
+                        alreadyRaisedQty = summed != null ? summed : 0.0;
+                    }
+
+                    double uplLinePendingQuantity = uplLineQuantity - alreadyRaisedQty;
+
+                    logger.info("UPL Pending Qty check [PO " + keyPoNumber + ", Line " + keyPoLineNumber + ", UPL " + keyUplLineNumber + "]: "
+                            + "submitted=" + submittedSum + ", alreadyRaised=" + alreadyRaisedQty
+                            + ", uplLineQuantity=" + uplLineQuantity + ", pendingQuantity=" + uplLinePendingQuantity);
+
+                    if (submittedSum > uplLinePendingQuantity) {
+                        uplQuantityExceededMessages.add(
+                                "Acceptance quantity exceeds pending quantity for: PO " + keyPoNumber
+                                        + " Line " + keyPoLineNumber + " UPL " + keyUplLineNumber
+                                        + ": requested " + formatQty(submittedSum)
+                                        + " exceeds pending " + formatQty(uplLinePendingQuantity)
+                                        + " (already raised " + formatQty(alreadyRaisedQty) + ")"
+                        );
+                    }
+                }
+
+                if (!uplQuantityExceededMessages.isEmpty()) {
+                    errorMessages.add(String.join("\n", uplQuantityExceededMessages));
+                }
+            }
+            // ===== END NEW VALIDATION =====
+
             // If any errors found, return all in one response
             if (!errorMessages.isEmpty()) {
-                return response("Error", String.join(" | ", errorMessages));
+                return response("Error", String.join("\n", errorMessages));
             }
 
             String createdByName = "";
@@ -1812,11 +2048,42 @@ public class APIController {
                         }
                     }
                 }
-
                 if (result.contains("Success")) {
-                    postdccln(poNumber, newRecordNo, status, createdBy, createdByName, vendorName, dcc_line_data.toString());
+                    Set<Long> incomingRecordNos = new HashSet<>();
+                    for (int x = 0; x < dcc_line_data.length(); x++) {
+                        JSONObject lineObj = dcc_line_data.getJSONObject(x);
+                        long lineRecordNo = 0L;
+                        try {
+                            String rn = lineObj.optString("recordNo", "0");
+                            if (rn != null && !rn.isBlank()) {
+                                lineRecordNo = Long.parseLong(rn);
+                            }
+                        } catch (Exception e) {
+                        }
+                        if (lineRecordNo > 0L) {
+                            incomingRecordNos.add(lineRecordNo);
+                        }
+                    }
+                
+                    List<DCCLineItem> existingLines = dcclnrepo.findByDccId(newRecordNo);
+                    Set<Long> existingRecordNos = existingLines.stream()
+                            .map(DCCLineItem::getRecordNo) 
+                            .collect(Collectors.toSet());
+                    existingRecordNos.removeAll(incomingRecordNos);
+                    if (!existingRecordNos.isEmpty()) {
+                        List<Long> toDelete = new ArrayList<>(existingRecordNos);
+                        dcclnrepo.deleteByRecordNoIn(toDelete);
+                    }
+                
+                    // Continue with post-processing for remaining/updated line items
+                    String headerRegion = jsonObject.optString("region", "").trim();
+                    postdccln(poNumber, newRecordNo, status, createdBy, createdByName, vendorName, headerRegion, dcc_line_data.toString());
+                }
+                // if (result.contains("Success")) {
+                //     postdccln(poNumber, newRecordNo, status, createdBy, createdByName, vendorName, dcc_line_data.toString());
 
-                } else {
+                // } 
+                else {
                     net.minidev.json.JSONObject responsedata = new net.minidev.json.JSONObject();
                     responsedata.put("dccId", dccId);
                     responsedata.put("recordNo", recordNo);
@@ -2069,8 +2336,16 @@ public class APIController {
         }
     }
 
+    // Formats a quantity without a trailing ".0" for whole numbers, used in validation error messages.
+    private String formatQty(double qty) {
+        if (qty == Math.floor(qty) && !Double.isInfinite(qty)) {
+            return String.valueOf((long) qty);
+        }
+        return String.format("%.2f", qty);
+    }
+
     //Add Edit DCC
-    private String postdccln(String poNumber, String recordId, String status, Integer createdBy, String createdByName, String vendorName, String req) {
+    private String postdccln(String poNumber, String recordId, String status, Integer createdBy, String createdByName, String vendorName, String headerRegion, String req) {
 
         JSONArray jsonArrayresponse = new JSONArray();
         List<String> ItemCategoryCodes = new ArrayList<>();
@@ -2114,9 +2389,15 @@ public class APIController {
                 }
             }
 
-            tb_Site topRecord = siteRepo.findFirstBySiteId(locationName);
-            Integer regionrecordId = topRecord != null ? (topRecord.getRegionId()) : null;
-            tb_Region regionRecord = regionRepo.findByRecordNo(regionrecordId);
+            String workflowRegion;
+            if (headerRegion != null && !headerRegion.isEmpty()) {
+                workflowRegion = headerRegion;
+            } else {
+                tb_Site topRecord = siteRepo.findFirstBySiteId(locationName);
+                Integer regionrecordId = topRecord != null ? (topRecord.getRegionId()) : null;
+                tb_Region regionRecord = regionrecordId != null ? regionRepo.findByRecordNo(regionrecordId) : null;
+                workflowRegion = regionRecord != null ? regionRecord.getRegionName() : "";
+            }
 
             Set<String> uniqueItemCategoryCodes = new LinkedHashSet<>(ItemCategoryCodes);
 
@@ -2133,7 +2414,7 @@ public class APIController {
                 params.put("requestedBy", createdByName);
                 params.put("vendorName", vendorName);
                 params.put("createdBy", createdBy.toString());
-                params.put("regions", regionRecord.getRegionName());
+                params.put("regions", workflowRegion);
                 if (status.equalsIgnoreCase("request-info")) {
                     params.put("status", "request-info");
                 } else {
