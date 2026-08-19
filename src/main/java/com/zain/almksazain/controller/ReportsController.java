@@ -1999,6 +1999,50 @@ private String convertToSqlDate(String input) {
         return response;
     }
 
+    // Bulk Update :: Unified Price List needs to validate/diff an uploaded file's rows against
+    // their CURRENT values regardless of what page the grid happens to have loaded (it's
+    // paginated - 100 of potentially thousands - and defaults to page 1 on every visit, so
+    // "currently loaded" was never a workable definition of "exists"). This looks the exact
+    // record numbers in the file up directly, independent of any grid state.
+    @PostMapping(value = "/reports/getUplsByRecordNos", produces = "application/json")
+    @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
+    public Map<String, Object> getUplsByRecordNos(@RequestBody String req) {
+        JsonObject obj = new JsonParser().parse(req).getAsJsonObject();
+        Map<String, Object> response = new HashMap<>();
+
+        if (!obj.has("recordNos") || !obj.get("recordNos").isJsonArray()) {
+            response.put("data", Collections.emptyList());
+            return response;
+        }
+
+        List<Long> recordNos = new ArrayList<>();
+        for (JsonElement el : obj.getAsJsonArray("recordNos")) {
+            try {
+                recordNos.add(Long.parseLong(el.getAsString().trim()));
+            } catch (Exception ignored) {
+                // Skip anything that isn't a valid record number rather than failing the whole lookup
+            }
+        }
+        if (recordNos.isEmpty()) {
+            response.put("data", Collections.emptyList());
+            return response;
+        }
+
+        String placeholders = String.join(",", Collections.nCopies(recordNos.size(), "?"));
+        String sql = "SELECT UPL.recordNo, UPL.recordDatetime, UPL.vendor, UPL.manufacturer, UPL.countryOfOrigin, UPL.projectName, "
+                + "UPL.poType, UPL.releaseNumber, UPL.poNumber, UPL.poLineNumber, UPL.uplLine, UPL.poLineItemType, UPL.poLineItemCode, "
+                + "UPL.poLineDescription, UPL.uplLineItemType, UPL.uplLineItemCode, UPL.uplLineDescription, UPL.zainItemCategoryCode, "
+                + "UPL.zainItemCategoryDescription, UPL.uplItemSerialized, UPL.activeOrPassive, UPL.uom, UPL.currency, "
+                + "UPL.poLineQuantity, UPL.poLineUnitPrice, UPL.uplLineQuantity, UPL.uplLineUnitPrice, UPL.substituteItemCode, "
+                + "UPL.remarks, UPL.status, "
+                + "UPL.createdByName, UPL.uplModifiedBy AS updatedByName, UPL.uplModifiedDate AS updatedDatetime "
+                + "FROM tb_PurchaseOrderUPL UPL WHERE UPL.status = 'ACTIVE' AND UPL.recordNo IN (" + placeholders + ")";
+
+        List<Map<String, Object>> result = jdbcTemplate.queryForList(sql, recordNos.toArray());
+        response.put("data", result);
+        return response;
+    }
+
     //==================GET ALL CREATED ACCEPTANCE PER SUPPLIER AND RECORD NO   =====
     @PostMapping(value = "/reports/getdccperrecordNo", produces = "application/json")
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
