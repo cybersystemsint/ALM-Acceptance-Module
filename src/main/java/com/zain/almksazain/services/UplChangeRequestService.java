@@ -72,8 +72,10 @@ public class UplChangeRequestService {
     private static final String MODULE_NAME = "Unified Price List";
     private static final int ACTIVE_STATUS = 1;
 
-    /** Same definition combinedPurchaseOrderView uses for POAcceptanceQty/poPendingQuantity. */
-    private static final List<String> DCC_STATUSES_NOT_COUNTING_AS_PAC = Arrays.asList("incomplete", "rejected");
+    /** Same definition combinedPurchaseOrderView uses for POAcceptanceQty/poPendingQuantity,
+     *  plus "returned" - a returned PAC didn't go through either, so it shouldn't count against
+     *  the UPL line's already-accepted quantity floor. */
+    private static final List<String> DCC_STATUSES_NOT_COUNTING_AS_PAC = Arrays.asList("incomplete", "rejected", "returned");
 
     private static final String ACTIVE = "ACTIVE";
     private static final String DELETED = "DELETED";
@@ -167,10 +169,10 @@ public class UplChangeRequestService {
     // ============================================================
 
     /**
-     * Creates one request per item, independently — a PAC-blocked or otherwise invalid
-     * line does not abort the rest of the batch (e.g. deleting 2 of 3 selected lines when
-     * the third already has a PAC raised against it). Every item still runs the full
-     * fail-fast validation; only the failing item is skipped.
+     * All-or-nothing: every item in the batch is validated first, with nothing persisted yet.
+     * If even one item fails, the whole submission is rejected — no partial batch where some
+     * lines go on to approval while others silently don't. The caller gets back the specific
+     * failure for every line that didn't pass, not just the first one.
      */
     @Transactional
     public UplChangeRequestBatchResult createChangeRequests(List<UplChangeRequestItem> items, Integer requestedBy,
@@ -184,14 +186,41 @@ public class UplChangeRequestService {
             throw new UplValidationException("You don't have permission to do that");
         }
 
-        List<UplChangeRequest> created = new ArrayList<>();
+        List<UplChangeRequest> prepared = new ArrayList<>();
         List<UplChangeRequestFailure> failures = new ArrayList<>();
+        // Catches the same UPL line appearing twice in one submission — since nothing is saved
+        // until every item has passed, the usual "already has a change pending approval" check
+        // (which only sees already-persisted requests) can't catch that on its own.
+        Set<Long> seenInThisBatch = new java.util.HashSet<>();
+
         for (UplChangeRequestItem item : items) {
             try {
-                created.add(createOne(item, requester, batchId));
+                if (item.getUplRecordNo() != null && !seenInThisBatch.add(item.getUplRecordNo())) {
+                    throw new UplValidationException(
+                            "UPL line " + item.getUplRecordNo() + " appears more than once in this submission");
+                }
+                prepared.add(prepareOne(item, requester, batchId));
             } catch (UplValidationException ex) {
                 failures.add(new UplChangeRequestFailure(item.getUplRecordNo(), ex.getMessage()));
             }
+        }
+
+        if (!failures.isEmpty()) {
+            // Account for every submitted line, not just the ones that actually had a problem —
+            // otherwise a line that passed its own validation would just silently vanish from the
+            // response with no explanation for why it wasn't submitted.
+            List<UplChangeRequestFailure> allFailures = new ArrayList<>(failures);
+            for (UplChangeRequest cr : prepared) {
+                allFailures.add(new UplChangeRequestFailure(cr.getUplRecordNo(),
+                        "Not submitted — this line passed validation, but the whole batch was rejected "
+                                + "because other line(s) in the same submission failed."));
+            }
+            return new UplChangeRequestBatchResult(Collections.emptyList(), allFailures);
+        }
+
+        List<UplChangeRequest> created = new ArrayList<>();
+        for (UplChangeRequest cr : prepared) {
+            created.add(changeRequestRepo.save(cr));
         }
 
         // Notify once per distinct changeType that just entered level 1.
@@ -205,7 +234,9 @@ public class UplChangeRequestService {
         return new UplChangeRequestBatchResult(created, failures);
     }
 
-    private UplChangeRequest createOne(UplChangeRequestItem item, User requester, String batchId) {
+    /** Validates one item and builds its (unsaved) UplChangeRequest — persistence happens only
+     *  after every item in the batch has passed this. */
+    private UplChangeRequest prepareOne(UplChangeRequestItem item, User requester, String batchId) {
         if (item.getUplRecordNo() == null || item.getChangeType() == null) {
             throw new UplValidationException("Each item needs a uplRecordNo and a changeType");
         }
@@ -242,7 +273,7 @@ public class UplChangeRequestService {
         cr.setStatus(UplChangeRequestStatus.PENDING);
         cr.setRequestedBy(requester.getUserId());
         cr.setRequestedByName(requester.getFullName());
-        return changeRequestRepo.save(cr);
+        return cr;
     }
 
     /** Whitelists the 7 approved fields and returns only the ones that actually changed. */
@@ -337,8 +368,18 @@ public class UplChangeRequestService {
         Double accepted = dccLineRepo.sumAcceptedQtyForUplLine(
                 uplLine.getPoNumber(), uplLine.getPoLineNumber(), uplLine.getUplLine(), DCC_STATUSES_NOT_COUNTING_AS_PAC);
         if (accepted != null && proposedQty < accepted) {
-            throw new UplValidationException("New quantity is below what's already been accepted on a PAC");
+            throw new UplValidationException("New quantity (" + formatQty(proposedQty)
+                    + ") is below the total quantity already raised/submitted on active PAC(s) for this UPL line ("
+                    + formatQty(accepted) + "). It can't be reduced below that.");
         }
+    }
+
+    /** Trims a whole-number double's trailing ".0" so quantities in messages read like "80" not "80.0". */
+    private String formatQty(double value) {
+        if (value == Math.floor(value) && !Double.isInfinite(value)) {
+            return String.valueOf((long) value);
+        }
+        return String.valueOf(value);
     }
 
     private void validateNoPac(tb_PurchaseOrderUPL uplLine) {
