@@ -360,7 +360,10 @@ public class UplChangeRequestService {
             }
         }
         if (ceiling > 0 && total > ceiling) {
-            throw new UplValidationException("UPL Line total cannot exceed PO Line Total Price");
+            throw new UplValidationException("UPL Line total cannot exceed PO Line Total Price. The combined total "
+                    + "of all UPL line(s) under PO " + uplLine.getPoNumber() + " line " + uplLine.getPoLineNumber()
+                    + " would be " + formatQty(total) + ", which exceeds the PO line's total price of "
+                    + formatQty(ceiling) + ".");
         }
     }
 
