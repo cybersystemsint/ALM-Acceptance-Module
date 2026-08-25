@@ -42,7 +42,11 @@ public interface tbPurchaseOrderUPLRepo extends JpaRepository<tb_PurchaseOrderUP
     );
     List<tb_PurchaseOrderUPL> findByPoNumberInAndPoLineNumberInAndUplLineIn(
     Set<String> poNumbers, Set<String> lineNumbers, Set<String> uplLines);
-//    //NEW CODE 
+//    //NEW CODE
 //    List<tb_PurchaseOrderUPL> findByPoNumber(String poNumber);
+
+    // UPL edit/delete approval workflow: every other active line under the same PO line,
+    // for the line-total-vs-PO-line-total ceiling check.
+    List<tb_PurchaseOrderUPL> findByPoNumberAndPoLineNumberAndStatus(String poNumber, String poLineNumber, String status);
 
 }

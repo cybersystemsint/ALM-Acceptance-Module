@@ -60,6 +60,7 @@ public class tb_PurchaseOrderUPL implements Serializable {
     public String createdByName;
     public String uplModifiedBy;
     public Date uplModifiedDate;
+    private String status = "ACTIVE";
 
     public long getRecordNo() {
         return recordNo;
@@ -363,6 +364,14 @@ public class tb_PurchaseOrderUPL implements Serializable {
 
     public void setUplModifiedDate(Date uplModifiedDate) {
         this.uplModifiedDate = uplModifiedDate;
+    }
+
+    public String getStatus() {
+        return status;
+    }
+
+    public void setStatus(String status) {
+        this.status = status;
     }
 
 }
