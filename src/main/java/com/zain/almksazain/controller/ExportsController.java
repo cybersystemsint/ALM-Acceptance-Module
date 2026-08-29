@@ -69,6 +69,7 @@ import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 import com.zain.almksazain.model.ExportJob;
 import com.zain.almksazain.repo.ExportJobRepository;
+import com.zain.almksazain.services.DccPoCombinedService;
 import com.zain.almksazain.services.PurchaseOrderExportService;
 import com.zain.almksazain.specs.QueryFilterBuilder;
 
@@ -92,6 +93,8 @@ public class ExportsController {
     private PurchaseOrderExportService exportService;
     @Autowired
     private ExportJobRepository exportJobRepository;
+    @Autowired
+    private DccPoCombinedService dccPoCombinedService;
 
     @Value("${app.export.dir:/data/app/logs/ALM/Exports/}")
     private String exportDir;
@@ -390,6 +393,228 @@ public class ExportsController {
             cell.setCellValue(headers.get(i));
             cell.setCellStyle(headerStyle);
         }
+    }
+
+    // ============================================================================
+    // Aging Report / Full Aging Report Export
+    //
+    // Both report types share the exact same column set (verified against both
+    // grids' column definitions) and the same underlying row shape - a flat
+    // Map<String,Object> per DCC, already fully filtered and aggregated by
+    // DccPoCombinedService's getAgingReportForExport/getFullAgingReportForExport
+    // (RQ: stream-export rollout). Unlike the acceptance-report export above, the
+    // read side here isn't a raw streaming SQL query - it reuses the same in-memory
+    // "load all matching rows, then filter" logic the interactive fetch endpoint
+    // already relies on for filter accuracy, so the source rows are fully
+    // materialized before writing starts. The write side still streams via
+    // SXSSFWorkbook, which is what actually bounds memory at scale.
+    // ============================================================================
+
+    private static final List<String> AGING_REPORT_EXPORT_HEADERS = Arrays.asList(
+            "Request No", "PO Number", "Project Name", "Acceptance Type", "Status",
+            "Created Date", "Approval Date", "Request Amount (SAR)", "Location",
+            "Scope of Work", "In Service Date", "Vendor", "Requested By",
+            "Remaining Approval Count", "Pending Approver", "Department",
+            "User Aging", "User Aging (In days)", "Total Aging", "Total Aging (In days)"
+    );
+
+    private static final List<String> AGING_REPORT_EXPORT_FIELDS = Arrays.asList(
+            "recordNo", "poNumber", "projectName", "dccAcceptanceType", "dccStatus",
+            "dccCreatedDate", "dateApproved", "requestAmountSAR", "lnLocationName",
+            "lnScopeOfWork", "lnInserviceDate", "vendorName", "requestedBy",
+            "approvalCount", "pendingApprovers", "departmentName",
+            "userAging", "userAgingInDays", "totalAging", "totalAgingInDays"
+    );
+
+    @PostMapping(value = "/reports/v2/agingReport/export")
+    public ResponseEntity<Map<String, String>> startAgingReportExport(@RequestBody String req) {
+        logger.info("Aging report export requested : " + req);
+        return startAgingLikeReportExport("agingReport", req);
+    }
+
+    @GetMapping(value = "/reports/v2/agingReport/export/{jobId}/status")
+    public ResponseEntity<?> getAgingReportExportStatus(@PathVariable String jobId) {
+        return getAgingLikeExportStatus(jobId);
+    }
+
+    @GetMapping(value = "/reports/v2/agingReport/export/{jobId}/download")
+    public ResponseEntity<?> downloadAgingReportExport(@PathVariable String jobId) {
+        return downloadAgingLikeExport(jobId);
+    }
+
+    @PostMapping(value = "/reports/v2/fullAgingReport/export")
+    public ResponseEntity<Map<String, String>> startFullAgingReportExport(@RequestBody String req) {
+        logger.info("Full aging report export requested : " + req);
+        return startAgingLikeReportExport("fullAgingReport", req);
+    }
+
+    @GetMapping(value = "/reports/v2/fullAgingReport/export/{jobId}/status")
+    public ResponseEntity<?> getFullAgingReportExportStatus(@PathVariable String jobId) {
+        return getAgingLikeExportStatus(jobId);
+    }
+
+    @GetMapping(value = "/reports/v2/fullAgingReport/export/{jobId}/download")
+    public ResponseEntity<?> downloadFullAgingReportExport(@PathVariable String jobId) {
+        return downloadAgingLikeExport(jobId);
+    }
+
+    private ResponseEntity<Map<String, String>> startAgingLikeReportExport(String reportType, String req) {
+        String jobId = UUID.randomUUID().toString();
+        ExportJob job = new ExportJob();
+        job.setJobId(jobId);
+        job.setReportType(reportType);
+        job.setStatus(ExportJob.STATUS_PENDING);
+        job.setRowsWritten(0);
+        job.setSheetCount(0);
+        job.setCreatedAt(LocalDateTime.now());
+        exportJobRepository.save(job);
+
+        CompletableFuture.runAsync(() -> runAgingLikeReportExportJob(reportType, jobId, req));
+
+        Map<String, String> resp = new HashMap<>();
+        resp.put("jobId", jobId);
+        return ResponseEntity.accepted().body(resp);
+    }
+
+    private ResponseEntity<?> getAgingLikeExportStatus(String jobId) {
+        Optional<ExportJob> jobOpt = exportJobRepository.findById(jobId);
+        if (jobOpt.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        ExportJob job = jobOpt.get();
+        Map<String, Object> resp = new HashMap<>();
+        resp.put("jobId", job.getJobId());
+        resp.put("status", job.getStatus());
+        resp.put("rowsWritten", job.getRowsWritten());
+        resp.put("sheetCount", job.getSheetCount());
+        resp.put("fileName", job.getFileName());
+        resp.put("errorMessage", job.getErrorMessage());
+        return ResponseEntity.ok(resp);
+    }
+
+    private ResponseEntity<?> downloadAgingLikeExport(String jobId) {
+        Optional<ExportJob> jobOpt = exportJobRepository.findById(jobId);
+        if (jobOpt.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        ExportJob job = jobOpt.get();
+        if (!ExportJob.STATUS_DONE.equals(job.getStatus())) {
+            return ResponseEntity.status(HttpStatus.CONFLICT)
+                    .body("Export not ready yet, status=" + job.getStatus());
+        }
+        File file = new File(job.getFilePath());
+        if (!file.exists()) {
+            return ResponseEntity.status(HttpStatus.GONE).body("Export file no longer available");
+        }
+
+        HttpHeaders responseHeaders = new HttpHeaders();
+        responseHeaders.setContentType(MediaType.parseMediaType(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"));
+        responseHeaders.add("Content-Disposition", "attachment; filename=" + job.getFileName());
+        return ResponseEntity.ok().headers(responseHeaders).body(new FileSystemResource(file));
+    }
+
+    private void runAgingLikeReportExportJob(String reportType, String jobId, String req) {
+        ExportJob job = exportJobRepository.findById(jobId).orElse(null);
+        if (job == null) {
+            logger.error("Export job {} disappeared before it could start", jobId);
+            return;
+        }
+        job.setStatus(ExportJob.STATUS_RUNNING);
+        exportJobRepository.save(job);
+
+        boolean isAgingReport = "agingReport".equals(reportType);
+
+        JsonObject obj = JsonParser.parseString(req).getAsJsonObject();
+        AgingReportRequestParser.ParsedRequest parsed = AgingReportRequestParser.parse(obj);
+
+        List<Map<String, Object>> rows = isAgingReport
+                ? dccPoCombinedService.getAgingReportForExport(parsed.supplierId(), parsed.filters())
+                : dccPoCombinedService.getFullAgingReportForExport(parsed.supplierId(), parsed.filters());
+
+        File dir = new File(exportDir);
+        if (!dir.exists()) {
+            dir.mkdirs();
+        }
+        String storedFileName = (isAgingReport ? "aging_report_" : "full_aging_report_")
+                + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
+                + "_" + jobId.substring(0, 8) + ".xlsx";
+        File outFile = new File(dir, storedFileName);
+
+        String sheetLabel = isAgingReport ? "Aging Report" : "Full Aging Report";
+        SXSSFWorkbook workbook = new SXSSFWorkbook(2000);
+        long[] totalRows = {0};
+        int[] sheetCount = {0};
+        boolean success = false;
+        String errorMessage = null;
+
+        try {
+            CellStyle headerStyle = buildHeaderStyle(workbook);
+            CellStyle numberStyle = buildNumberStyle(workbook);
+
+            Sheet[] sheetRef = {workbook.createSheet(sheetLabel)};
+            sheetCount[0] = 1;
+            writeHeaderRow(sheetRef[0], AGING_REPORT_EXPORT_HEADERS, headerStyle);
+            int[] rowIdx = {1};
+
+            for (Map<String, Object> rowData : rows) {
+                if (rowIdx[0] > MAX_ROWS_PER_SHEET) {
+                    sheetCount[0]++;
+                    sheetRef[0] = workbook.createSheet(sheetLabel + " (" + sheetCount[0] + ")");
+                    writeHeaderRow(sheetRef[0], AGING_REPORT_EXPORT_HEADERS, headerStyle);
+                    rowIdx[0] = 1;
+                }
+                Row row = sheetRef[0].createRow(rowIdx[0]++);
+                for (int i = 0; i < AGING_REPORT_EXPORT_FIELDS.size(); i++) {
+                    Object value = rowData.get(AGING_REPORT_EXPORT_FIELDS.get(i));
+                    Cell cell = row.createCell(i);
+                    if (value == null) {
+                        cell.setBlank();
+                    } else if (value instanceof Number) {
+                        cell.setCellValue(((Number) value).doubleValue());
+                        cell.setCellStyle(numberStyle);
+                    } else {
+                        cell.setCellValue(value.toString());
+                    }
+                }
+                totalRows[0]++;
+                if (totalRows[0] % PROGRESS_UPDATE_EVERY_N_ROWS == 0) {
+                    job.setRowsWritten(totalRows[0]);
+                    job.setSheetCount(sheetCount[0]);
+                    exportJobRepository.save(job);
+                }
+            }
+
+            try (FileOutputStream fos = new FileOutputStream(outFile)) {
+                workbook.write(fos);
+            }
+            success = true;
+
+        } catch (Exception e) {
+            logger.error("{} export job {} failed", reportType, jobId, e);
+            errorMessage = e.getMessage();
+        } finally {
+            workbook.dispose();
+        }
+
+        LocalDateTime completedAt = LocalDateTime.now();
+        job.setRowsWritten(totalRows[0]);
+        job.setSheetCount(sheetCount[0]);
+        job.setCompletedAt(completedAt);
+        if (success) {
+            job.setStatus(ExportJob.STATUS_DONE);
+            String namePrefix = isAgingReport ? "AGING_REPORT" : "FULL_AGING_REPORT";
+            job.setFileName(namePrefix + "_"
+                    + completedAt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")) + ".xlsx");
+            job.setFilePath(outFile.getAbsolutePath());
+        } else {
+            job.setStatus(ExportJob.STATUS_FAILED);
+            job.setErrorMessage(errorMessage);
+            if (outFile.exists()) {
+                outFile.delete();
+            }
+        }
+        exportJobRepository.save(job);
     }
 
     // ============================================================================
@@ -1067,6 +1292,35 @@ public class ExportsController {
                 String val = entry.getValue().getAsString().trim();
                 if (val.isEmpty()) continue;
                 appendCondition(where, params, sqlCol, col, val, numericColumns);
+            }
+
+            // Date range filters - createdDate / approvalDate, against the raw DCC.createdDate /
+            // DCC.approvedDate columns (mirrors the same block in ReportsController's fetch
+            // endpoint, so export respects the same date range as the on-screen grid).
+            try {
+                java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("dd-MMM-yyyy", java.util.Locale.ENGLISH);
+                if (filterBy.has("createdDateStart") && !filterBy.get("createdDateStart").getAsString().trim().isEmpty()) {
+                    java.util.Date d = sdf.parse(filterBy.get("createdDateStart").getAsString().trim());
+                    where.append(" AND DCC.createdDate >= ?");
+                    params.add(new java.sql.Date(d.getTime()));
+                }
+                if (filterBy.has("createdDateEnd") && !filterBy.get("createdDateEnd").getAsString().trim().isEmpty()) {
+                    java.util.Date d = sdf.parse(filterBy.get("createdDateEnd").getAsString().trim());
+                    where.append(" AND DCC.createdDate <= ?");
+                    params.add(new java.sql.Date(d.getTime()));
+                }
+                if (filterBy.has("approvalDateStart") && !filterBy.get("approvalDateStart").getAsString().trim().isEmpty()) {
+                    java.util.Date d = sdf.parse(filterBy.get("approvalDateStart").getAsString().trim());
+                    where.append(" AND DCC.approvedDate >= ?");
+                    params.add(new java.sql.Date(d.getTime()));
+                }
+                if (filterBy.has("approvalDateEnd") && !filterBy.get("approvalDateEnd").getAsString().trim().isEmpty()) {
+                    java.util.Date d = sdf.parse(filterBy.get("approvalDateEnd").getAsString().trim());
+                    where.append(" AND DCC.approvedDate <= ?");
+                    params.add(new java.sql.Date(d.getTime()));
+                }
+            } catch (Exception e) {
+                // ignore malformed date range filters, same defensive style as ReportsController
             }
         }
     }

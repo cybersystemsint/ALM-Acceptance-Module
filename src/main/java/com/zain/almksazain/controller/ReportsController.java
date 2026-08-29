@@ -381,6 +381,36 @@ public class ReportsController {
                     }
                 }
             }
+
+            // Date range filters - createdDate / approvalDate, against the raw DCC.createdDate /
+            // DCC.approvedDate columns (not the DATE_FORMAT'd '%e-%b-%Y' display alias in
+            // searchableColumns above, since that string format doesn't sort chronologically for
+            // >=/<= comparisons).
+            try {
+                SimpleDateFormat sdf = new SimpleDateFormat("dd-MMM-yyyy", java.util.Locale.ENGLISH);
+                if (filterBy.has("createdDateStart") && !filterBy.get("createdDateStart").getAsString().trim().isEmpty()) {
+                    java.util.Date d = sdf.parse(filterBy.get("createdDateStart").getAsString().trim());
+                    where.append(" AND DCC.createdDate >= ?");
+                    whereParams.add(new java.sql.Date(d.getTime()));
+                }
+                if (filterBy.has("createdDateEnd") && !filterBy.get("createdDateEnd").getAsString().trim().isEmpty()) {
+                    java.util.Date d = sdf.parse(filterBy.get("createdDateEnd").getAsString().trim());
+                    where.append(" AND DCC.createdDate <= ?");
+                    whereParams.add(new java.sql.Date(d.getTime()));
+                }
+                if (filterBy.has("approvalDateStart") && !filterBy.get("approvalDateStart").getAsString().trim().isEmpty()) {
+                    java.util.Date d = sdf.parse(filterBy.get("approvalDateStart").getAsString().trim());
+                    where.append(" AND DCC.approvedDate >= ?");
+                    whereParams.add(new java.sql.Date(d.getTime()));
+                }
+                if (filterBy.has("approvalDateEnd") && !filterBy.get("approvalDateEnd").getAsString().trim().isEmpty()) {
+                    java.util.Date d = sdf.parse(filterBy.get("approvalDateEnd").getAsString().trim());
+                    where.append(" AND DCC.approvedDate <= ?");
+                    whereParams.add(new java.sql.Date(d.getTime()));
+                }
+            } catch (Exception e) {
+                // ignore malformed date range filters, same defensive style as elsewhere here
+            }
         }
         // Base from/joins used by both queries (only selecting keys in first query)
         // HD is joined on lineNumber too (not poNumber alone) - a PO with N lines was otherwise
