@@ -43,6 +43,7 @@ import com.zain.almksazain.repo.poviewrepo;
 import com.zain.almksazain.repo.tbChargeAccountRepo;
 import com.zain.almksazain.repo.uplrepo;
 import com.zain.almksazain.specs.QueryFilterBuilder;
+import com.zain.almksazain.specs.UplFilterBuilder;
 import com.zain.almzainksa.helper.helper;
 
 @RestController
@@ -1944,7 +1945,53 @@ private String convertToSqlDate(String input) {
 
     }
 
-    //==================GET NEW UPLS CREATED  =====    
+    // Allowlist for getAllCreatedUPLs's single-column filter: lowercased display key -> real bare
+    // column name (no "UPL." prefix - tb_PurchaseOrderUPL is the only table in that query's FROM
+    // clause, so it's unambiguous, and QueryFilterBuilder's numeric/date special-casing matches on
+    // the bare column name). updatedbyname/updateddatetime map to the real columns behind their
+    // SELECT-list aliases (uplModifiedBy/uplModifiedDate) - filtering on either threw an "Unknown
+    // column" SQL error before this existed, since UPL.updatedByName/UPL.updatedDatetime aren't
+    // real columns.
+    private static final Map<String, String> UPL_ALLOWED_COLUMNS = buildUplAllowedColumns();
+
+    private static Map<String, String> buildUplAllowedColumns() {
+        Map<String, String> map = new HashMap<>();
+        map.put("recordno", "recordNo");
+        map.put("recorddatetime", "recordDatetime");
+        map.put("vendor", "vendor");
+        map.put("manufacturer", "manufacturer");
+        map.put("countryoforigin", "countryOfOrigin");
+        map.put("projectname", "projectName");
+        map.put("potype", "poType");
+        map.put("releasenumber", "releaseNumber");
+        map.put("ponumber", "poNumber");
+        map.put("polinenumber", "poLineNumber");
+        map.put("upline", "uplLine");
+        map.put("polineitemtype", "poLineItemType");
+        map.put("polineitemcode", "poLineItemCode");
+        map.put("polinedescription", "poLineDescription");
+        map.put("uplineitemtype", "uplLineItemType");
+        map.put("uplineitemcode", "uplLineItemCode");
+        map.put("uplinedescription", "uplLineDescription");
+        map.put("zainitemcategorycode", "zainItemCategoryCode");
+        map.put("zainitemcategorydescription", "zainItemCategoryDescription");
+        map.put("uplitemserialized", "uplItemSerialized");
+        map.put("activeorpassive", "activeOrPassive");
+        map.put("uom", "uom");
+        map.put("currency", "currency");
+        map.put("polinequantity", "poLineQuantity");
+        map.put("polineunitprice", "poLineUnitPrice");
+        map.put("uplinequantity", "uplLineQuantity");
+        map.put("uplineunitprice", "uplLineUnitPrice");
+        map.put("substituteitemcode", "substituteItemCode");
+        map.put("remarks", "remarks");
+        map.put("createdbyname", "createdByName");
+        map.put("updatedbyname", "uplModifiedBy");
+        map.put("updateddatetime", "uplModifiedDate");
+        return map;
+    }
+
+    //==================GET NEW UPLS CREATED  =====
     @PostMapping(value = "/reports/getAllCreatedUPLs", produces = "application/json")
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
     public Map<String, Object> getAllCreatedUPLs(@RequestBody String req) {
@@ -1964,18 +2011,32 @@ private String convertToSqlDate(String input) {
 
         String paginationSql = "";
         String whereClause = " WHERE 1=1 ";
+        List<Object> params = new ArrayList<>();
 
         if (!poNumber.equalsIgnoreCase("0")) {
-            whereClause += " AND UPL.poNumber='" + poNumber + "'";
+            whereClause += " AND UPL.poNumber = ?";
+            params.add(poNumber);
         }
 
+        // Single-column filter, safely parameterized and column-allowlisted - columnName is
+        // client-supplied and was previously concatenated directly into the SQL identifier
+        // position (a SQL injection hole), and "updatedByName"/"updatedDatetime" are display-only
+        // SELECT aliases (not real columns), so filtering by either threw an "Unknown column" error
+        // before this mapped them to their real columns (uplModifiedBy/uplModifiedDate).
         if (!columnName.isEmpty() && !searchQuery.isEmpty()) {
-            whereClause += " AND UPL." + columnName + " LIKE '%" + searchQuery + "%'";
+            String mapped = UPL_ALLOWED_COLUMNS.get(columnName.trim().toLowerCase());
+            if (mapped != null) {
+                QueryFilterBuilder.OperatorAndValues ov = new QueryFilterBuilder.OperatorAndValues();
+                ov.values = Collections.singletonList(searchQuery);
+                String fragment = QueryFilterBuilder.buildPredicateFragment(mapped, ov, params);
+                if (fragment != null && !fragment.isEmpty()) {
+                    whereClause += " AND (" + fragment + ")";
+                }
+            }
         }
 
         String countSql = "SELECT COUNT(*) FROM tb_PurchaseOrderUPL UPL" + whereClause;
-        int totalRecords = jdbcTemplate.queryForObject(countSql, Integer.class
-        );
+        int totalRecords = jdbcTemplate.queryForObject(countSql, params.toArray(), Integer.class);
 
         if (page == 0 && size == 0) {
             paginationSql = "";
@@ -2003,7 +2064,7 @@ private String convertToSqlDate(String input) {
                 + "UPL.createdByName, UPL.uplModifiedBy AS updatedByName, UPL.uplModifiedDate AS updatedDatetime "
                 + "FROM tb_PurchaseOrderUPL UPL " + whereClause + paginationSql;
 
-        List<Map<String, Object>> result = jdbcTemplate.queryForList(sql);
+        List<Map<String, Object>> result = jdbcTemplate.queryForList(sql, params.toArray());
 
         Map<String, Object> response = new HashMap<>();
         response.put("data", result);
@@ -3172,169 +3233,11 @@ private String convertToSqlDate(String input) {
             size = Math.max(size, 1);
 
             // Initialize WHERE clause and parameters
-            String whereClause = " WHERE 1=1";
             List<Object> params = new ArrayList<>();
 
-            // Build WHERE clause for filters
-            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
-
-            // String filters
-            if (filters.containsKey("poNumber") && !filters.get("poNumber").isEmpty()) {
-                whereClause += " AND UPL.poNumber = ?";
-                params.add(filters.get("poNumber"));
-            }
-            if (filters.containsKey("vendor") && !filters.get("vendor").isEmpty()) {
-                whereClause += " AND UPL.vendor = ?";
-                params.add(filters.get("vendor"));
-            }
-            if (filters.containsKey("manufacturer") && !filters.get("manufacturer").isEmpty()) {
-                whereClause += " AND UPL.manufacturer = ?";
-                params.add(filters.get("manufacturer"));
-            }
-            if (filters.containsKey("countryOfOrigin") && !filters.get("countryOfOrigin").isEmpty()) {
-                whereClause += " AND UPL.countryOfOrigin = ?";
-                params.add(filters.get("countryOfOrigin"));
-            }
-            if (filters.containsKey("projectName") && !filters.get("projectName").isEmpty()) {
-                whereClause += " AND UPL.projectName = ?";
-                params.add(filters.get("projectName"));
-            }
-            if (filters.containsKey("poType") && !filters.get("poType").isEmpty()) {
-                whereClause += " AND UPL.poType = ?";
-                params.add(filters.get("poType"));
-            }
-            if (filters.containsKey("releaseNumber") && !filters.get("releaseNumber").isEmpty()) {
-                whereClause += " AND UPL.releaseNumber = ?";
-                params.add(filters.get("releaseNumber"));
-            }
-            if (filters.containsKey("poLineNumber") && !filters.get("poLineNumber").isEmpty()) {
-                whereClause += " AND UPL.poLineNumber = ?";
-                params.add(filters.get("poLineNumber"));
-            }
-            if (filters.containsKey("uplLine") && !filters.get("uplLine").isEmpty()) {
-                whereClause += " AND UPL.uplLine = ?";
-                params.add(filters.get("uplLine"));
-            }
-            if (filters.containsKey("poLineItemType") && !filters.get("poLineItemType").isEmpty()) {
-                whereClause += " AND UPL.poLineItemType = ?";
-                params.add(filters.get("poLineItemType"));
-            }
-            if (filters.containsKey("poLineItemCode") && !filters.get("poLineItemCode").isEmpty()) {
-                whereClause += " AND UPL.poLineItemCode = ?";
-                params.add(filters.get("poLineItemCode"));
-            }
-            if (filters.containsKey("poLineDescription") && !filters.get("poLineDescription").isEmpty()) {
-                whereClause += " AND UPL.poLineDescription = ?";
-                params.add(filters.get("poLineDescription"));
-            }
-            if (filters.containsKey("uplLineItemType") && !filters.get("uplLineItemType").isEmpty()) {
-                whereClause += " AND UPL.uplLineItemType = ?";
-                params.add(filters.get("uplLineItemType"));
-            }
-            if (filters.containsKey("uplLineItemCode") && !filters.get("uplLineItemCode").isEmpty()) {
-                whereClause += " AND UPL.uplLineItemCode = ?";
-                params.add(filters.get("uplLineItemCode"));
-            }
-            if (filters.containsKey("uplLineDescription") && !filters.get("uplLineDescription").isEmpty()) {
-                whereClause += " AND UPL.uplLineDescription = ?";
-                params.add(filters.get("uplLineDescription"));
-            }
-            if (filters.containsKey("zainItemCategoryCode") && !filters.get("zainItemCategoryCode").isEmpty()) {
-                whereClause += " AND UPL.zainItemCategoryCode = ?";
-                params.add(filters.get("zainItemCategoryCode"));
-            }
-            if (filters.containsKey("zainItemCategoryDescription") && !filters.get("zainItemCategoryDescription").isEmpty()) {
-                whereClause += " AND UPL.zainItemCategoryDescription = ?";
-                params.add(filters.get("zainItemCategoryDescription"));
-            }
-            if (filters.containsKey("activeOrPassive") && !filters.get("activeOrPassive").isEmpty()) {
-                whereClause += " AND UPL.activeOrPassive = ?";
-                params.add(filters.get("activeOrPassive"));
-            }
-            if (filters.containsKey("uom") && !filters.get("uom").isEmpty()) {
-                whereClause += " AND UPL.uom = ?";
-                params.add(filters.get("uom"));
-            }
-            if (filters.containsKey("currency") && !filters.get("currency").isEmpty()) {
-                whereClause += " AND UPL.currency = ?";
-                params.add(filters.get("currency"));
-            }
-            if (filters.containsKey("substituteItemCode") && !filters.get("substituteItemCode").isEmpty()) {
-                whereClause += " AND UPL.substituteItemCode = ?";
-                params.add(filters.get("substituteItemCode"));
-            }
-            if (filters.containsKey("remarks") && !filters.get("remarks").isEmpty()) {
-                whereClause += " AND UPL.remarks = ?";
-                params.add(filters.get("remarks"));
-            }
-            if (filters.containsKey("createdByName") && !filters.get("createdByName").isEmpty()) {
-                whereClause += " AND UPL.createdByName = ?";
-                params.add(filters.get("createdByName"));
-            }
-            if (filters.containsKey("updatedByName") && !filters.get("updatedByName").isEmpty()) {
-                whereClause += " AND UPL.uplModifiedBy = ?";
-                params.add(filters.get("updatedByName"));
-            }
-
-            // Numeric filters
-            if (filters.containsKey("poLineQuantity") && !filters.get("poLineQuantity").isEmpty()) {
-                try {
-                    Double value = Double.parseDouble(filters.get("poLineQuantity"));
-                    whereClause += " AND UPL.poLineQuantity = ?";
-                    params.add(value);
-                } catch (NumberFormatException e) {
-                    loggger.error("Invalid poLineQuantity format: " + filters.get("poLineQuantity"), e);
-                }
-            }
-            if (filters.containsKey("poLineUnitPrice") && !filters.get("poLineUnitPrice").isEmpty()) {
-                try {
-                    Double value = Double.parseDouble(filters.get("poLineUnitPrice"));
-                    whereClause += " AND UPL.poLineUnitPrice = ?";
-                    params.add(value);
-                } catch (NumberFormatException e) {
-                    loggger.error("Invalid poLineUnitPrice format: " + filters.get("poLineUnitPrice"), e);
-                }
-            }
-            if (filters.containsKey("uplLineQuantity") && !filters.get("uplLineQuantity").isEmpty()) {
-                try {
-                    Double value = Double.parseDouble(filters.get("uplLineQuantity"));
-                    whereClause += " AND UPL.uplLineQuantity = ?";
-                    params.add(value);
-                } catch (NumberFormatException e) {
-                    loggger.error("Invalid uplLineQuantity format: " + filters.get("uplLineQuantity"), e);
-                }
-            }
-            if (filters.containsKey("uplLineUnitPrice") && !filters.get("uplLineUnitPrice").isEmpty()) {
-                try {
-                    Double value = Double.parseDouble(filters.get("uplLineUnitPrice"));
-                    whereClause += " AND UPL.uplLineUnitPrice = ?";
-                    params.add(value);
-                } catch (NumberFormatException e) {
-                    loggger.error("Invalid uplLineUnitPrice format: " + filters.get("uplLineUnitPrice"), e);
-                }
-            }
-
-            // Date range filters
-            try {
-                if (filters.containsKey("recordDatetimeStart") && !filters.get("recordDatetimeStart").isEmpty()) {
-                    whereClause += " AND UPL.recordDatetime >= ?";
-                    params.add(filters.get("recordDatetimeStart"));
-                }
-                if (filters.containsKey("recordDatetimeEnd") && !filters.get("recordDatetimeEnd").isEmpty()) {
-                    whereClause += " AND UPL.recordDatetime <= ?";
-                    params.add(filters.get("recordDatetimeEnd"));
-                }
-                if (filters.containsKey("updatedDatetimeStart") && !filters.get("updatedDatetimeStart").isEmpty()) {
-                    whereClause += " AND UPL.uplModifiedDate >= ?";
-                    params.add(filters.get("updatedDatetimeStart"));
-                }
-                if (filters.containsKey("updatedDatetimeEnd") && !filters.get("updatedDatetimeEnd").isEmpty()) {
-                    whereClause += " AND UPL.uplModifiedDate <= ?";
-                    params.add(filters.get("updatedDatetimeEnd"));
-                }
-            } catch (Exception e) {
-                loggger.error("Error parsing date filters", e);
-            }
+            // Shared with the async /reports/getAllCreatedUPLs/export job (UplFilterBuilder), so a
+            // fix or added column here applies to fetch and export identically.
+            String whereClause = " WHERE 1=1" + UplFilterBuilder.buildWhereClause(filters, params);
 
             // Count total records
             String countSql = "SELECT COUNT(*) FROM tb_PurchaseOrderUPL UPL" + whereClause;
