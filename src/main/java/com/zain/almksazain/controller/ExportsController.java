@@ -71,6 +71,7 @@ import com.zain.almksazain.model.ExportJob;
 import com.zain.almksazain.repo.ExportJobRepository;
 import com.zain.almksazain.services.DccPoCombinedService;
 import com.zain.almksazain.services.PurchaseOrderExportService;
+import com.zain.almksazain.specs.PoFilterBuilder;
 import com.zain.almksazain.specs.QueryFilterBuilder;
 import com.zain.almksazain.specs.UplFilterBuilder;
 
@@ -86,6 +87,7 @@ public class ExportsController {
     private static final int MAX_ROWS_PER_SHEET = 1_000_000;
     private static final long PROGRESS_UPDATE_EVERY_N_ROWS = 5_000;
     private static final int MAX_UPL_EXPORT_RECORDS = 250_000;
+    private static final int MAX_PO_EXPORT_RECORDS = 250_000;
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
@@ -1057,9 +1059,80 @@ public class ExportsController {
     // Nested Purchase Orders Export
     // ============================================================================
 
-    @PostMapping(value = "/reports/getNestedPurchaseOrders/export")
-    public void exportPurchaseOrdersNested(@RequestBody String req,
-                                           HttpServletResponse response) throws IOException {
+    // ─── /reports/getNestedPurchaseOrders/export — job-based (start/status/download) ──
+    // Converted from a synchronous HttpServletResponse write to the same async job pattern used
+    // elsewhere in this controller (RQ: stream-export rollout) - returns a jobId immediately,
+    // builds the workbook on a background thread, persists the finished file to disk keyed by
+    // jobId. Row/column shape is unchanged (PurchaseOrderExportService.exportToExcel still builds
+    // the same flattened, one-row-per-line-item output) - only the filter coverage (date ranges,
+    // total* aggregates, via PoFilterBuilder) and delivery mechanism changed.
+    @PostMapping(value = "/reports/getNestedPurchaseOrders/export", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<Map<String, String>> startPurchaseOrdersNestedExport(@RequestBody String req) {
+        String jobId = UUID.randomUUID().toString();
+        ExportJob job = new ExportJob();
+        job.setJobId(jobId);
+        job.setReportType("purchaseOrders");
+        job.setStatus(ExportJob.STATUS_PENDING);
+        job.setRowsWritten(0);
+        job.setSheetCount(0);
+        job.setCreatedAt(LocalDateTime.now());
+        exportJobRepository.save(job);
+
+        CompletableFuture.runAsync(() -> runPurchaseOrdersNestedExportJob(jobId, req));
+
+        Map<String, String> resp = new HashMap<>();
+        resp.put("jobId", jobId);
+        return ResponseEntity.accepted().body(resp);
+    }
+
+    @GetMapping(value = "/reports/getNestedPurchaseOrders/export/{jobId}/status")
+    public ResponseEntity<?> getPurchaseOrdersNestedExportStatus(@PathVariable String jobId) {
+        Optional<ExportJob> jobOpt = exportJobRepository.findById(jobId);
+        if (jobOpt.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        ExportJob job = jobOpt.get();
+        Map<String, Object> resp = new HashMap<>();
+        resp.put("jobId", job.getJobId());
+        resp.put("status", job.getStatus());
+        resp.put("rowsWritten", job.getRowsWritten());
+        resp.put("sheetCount", job.getSheetCount());
+        resp.put("fileName", job.getFileName());
+        resp.put("errorMessage", job.getErrorMessage());
+        return ResponseEntity.ok(resp);
+    }
+
+    @GetMapping(value = "/reports/getNestedPurchaseOrders/export/{jobId}/download")
+    public ResponseEntity<?> downloadPurchaseOrdersNestedExport(@PathVariable String jobId) {
+        Optional<ExportJob> jobOpt = exportJobRepository.findById(jobId);
+        if (jobOpt.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        ExportJob job = jobOpt.get();
+        if (!ExportJob.STATUS_DONE.equals(job.getStatus())) {
+            return ResponseEntity.status(HttpStatus.CONFLICT)
+                    .body("Export not ready yet, status=" + job.getStatus());
+        }
+        File file = new File(job.getFilePath());
+        if (!file.exists()) {
+            return ResponseEntity.status(HttpStatus.GONE).body("Export file no longer available");
+        }
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.parseMediaType(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"));
+        headers.add("Content-Disposition", "attachment; filename=" + job.getFileName());
+        return ResponseEntity.ok().headers(headers).body(new FileSystemResource(file));
+    }
+
+    private void runPurchaseOrdersNestedExportJob(String jobId, String req) {
+        ExportJob job = exportJobRepository.findById(jobId).orElse(null);
+        if (job == null) {
+            logger.error("PO export job {} disappeared before it could start", jobId);
+            return;
+        }
+        job.setStatus(ExportJob.STATUS_RUNNING);
+        exportJobRepository.save(job);
+
         try {
             JsonObject obj = JsonParser.parseString(req).getAsJsonObject();
 
@@ -1088,6 +1161,18 @@ public class ExportsController {
                     if (col != null && !col.trim().isEmpty() && q != null && !q.trim().isEmpty()) {
                         filtersObj.add(col, new JsonPrimitive(q));
                     }
+                }
+            }
+
+            // Flat copy for PoFilterBuilder's date-range/aggregate-restriction helpers (Stage A/E) -
+            // createdDateStart/End, approvedDateStart/End, and the 7 total* aggregate filters had no
+            // export-side equivalent at all before this; the plain-field matching above (poNumber,
+            // projectName, etc via searchableColumns) is untouched and unaffected.
+            Map<String, String> flatFilters = new HashMap<>();
+            for (Map.Entry<String, JsonElement> entry : filtersObj.entrySet()) {
+                JsonElement val = entry.getValue();
+                if (val != null && !val.isJsonNull()) {
+                    flatFilters.put(entry.getKey(), val.getAsString());
                 }
             }
 
@@ -1131,6 +1216,21 @@ public class ExportsController {
                 }
             }
 
+            // Explicit, dedicated vendor scoping - not routed through the generic searchableColumns
+            // loop above, so it can never be silently dropped or reshaped by future changes to that
+            // shared map. "0" is this codebase's established sentinel for "no vendor restriction"
+            // (see getNestedPurchaseOrders), used by AMU-side callers that omit supplierId entirely
+            // or pass "0" deliberately; a vendor session always supplies its own real vendor number.
+            String supplierId = obj.has("supplierId") && !obj.get("supplierId").isJsonNull()
+                    ? obj.get("supplierId").getAsString().trim() : "0";
+            if (!supplierId.isEmpty() && !"0".equals(supplierId)) {
+                whereFrag.append(" AND PO.vendorNumber = ?");
+                params.add(supplierId);
+            }
+
+            whereFrag.append(PoFilterBuilder.buildDateRangeClause(flatFilters, params));
+            whereFrag.append(PoFilterBuilder.buildAggregateRestriction(flatFilters, params));
+
             String poDateFrom = obj.has("poDateFrom") ? convertToSqlDate(safeGetAsString(obj, "poDateFrom")) : "";
             String poDateTo   = obj.has("poDateTo")   ? convertToSqlDate(safeGetAsString(obj, "poDateTo"))   : "";
             if (!poDateFrom.isEmpty() && !poDateTo.isEmpty()) {
@@ -1144,26 +1244,52 @@ public class ExportsController {
                 params.add(poDateTo);
             }
 
-            int page = obj.has("page") ? Math.max(1, obj.get("page").getAsInt()) : 1;
-            int size = obj.has("size") ? Math.max(1, obj.get("size").getAsInt()) : 20000;
-
-            Integer limit  = null;
-            Integer offset = null;
-            if (!(page == 1 && size == 20000)) {
-                limit  = size;
-                offset = (page - 1) * size;
+            String countSql = "SELECT COUNT(*) FROM tb_PurchaseOrder PO WHERE 1=1 " + whereFrag;
+            Integer totalRecords = jdbcTemplate.queryForObject(countSql, params.toArray(), Integer.class);
+            if (totalRecords != null && totalRecords > MAX_PO_EXPORT_RECORDS) {
+                logger.warn("PO export job {} would return {} records, exceeding limit of {}",
+                        jobId, totalRecords, MAX_PO_EXPORT_RECORDS);
+                job.setStatus(ExportJob.STATUS_FAILED);
+                job.setErrorMessage(String.format(
+                        "Export would return %d records. Maximum allowed is %d. Please add more filters.",
+                        totalRecords, MAX_PO_EXPORT_RECORDS));
+                job.setCompletedAt(LocalDateTime.now());
+                exportJobRepository.save(job);
+                return;
             }
 
-            exportService.exportToExcel(whereFrag.toString(), params, response, limit, offset);
-
-        } catch (Exception e) {
-            if (!response.isCommitted()) {
-                response.reset();
-                response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
-                response.setContentType("text/plain; charset=utf-8");
-                response.getWriter().write("Excel export failed: " + e.toString());
-                response.getWriter().flush();
+            File dir = new File(exportDir);
+            if (!dir.exists()) {
+                dir.mkdirs();
             }
+            String storedFileName = "purchase_orders_export_"
+                    + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
+                    + "_" + jobId.substring(0, 8) + ".xlsx";
+            File outFile = new File(dir, storedFileName);
+
+            exportService.exportToExcel(whereFrag.toString(), params, outFile, null, null,
+                    rowsWritten -> {
+                        job.setRowsWritten(rowsWritten);
+                        exportJobRepository.save(job);
+                    });
+
+            LocalDateTime completedAt = LocalDateTime.now();
+            job.setStatus(ExportJob.STATUS_DONE);
+            String filterTag = flatFilters.isEmpty() ? "" : "_FILTERED";
+            job.setFileName("PURCHASE_ORDERS" + filterTag + "_"
+                    + completedAt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")) + ".xlsx");
+            job.setFilePath(outFile.getAbsolutePath());
+            job.setSheetCount(1);
+            job.setCompletedAt(completedAt);
+            exportJobRepository.save(job);
+            logger.info("PO export job {} complete — {} rows", jobId, job.getRowsWritten());
+
+        } catch (Exception ex) {
+            logger.error("PO export job {} failed", jobId, ex);
+            job.setStatus(ExportJob.STATUS_FAILED);
+            job.setErrorMessage(ex.getMessage());
+            job.setCompletedAt(LocalDateTime.now());
+            exportJobRepository.save(job);
         }
     }
 
@@ -1191,7 +1317,9 @@ public class ExportsController {
             map.put(field, "PO." + field);
         }
         // Common API aliases / column name variants
-        map.put("supplierId",                    "PO.vendorNumber");
+        // Note: "supplierId" is intentionally NOT mapped here - it's handled by a dedicated,
+        // explicit scoping check in runPurchaseOrdersNestedExportJob instead, so vendor scoping
+        // can never be silently dropped or reshaped by future changes to this generic map.
         map.put("currency",                        "PO.currencyCode");
         map.put("releaseNumber",                   "PO.releaseNum");
         map.put("authorizationStatus",             "PO.authorisationStatus");

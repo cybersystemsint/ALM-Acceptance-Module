@@ -42,6 +42,7 @@ import com.zain.almksazain.repo.dccpoviewrepo;
 import com.zain.almksazain.repo.poviewrepo;
 import com.zain.almksazain.repo.tbChargeAccountRepo;
 import com.zain.almksazain.repo.uplrepo;
+import com.zain.almksazain.specs.PoFilterBuilder;
 import com.zain.almksazain.specs.QueryFilterBuilder;
 import com.zain.almksazain.specs.UplFilterBuilder;
 import com.zain.almzainksa.helper.helper;
@@ -3060,163 +3061,130 @@ private String convertToSqlDate(String input) {
             @RequestParam(defaultValue = "poNumber") String sortBy,
             @RequestParam(defaultValue = "asc") String sortDir) {
         try {
-            page = Math.max(page, 0);
-            size = Math.max(size, 1);
-
-            String baseWhereClause = " WHERE 1=1";
-            List<Object> baseParams = new ArrayList<>();
-
-            if (filters.containsKey("poNumber") && !filters.get("poNumber").isEmpty()) {
-                baseWhereClause += " AND PO.poNumber = ?";
-                baseParams.add(filters.get("poNumber"));
-            }
-            if (filters.containsKey("projectName") && !filters.get("projectName").isEmpty()) {
-                baseWhereClause += " AND PO.projectName = ?";
-                baseParams.add(filters.get("projectName"));
-            }
-            if (filters.containsKey("prNum") && !filters.get("prNum").isEmpty()) {
-                baseWhereClause += " AND PO.prNum = ?";
-                baseParams.add(filters.get("prNum"));
-            }
-            if (filters.containsKey("typeLookUpCode") && !filters.get("typeLookUpCode").isEmpty()) {
-                baseWhereClause += " AND PO.typeLookUpCode = ?";
-                baseParams.add(filters.get("typeLookUpCode"));
-            }
-            if (filters.containsKey("vendorName") && !filters.get("vendorName").isEmpty()) {
-                baseWhereClause += " AND PO.vendorName = ?";
-                baseParams.add(filters.get("vendorName"));
-            }
-            if (filters.containsKey("currencyCode") && !filters.get("currencyCode").isEmpty()) {
-                baseWhereClause += " AND PO.currencyCode = ?";
-                baseParams.add(filters.get("currencyCode"));
-            }
-            if (filters.containsKey("supplierId") && !filters.get("supplierId").isEmpty()) {
-                baseWhereClause += " AND PO.vendorNumber = ?";
-                baseParams.add(filters.get("supplierId"));
-            }
-            try {
-                if (filters.containsKey("createdDateStart") && !filters.get("createdDateStart").isEmpty()) {
-                    baseWhereClause += " AND PO.createdDate >= ?";
-                    baseParams.add(filters.get("createdDateStart"));
-                }
-                if (filters.containsKey("createdDateEnd") && !filters.get("createdDateEnd").isEmpty()) {
-                    baseWhereClause += " AND PO.createdDate <= ?";
-                    baseParams.add(filters.get("createdDateEnd"));
-                }
-                if (filters.containsKey("approvedDateStart") && !filters.get("approvedDateStart").isEmpty()) {
-                    baseWhereClause += " AND PO.approvedDate >= ?";
-                    baseParams.add(filters.get("approvedDateStart"));
-                }
-                if (filters.containsKey("approvedDateEnd") && !filters.get("approvedDateEnd").isEmpty()) {
-                    baseWhereClause += " AND PO.approvedDate <= ?";
-                    baseParams.add(filters.get("approvedDateEnd"));
-                }
-            } catch (Exception e) {
-                loggger.error("Error parsing date filters", e);
-            }
-
-            String havingClause = "";
-            List<Object> havingParams = new ArrayList<>();
-            if (filters.containsKey("totalPoQtyNew") && !filters.get("totalPoQtyNew").isEmpty()) {
-                try { havingClause += " AND SUM(PO.poQtyNew) = ?"; havingParams.add(Double.parseDouble(filters.get("totalPoQtyNew"))); }
-                catch (NumberFormatException e) { loggger.error("Invalid totalPoQtyNew", e); }
-            }
-            if (filters.containsKey("totalpoOrderQuantity") && !filters.get("totalpoOrderQuantity").isEmpty()) {
-                try { havingClause += " AND SUM(PO.poOrderQuantity) = ?"; havingParams.add(Double.parseDouble(filters.get("totalpoOrderQuantity"))); }
-                catch (NumberFormatException e) { loggger.error("Invalid totalpoOrderQuantity", e); }
-            }
-            if (filters.containsKey("totalQuantityReceived") && !filters.get("totalQuantityReceived").isEmpty()) {
-                try { havingClause += " AND SUM(PO.quantityReceived) = ?"; havingParams.add(Double.parseDouble(filters.get("totalQuantityReceived"))); }
-                catch (NumberFormatException e) { loggger.error("Invalid totalQuantityReceived", e); }
-            }
-            if (filters.containsKey("totalQuantityDueOld") && !filters.get("totalQuantityDueOld").isEmpty()) {
-                try { havingClause += " AND SUM(PO.quantityDueOld) = ?"; havingParams.add(Double.parseDouble(filters.get("totalQuantityDueOld"))); }
-                catch (NumberFormatException e) { loggger.error("Invalid totalQuantityDueOld", e); }
-            }
-            if (filters.containsKey("totalQuantityDueNew") && !filters.get("totalQuantityDueNew").isEmpty()) {
-                try { havingClause += " AND SUM(PO.quantityDueNew) = ?"; havingParams.add(Double.parseDouble(filters.get("totalQuantityDueNew"))); }
-                catch (NumberFormatException e) { loggger.error("Invalid totalQuantityDueNew", e); }
-            }
-            if (filters.containsKey("totalQuantityBilled") && !filters.get("totalQuantityBilled").isEmpty()) {
-                try { havingClause += " AND SUM(PO.quantityBilled) = ?"; havingParams.add(Double.parseDouble(filters.get("totalQuantityBilled"))); }
-                catch (NumberFormatException e) { loggger.error("Invalid totalQuantityBilled", e); }
-            }
-            if (filters.containsKey("totallinePriceInSAR") && !filters.get("totallinePriceInSAR").isEmpty()) {
-                try { havingClause += " AND SUM(PO.linePriceInSAR) = ?"; havingParams.add(Double.parseDouble(filters.get("totallinePriceInSAR"))); }
-                catch (NumberFormatException e) { loggger.error("Invalid totallinePriceInSAR", e); }
-            }
-
-            List<Object> subqueryParams = new ArrayList<>(baseParams);
-            subqueryParams.addAll(havingParams);
-
-            String havingFragment = havingClause.isEmpty() ? "" : " HAVING " + havingClause.substring(5);
-            String subquery = "SELECT PO.poNumber FROM tb_PurchaseOrder PO" + baseWhereClause +
-                    " GROUP BY PO.poNumber" + havingFragment;
-
-            // Count total unique POs
-            String countSql = "SELECT COUNT(*) FROM (" + subquery + ") sub";
-            Integer totalRecords = jdbcTemplate.queryForObject(countSql, subqueryParams.toArray(), Integer.class);
-            if (totalRecords == null || totalRecords == 0) {
-                Map<String, Object> empty = new HashMap<>();
-                empty.put("reports", Collections.emptyList());
-                empty.put("currentPage", page);
-                empty.put("totalItems", 0);
-                empty.put("totalPages", 0);
-                empty.put("first", true);
-                empty.put("last", true);
-                empty.put("size", size);
-                empty.put("sort", sortBy + "," + sortDir);
-                return new ResponseEntity<>(empty, HttpStatus.OK);
-            }
-
-            // Build sorted subquery and fetch line items for the current page in one query
-            Set<String> numericColumns = new HashSet<>(Arrays.asList(
-                    "totalPoQtyNew", "totalpoOrderQuantity", "totalQuantityReceived", "totalQuantityDueOld",
-                    "totalQuantityDueNew", "totalQuantityBilled", "totallinePriceInSAR"));
-
-            int offset = page * size;
-            String sortClause = sortDir.equalsIgnoreCase("asc") ? "ASC" : "DESC";
-            List<Object> lineParams = new ArrayList<>(subqueryParams);
-            lineParams.add(size);
-            lineParams.add(offset);
-
-            String lineSql;
-            // Wrap paged subquery in a derived table — MySQL does not allow LIMIT directly inside IN(...)
-            if (numericColumns.contains(sortBy)) {
-                String sortField = sortBy.substring(5).toLowerCase();
-                String sortedSubquery = "SELECT PO.poNumber, SUM(PO." + sortField + ") AS sortVal" +
-                        " FROM tb_PurchaseOrder PO" + baseWhereClause +
-                        " GROUP BY PO.poNumber" + havingFragment;
-                lineSql = "SELECT PO.* FROM tb_PurchaseOrder PO WHERE PO.poNumber IN (" +
-                        "SELECT poNumber FROM (SELECT poNumber FROM (" + sortedSubquery + ") s1 ORDER BY sortVal " + sortClause + " LIMIT ? OFFSET ?) paged_pos" +
-                        ") ORDER BY PO.poNumber, PO.lineNumber";
-            } else {
-                String orderClause = sortBy.isEmpty() ? "" : " ORDER BY poNumber " + sortClause;
-                lineSql = "SELECT PO.* FROM tb_PurchaseOrder PO WHERE PO.poNumber IN (" +
-                        "SELECT poNumber FROM (SELECT poNumber FROM (" + subquery + ") s1" + orderClause + " LIMIT ? OFFSET ?) paged_pos" +
-                        ") ORDER BY PO.poNumber, PO.lineNumber";
-            }
-
-            List<Map<String, Object>> lineItems = jdbcTemplate.queryForList(lineSql, lineParams.toArray());
-            List<Map<String, Object>> nestedReports = new ArrayList<>(groupLineItemsByPO(lineItems).values());
+            PoQueryResult result = fetchFilteredPurchaseOrdersCore(filters, page, size, sortBy, sortDir);
+            page = result.page;
+            size = result.size;
 
             Map<String, Object> response = new HashMap<>();
-            response.put("reports", nestedReports);
+            response.put("reports", result.nestedReports);
             response.put("currentPage", page);
-            response.put("totalItems", totalRecords);
-            response.put("totalPages", (int) Math.ceil((double) totalRecords / size));
+            response.put("totalItems", result.totalRecords);
+            response.put("totalPages", (int) Math.ceil((double) result.totalRecords / size));
             response.put("first", page == 0);
-            response.put("last", nestedReports.size() < size || (page + 1) * size >= totalRecords);
+            response.put("last", result.nestedReports.size() < size || (page + 1) * size >= result.totalRecords);
             response.put("size", size);
             response.put("sort", sortBy + "," + sortDir);
-
-            loggger.info("filterNestedPurchaseOrders: Count SQL: " + countSql + ", Line SQL: " + lineSql);
             return new ResponseEntity<>(response, HttpStatus.OK);
         } catch (Exception e) {
             loggger.error("Error filtering purchase orders", e);
             return new ResponseEntity<>(Collections.singletonMap("message", "Error filtering purchase orders: " + e.getMessage()),
                     HttpStatus.INTERNAL_SERVER_ERROR);
         }
+    }
+
+    // ─── /reports/v2/getNestedPurchaseOrders — parent-fields-only grid endpoint ──
+    // Shares fetchFilteredPurchaseOrdersCore with filterNestedPurchaseOrders above (same filters,
+    // same 0-indexed pagination, same aggregate/date-range support - a fix applies to both), but
+    // strips the POlineItems array from each record: the grid never reads it, only the row-click
+    // single-record fetch (getNestedPurchaseOrders, poNumber-scoped) needs it.
+    @PostMapping("/reports/v2/getNestedPurchaseOrders")
+    @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
+    public ResponseEntity<Map<String, Object>> getNestedPurchaseOrdersV2(
+            @RequestBody Map<String, String> filters,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "100") int size,
+            @RequestParam(defaultValue = "poNumber") String sortBy,
+            @RequestParam(defaultValue = "asc") String sortDir) {
+        try {
+            PoQueryResult result = fetchFilteredPurchaseOrdersCore(filters, page, size, sortBy, sortDir);
+            for (Map<String, Object> record : result.nestedReports) {
+                record.remove("POlineItems");
+            }
+
+            Map<String, Object> response = new HashMap<>();
+            response.put("data", result.nestedReports);
+            response.put("totalRecords", result.totalRecords);
+            response.put("currentPage", result.page);
+            response.put("pageSize", result.size);
+            response.put("totalPages", (int) Math.ceil((double) result.totalRecords / result.size));
+            return new ResponseEntity<>(response, HttpStatus.OK);
+        } catch (Exception e) {
+            loggger.error("Error fetching purchase orders (v2)", e);
+            return new ResponseEntity<>(Collections.singletonMap("message", "Error fetching purchase orders: " + e.getMessage()),
+                    HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    private static class PoQueryResult {
+        List<Map<String, Object>> nestedReports;
+        int totalRecords;
+        int page;
+        int size;
+    }
+
+    private PoQueryResult fetchFilteredPurchaseOrdersCore(
+            Map<String, String> filters, int page, int size, String sortBy, String sortDir) {
+        page = Math.max(page, 0);
+        size = Math.max(size, 1);
+
+        List<Object> baseParams = new ArrayList<>();
+        String baseWhereClause = " WHERE 1=1" + PoFilterBuilder.buildWhereClause(filters, baseParams);
+
+        List<Object> havingParams = new ArrayList<>();
+        String havingClauseBare = PoFilterBuilder.buildHavingFragment(filters, havingParams);
+
+        List<Object> subqueryParams = new ArrayList<>(baseParams);
+        subqueryParams.addAll(havingParams);
+
+        String havingFragment = havingClauseBare.isEmpty() ? "" : " HAVING " + havingClauseBare;
+        // isFav: favourite POs take precedence in the UI - if they match the current filters, they
+        // should surface at the top of the (paginated) result set, not just within whichever page
+        // they happen to land on. MAX(...) since isFavourite is a per-line column but should be
+        // treated as a single flag per PO (matches groupLineItemsByPO's OR-across-lines semantics).
+        String subquery = "SELECT PO.poNumber, MAX(CAST(PO.isFavourite AS UNSIGNED)) AS isFav FROM tb_PurchaseOrder PO" + baseWhereClause +
+                " GROUP BY PO.poNumber" + havingFragment;
+
+        PoQueryResult result = new PoQueryResult();
+        result.page = page;
+        result.size = size;
+
+        // Count total unique POs
+        String countSql = "SELECT COUNT(*) FROM (" + subquery + ") sub";
+        Integer totalRecords = jdbcTemplate.queryForObject(countSql, subqueryParams.toArray(), Integer.class);
+        if (totalRecords == null || totalRecords == 0) {
+            result.nestedReports = Collections.emptyList();
+            result.totalRecords = 0;
+            return result;
+        }
+
+        // Build sorted subquery and fetch line items for the current page in one query
+        int offset = page * size;
+        String sortClause = sortDir.equalsIgnoreCase("asc") ? "ASC" : "DESC";
+        List<Object> lineParams = new ArrayList<>(subqueryParams);
+        lineParams.add(size);
+        lineParams.add(offset);
+
+        String lineSql;
+        // Wrap paged subquery in a derived table — MySQL does not allow LIMIT directly inside IN(...)
+        if (PoFilterBuilder.AGGREGATE_COLUMNS.contains(sortBy)) {
+            String sortField = sortBy.substring(5).toLowerCase();
+            String sortedSubquery = "SELECT PO.poNumber, SUM(PO." + sortField + ") AS sortVal, MAX(CAST(PO.isFavourite AS UNSIGNED)) AS isFav" +
+                    " FROM tb_PurchaseOrder PO" + baseWhereClause +
+                    " GROUP BY PO.poNumber" + havingFragment;
+            lineSql = "SELECT PO.* FROM tb_PurchaseOrder PO WHERE PO.poNumber IN (" +
+                    "SELECT poNumber FROM (SELECT poNumber FROM (" + sortedSubquery + ") s1 ORDER BY isFav DESC, sortVal " + sortClause + " LIMIT ? OFFSET ?) paged_pos" +
+                    ") ORDER BY CAST(PO.isFavourite AS UNSIGNED) DESC, PO.poNumber, PO.lineNumber";
+        } else {
+            String orderClause = " ORDER BY isFav DESC" + (sortBy.isEmpty() ? "" : ", poNumber " + sortClause);
+            lineSql = "SELECT PO.* FROM tb_PurchaseOrder PO WHERE PO.poNumber IN (" +
+                    "SELECT poNumber FROM (SELECT poNumber FROM (" + subquery + ") s1" + orderClause + " LIMIT ? OFFSET ?) paged_pos" +
+                    ") ORDER BY CAST(PO.isFavourite AS UNSIGNED) DESC, PO.poNumber, PO.lineNumber";
+        }
+
+        List<Map<String, Object>> lineItems = jdbcTemplate.queryForList(lineSql, lineParams.toArray());
+        result.nestedReports = new ArrayList<>(groupLineItemsByPO(lineItems).values());
+        result.totalRecords = totalRecords;
+        return result;
     }
 
     @PostMapping("/filterUPLs")

@@ -1,6 +1,8 @@
 package com.zain.almksazain.services;
 
 import java.io.BufferedOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
@@ -18,9 +20,9 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.LongConsumer;
 import java.util.stream.Collectors;
 
-import javax.servlet.http.HttpServletResponse;
 import javax.sql.DataSource;
 
 import org.apache.poi.ss.usermodel.Cell;
@@ -54,13 +56,14 @@ public class PurchaseOrderExportService {
         this.dataSource = dataSource;
     }
 
-    // Backwards-compatible overload
-    public void exportToExcel(String whereFragment, List<Object> params, HttpServletResponse response) throws SQLException, IOException {
-        exportToExcel(whereFragment, params, response, null, null);
-    }
-
-
-    public void exportToExcel(String whereFragment, List<Object> params, HttpServletResponse response, Integer limit, Integer offset) throws SQLException, IOException {
+    // Writes straight to a file on disk instead of an HttpServletResponse, for the async job-based
+    // export (RQ: stream-export rollout) - same row/column shape as before (flattened, one row per
+    // PO line item, header fields repeated per line), only the output sink changed. onProgress, if
+    // given, is invoked with the running data-row count each time a PO's block is flushed, so the
+    // caller can checkpoint an ExportJob's rowsWritten without this service depending on
+    // ExportJob/ExportJobRepository directly.
+    public void exportToExcel(String whereFragment, List<Object> params, File outFile, Integer limit, Integer offset,
+                              LongConsumer onProgress) throws SQLException, IOException {
         List<String> desiredCols = Arrays.asList(
                 "poNumber", "po_type", "release_num", "releaseNum", "lineNumber", "recordNo", "projectName",
                 "lineCancelFlag", "cancelReason", "itemPartNumber", "pnSubAllow", "countryOfOrigin",
@@ -136,10 +139,6 @@ public class PurchaseOrderExportService {
                     + (whereFragment == null ? "" : whereFragment)
                     + orderBy
                     + limitClause;
-
-            // Prepare response headers
-            response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-            response.setHeader("Content-Disposition", "attachment; filename=\"purchase_orders_export.xlsx\"");
 
             // Header labels (exact casing/order)
             List<String> headerLabels = Arrays.asList(
@@ -316,6 +315,9 @@ public class PurchaseOrderExportService {
                                 rowIdx = writePoBlock(sheet, rowIdx, poHeader, poLines, dateCellStyle, headerLabels, fieldKeys);
                                 poLines.clear();
                                 poHeader = null;
+                                if (onProgress != null) {
+                                    onProgress.accept(rowIdx - 1L);
+                                }
                             }
 
                             if (poHeader == null) {
@@ -409,16 +411,18 @@ public class PurchaseOrderExportService {
                         // flush last block
                         if (currentPo != null && !poLines.isEmpty()) {
                             rowIdx = writePoBlock(sheet, rowIdx, poHeader, poLines, dateCellStyle, headerLabels, fieldKeys);
+                            if (onProgress != null) {
+                                onProgress.accept(rowIdx - 1L);
+                            }
                         }
                     }
                 }
 
                 // Write workbook using buffered output for fewer small writes
-                try (BufferedOutputStream bos = new BufferedOutputStream(response.getOutputStream(), 64 * 1024)) {
+                try (BufferedOutputStream bos = new BufferedOutputStream(new FileOutputStream(outFile), 64 * 1024)) {
                     workbook.write(bos);
                     bos.flush();
                 }
-                response.flushBuffer();
                 workbook.dispose();
             }
         } finally {
