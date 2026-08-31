@@ -106,8 +106,6 @@ public class DccPoCombinedService {
             logger.debug("Fetching aging report for supplierId={} page={} size={}", supplierId, page, size);
             page = Math.max(page, 1);
             size = Math.max(size, 1);
-            boolean hasFilter = columnName != null && !columnName.trim().isEmpty() &&
-                                searchQuery != null && !searchQuery.trim().isEmpty();
 
             final String onlyStatus = "inprocess";
             Pageable pageable = PageRequest.of(page - 1, size, Sort.by(Sort.Direction.DESC, "recordNo"));
@@ -150,50 +148,12 @@ public class DccPoCombinedService {
                     uplMap, poByNumberLine, depMap))
                 .collect(Collectors.toList());
 
-            // In-memory filter for searchQuery, if provided
-            if (hasFilter) {
-                final String rawSearch = searchQuery.trim();
-                final ColumnInfo mappingLocal = COLUMN_MAPPINGS.get(columnName);
-                final String targetKey = (mappingLocal != null && mappingLocal.getFieldName() != null && !mappingLocal.getFieldName().trim().isEmpty())
-                        ? mappingLocal.getFieldName()
-                        : columnName;
-
-                groupedResults = groupedResults.stream().filter(row -> {
-                    Object value = row.get(targetKey);
-                    if (value == null) return false;
-                    if (isExactMatchColumn(columnName)) {
-                        return value.toString().trim().equalsIgnoreCase(rawSearch);
-                    }
-                    if (isNumericColumn(columnName)) {
-                        try {
-                            double searchNum = Double.parseDouble(rawSearch);
-                            if (value instanceof Number)
-                                return Math.abs(((Number) value).doubleValue() - searchNum) < 0.001;
-                            else
-                                return Math.abs(Double.parseDouble(value.toString().trim()) - searchNum) < 0.001;
-                        } catch (NumberFormatException nfe) {
-                            return false;
-                        }
-                    }
-                    if (isDateColumn(columnName, mappingLocal)) {
-                        String formattedValue = formatValueForDateComparison(value);
-                        String formattedSearch = formatSearchForDateComparison(rawSearch);
-                        return formattedValue != null && formattedValue.equals(formattedSearch);
-                    }
-                    return value.toString().toLowerCase().contains(rawSearch.toLowerCase());
-                }).collect(Collectors.toList());
-
-                // After filter, forced in-memory paging
-                int totalRecords = groupedResults.size();
-                int totalPages = totalRecords == 0 ? 0 : (int) Math.ceil((double) totalRecords / size);
-                int fromIndex = Math.max(0, (page - 1) * size);
-                int toIndex = Math.min(fromIndex + size, totalRecords);
-                List<Map<String, Object>> pageData = (fromIndex < toIndex) ? groupedResults.subList(fromIndex, toIndex) : Collections.emptyList();
-
-                return buildResponseFromList(pageData, page, size, totalRecords, totalPages);
-            }
-
-            // If no in-memory filter needed, respect DB page and DB totals
+            // This method is only ever called with no filter (see AgingReportController -
+            // any non-empty filter routes to getAgingReportWithMultipleFilters instead,
+            // which correctly loads all matching rows before filtering/paginating). A
+            // single-column filter-then-paginate branch used to live here too, but it
+            // filtered *after* already slicing one DB page, giving wrong totals - removed
+            // rather than left as a landmine for a future caller.
             return buildResponse(dccPage, groupedResults, page, size);
     }
   
@@ -701,29 +661,27 @@ private String calculateTotalAgingCustom(DCC dcc, tbCategoryApprovalRequests lat
 
         boolean hasFilters = filters != null && !filters.isEmpty();
 
-        System.out.println("Service - hasFilters: " + hasFilters + ", filters: " + filters);
-        System.out.println("SupplierId: " + supplierId);
-
-        Page<DCC> pagedDcc;
-        List<DCC> dccList;
-
-        final String onlyStatus = "inprocess";
-
         if (hasFilters) {
-            Pageable unpaged = Pageable.unpaged();
-            pagedDcc = (supplierId != null && !"0".equals(supplierId.trim()))
-                    ? dccRepository.findAllBySupplierVendorAndStatus(supplierId, onlyStatus, unpaged)
-                    : dccRepository.findAllByStatus(onlyStatus, unpaged);
-            dccList = pagedDcc.getContent();
-            System.out.println("Loaded " + dccList.size() + " DCC records for filtering");
-        } else {
-            Pageable pageable = PageRequest.of(page - 1, size, Sort.by(Sort.Direction.DESC, "recordNo"));
-            pagedDcc = (supplierId != null && !"0".equals(supplierId.trim()))
-                    ? dccRepository.findAllBySupplierVendorAndStatus(supplierId, onlyStatus, pageable)
-                    : dccRepository.findAllByStatus(onlyStatus, pageable);
-            dccList = pagedDcc.getContent();
-            System.out.println("Loaded " + dccList.size() + " DCC records with pagination");
+            // Filtering needs every matching row loaded first (can't filter accurately
+            // against just one already-sliced DB page) - see loadAndFilterAgingRows.
+            List<Map<String, Object>> filtered = loadAndFilterAgingRows(supplierId, filters, "inprocess", true);
+
+            int totalRecords = filtered.size();
+            int totalPages = totalRecords == 0 ? 0 : (int) Math.ceil((double) totalRecords / size);
+            int fromIndex = Math.max(0, (page - 1) * size);
+            int toIndex = Math.min(fromIndex + size, totalRecords);
+            List<Map<String, Object>> pageData = fromIndex < toIndex ? filtered.subList(fromIndex, toIndex) : Collections.emptyList();
+
+            return buildResponseFromList(pageData, page, size, totalRecords, totalPages);
         }
+
+        // No filters: real DB-level pagination, no need to load the whole table.
+        final String onlyStatus = "inprocess";
+        Pageable pageable = PageRequest.of(page - 1, size, Sort.by(Sort.Direction.DESC, "recordNo"));
+        Page<DCC> pagedDcc = (supplierId != null && !"0".equals(supplierId.trim()))
+                ? dccRepository.findAllBySupplierVendorAndStatus(supplierId, onlyStatus, pageable)
+                : dccRepository.findAllByStatus(onlyStatus, pageable);
+        List<DCC> dccList = pagedDcc.getContent();
 
         if (dccList.isEmpty()) {
             Map<String, Object> emptyResponse = new HashMap<>();
@@ -735,7 +693,6 @@ private String calculateTotalAgingCustom(DCC dcc, tbCategoryApprovalRequests lat
             return emptyResponse;
         }
 
-        // Preload related data
         Map<String, Object> preloaded = preloadRelatedData(dccList);
 
         @SuppressWarnings("unchecked")
@@ -755,56 +712,165 @@ private String calculateTotalAgingCustom(DCC dcc, tbCategoryApprovalRequests lat
         @SuppressWarnings("unchecked")
         Map<Long, departmentsdata> depMap = (Map<Long, departmentsdata>) preloaded.get("departmentsMap");
 
-        System.out.println("Preloaded data - PO Map size: " + poMap.size() + ", Line Items: " + lineItemsMap.size());
-
-        // Build grouped results
         List<Map<String, Object>> groupedResults = dccList.stream()
                 .map(dcc -> buildGroupedRow(dcc, poMap, lineItemsMap, approvalRequestMap, approvalsMap,
                         userMap, uplMap, poByNumberLine, depMap))
                 .collect(Collectors.toList());
 
-        System.out.println("Generated " + groupedResults.size() + " grouped rows");
+        return buildResponse(pagedDcc, groupedResults, page, size);
+    }
 
-        if (hasFilters) {
-            // Debug: Check first row to see available data
-            if (!groupedResults.isEmpty()) {
-                System.out.println("Sample row keys: " + groupedResults.get(0).keySet());
+    /**
+     * Used by the export job worker (RQ: stream-export rollout) - always returns the
+     * FULL matching row set, unpaginated, regardless of whether filters is empty
+     * ("export everything currently in scope" rather than "one grid page").
+     */
+    public List<Map<String, Object>> getAgingReportForExport(String supplierId, Map<String, String> filters) {
+        return loadAndFilterAgingRows(supplierId, filters, "inprocess", true);
+    }
 
-            }
+    /**
+     * Loads every DCC row for the supplier/status (never paginated - filtering has to
+     * see the whole candidate set to be accurate), builds the grouped/aggregated rows,
+     * and applies filters if any were supplied. Shared by the interactive filtered-fetch
+     * path and the export path, which both need the identical "everything that matches"
+     * result - export just skips the final page-slice the fetch path applies afterward.
+     */
+    private List<Map<String, Object>> loadAndFilterAgingRows(
+            String supplierId, Map<String, String> filters, String status, boolean excludeStatus) {
 
-            List<Map<String, Object>> filtered = groupedResults.stream()
-                    .filter(row -> {
-                        boolean matchesAll = filters.entrySet().stream().allMatch(filterEntry -> {
-                            String columnName = filterEntry.getKey();
-                            String searchQuery = filterEntry.getValue();
+        Pageable unpaged = Pageable.unpaged();
+        Page<DCC> pagedDcc = excludeStatus
+                ? ((supplierId != null && !"0".equals(supplierId.trim()))
+                        ? dccRepository.findAllBySupplierVendorAndStatus(supplierId, status, unpaged)
+                        : dccRepository.findAllByStatus(status, unpaged))
+                : ((supplierId != null && !"0".equals(supplierId.trim()))
+                        ? dccRepository.findAllBySupplierVendorAndStatusNot(supplierId, status, unpaged)
+                        : dccRepository.findAllByStatusNot(status, unpaged));
+        List<DCC> dccList = pagedDcc.getContent();
 
-                            if (searchQuery == null || searchQuery.trim().isEmpty()) {
-                                return true;
-                            }
-
-                            // System.out.println("Checking filter: " + columnName + " = '" + searchQuery + "'");
-
-                            boolean matches = matchesFilter(row, columnName, searchQuery);
-                            // System.out.println("Row matches filter " + columnName + ": " + matches);
-                            return matches;
-                        });
-                        return matchesAll;
-                    })
-                    .collect(Collectors.toList());
-
-            // System.out.println("After filtering: " + filtered.size() + " results");
-
-            int totalRecords = filtered.size();
-            int totalPages = totalRecords == 0 ? 0 : (int) Math.ceil((double) totalRecords / size);
-            int fromIndex = Math.max(0, (page - 1) * size);
-            int toIndex = Math.min(fromIndex + size, totalRecords);
-            List<Map<String, Object>> pageData = fromIndex < toIndex ? filtered.subList(fromIndex, toIndex) : Collections.emptyList();
-
-            return buildResponseFromList(pageData, page, size, totalRecords, totalPages);
+        if (dccList.isEmpty()) {
+            return Collections.emptyList();
         }
 
-        // No filters: return DB pagination
-        return buildResponse(pagedDcc, groupedResults, page, size);
+        Map<String, Object> preloaded = preloadRelatedData(dccList);
+
+        @SuppressWarnings("unchecked")
+        Map<String, tbPurchaseOrder> poMap = (Map<String, tbPurchaseOrder>) preloaded.get("poMapByPoNumber");
+        @SuppressWarnings("unchecked")
+        Map<String, List<DCCLineItem>> lineItemsMap = (Map<String, List<DCCLineItem>>) preloaded.get("lineItemsMap");
+        @SuppressWarnings("unchecked")
+        Map<Integer, tbCategoryApprovalRequests> approvalRequestMap = (Map<Integer, tbCategoryApprovalRequests>) preloaded.get("approvalRequestMap");
+        @SuppressWarnings("unchecked")
+        Map<Integer, List<tbCategoryApprovals>> approvalsMap = (Map<Integer, List<tbCategoryApprovals>>) preloaded.get("approvalsMap");
+        @SuppressWarnings("unchecked")
+        Map<String, User> userMap = (Map<String, User>) preloaded.get("userMap");
+        @SuppressWarnings("unchecked")
+        Map<String, List<tb_PurchaseOrderUPL>> uplMap = (Map<String, List<tb_PurchaseOrderUPL>>) preloaded.get("uplMap");
+        @SuppressWarnings("unchecked")
+        Map<String, tbPurchaseOrder> poByNumberLine = (Map<String, tbPurchaseOrder>) preloaded.get("poByNumberLine");
+        @SuppressWarnings("unchecked")
+        Map<Long, departmentsdata> depMap = (Map<Long, departmentsdata>) preloaded.get("departmentsMap");
+
+        List<Map<String, Object>> groupedResults = dccList.stream()
+                .map(dcc -> buildGroupedRow(dcc, poMap, lineItemsMap, approvalRequestMap, approvalsMap,
+                        userMap, uplMap, poByNumberLine, depMap))
+                .collect(Collectors.toList());
+
+        if (filters == null || filters.isEmpty()) {
+            return groupedResults;
+        }
+
+        // Date range filters (e.g. "dccCreatedDateStart"/"dccCreatedDateEnd") have no single-column
+        // mapping of their own - routing them through matchesFilter below would treat them as an
+        // unknown column and reject every row. Split them out and handle with matchesDateRanges instead.
+        Map<String, String> rangeFilters = new HashMap<>();
+        Map<String, String> regularFilters = new HashMap<>();
+        for (Map.Entry<String, String> e : filters.entrySet()) {
+            String key = e.getKey();
+            String base = key.endsWith("Start") ? key.substring(0, key.length() - "Start".length())
+                    : key.endsWith("End") ? key.substring(0, key.length() - "End".length())
+                    : null;
+            if (base != null && isDateColumnName(base)) {
+                rangeFilters.put(key, e.getValue());
+            } else {
+                regularFilters.put(key, e.getValue());
+            }
+        }
+
+        return groupedResults.stream()
+                .filter(row -> regularFilters.entrySet().stream().allMatch(filterEntry -> {
+                    String searchQuery = filterEntry.getValue();
+                    if (searchQuery == null || searchQuery.trim().isEmpty()) {
+                        return true;
+                    }
+                    return matchesFilter(row, filterEntry.getKey(), searchQuery);
+                }))
+                .filter(row -> matchesDateRanges(row, rangeFilters))
+                .collect(Collectors.toList());
+    }
+
+    private boolean isDateColumnName(String columnName) {
+        ColumnInfo info = getColumnInfoInsensitive(columnName);
+        return info != null && "date".equals(info.getType());
+    }
+
+    // Groups "<field>Start"/"<field>End" entries by field, then checks each field's row value
+    // falls within its [start, end] bound (a missing bound is unbounded on that side).
+    private boolean matchesDateRanges(Map<String, Object> row, Map<String, String> rangeFilters) {
+        if (rangeFilters.isEmpty()) {
+            return true;
+        }
+        Map<String, String[]> boundsByColumn = new HashMap<>();
+        for (Map.Entry<String, String> e : rangeFilters.entrySet()) {
+            String key = e.getKey();
+            boolean isStart = key.endsWith("Start");
+            String base = isStart ? key.substring(0, key.length() - "Start".length())
+                    : key.substring(0, key.length() - "End".length());
+            String[] bounds = boundsByColumn.computeIfAbsent(base, k -> new String[2]);
+            if (isStart) {
+                bounds[0] = e.getValue();
+            } else {
+                bounds[1] = e.getValue();
+            }
+        }
+        for (Map.Entry<String, String[]> e : boundsByColumn.entrySet()) {
+            if (!matchesDateRange(row, e.getKey(), e.getValue()[0], e.getValue()[1])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Row date values are stored pre-formatted as DATE_FORMAT ("d-MMM-yyyy", see formatDate());
+    // range bounds arrive from the frontend dialog as ISO "yyyy-MM-dd".
+    private boolean matchesDateRange(Map<String, Object> row, String columnName, String startValue, String endValue) {
+        boolean hasStart = startValue != null && !startValue.trim().isEmpty();
+        boolean hasEnd = endValue != null && !endValue.trim().isEmpty();
+        if (!hasStart && !hasEnd) {
+            return true;
+        }
+        ColumnInfo mapping = getColumnInfoInsensitive(columnName);
+        String targetKey = (mapping != null && mapping.getFieldName() != null && !mapping.getFieldName().trim().isEmpty())
+                ? mapping.getFieldName()
+                : columnName;
+        Object value = row.get(targetKey);
+        if (value == null) {
+            return false;
+        }
+        try {
+            java.util.Date rowDate = new SimpleDateFormat(DATE_FORMAT).parse(value.toString().trim());
+            java.text.SimpleDateFormat isoFmt = new java.text.SimpleDateFormat("yyyy-MM-dd");
+            if (hasStart && rowDate.before(isoFmt.parse(startValue.trim()))) {
+                return false;
+            }
+            if (hasEnd && rowDate.after(isoFmt.parse(endValue.trim()))) {
+                return false;
+            }
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     public Map<String, Object> getFullAgingReport(
@@ -813,8 +879,6 @@ private String calculateTotalAgingCustom(DCC dcc, tbCategoryApprovalRequests lat
         logger.debug("Fetching aging report for supplierId={} page={} size={}", supplierId, page, size);
         page = Math.max(page, 1);
         size = Math.max(size, 1);
-        boolean hasFilter = columnName != null && !columnName.trim().isEmpty() &&
-                searchQuery != null && !searchQuery.trim().isEmpty();
 
         final String excludedStatus = "incomplete";
         Pageable pageable = PageRequest.of(page - 1, size, Sort.by(Sort.Direction.DESC, "recordNo"));
@@ -857,50 +921,12 @@ private String calculateTotalAgingCustom(DCC dcc, tbCategoryApprovalRequests lat
                         uplMap, poByNumberLine, depMap))
                 .collect(Collectors.toList());
 
-        // In-memory filter for searchQuery, if provided
-        if (hasFilter) {
-            final String rawSearch = searchQuery.trim();
-            final ColumnInfo mappingLocal = COLUMN_MAPPINGS.get(columnName);
-            final String targetKey = (mappingLocal != null && mappingLocal.getFieldName() != null && !mappingLocal.getFieldName().trim().isEmpty())
-                    ? mappingLocal.getFieldName()
-                    : columnName;
-
-            groupedResults = groupedResults.stream().filter(row -> {
-                Object value = row.get(targetKey);
-                if (value == null) return false;
-                if (isExactMatchColumn(columnName)) {
-                    return value.toString().trim().equalsIgnoreCase(rawSearch);
-                }
-                if (isNumericColumn(columnName)) {
-                    try {
-                        double searchNum = Double.parseDouble(rawSearch);
-                        if (value instanceof Number)
-                            return Math.abs(((Number) value).doubleValue() - searchNum) < 0.001;
-                        else
-                            return Math.abs(Double.parseDouble(value.toString().trim()) - searchNum) < 0.001;
-                    } catch (NumberFormatException nfe) {
-                        return false;
-                    }
-                }
-                if (isDateColumn(columnName, mappingLocal)) {
-                    String formattedValue = formatValueForDateComparison(value);
-                    String formattedSearch = formatSearchForDateComparison(rawSearch);
-                    return formattedValue != null && formattedValue.equals(formattedSearch);
-                }
-                return value.toString().toLowerCase().contains(rawSearch.toLowerCase());
-            }).collect(Collectors.toList());
-
-            // After filter, forced in-memory paging
-            int totalRecords = groupedResults.size();
-            int totalPages = totalRecords == 0 ? 0 : (int) Math.ceil((double) totalRecords / size);
-            int fromIndex = Math.max(0, (page - 1) * size);
-            int toIndex = Math.min(fromIndex + size, totalRecords);
-            List<Map<String, Object>> pageData = (fromIndex < toIndex) ? groupedResults.subList(fromIndex, toIndex) : Collections.emptyList();
-
-            return buildResponseFromList(pageData, page, size, totalRecords, totalPages);
-        }
-
-        // If no in-memory filter needed, respect DB page and DB totals
+        // This method is only ever called with no filter (see AgingReportController -
+        // any non-empty filter routes to getFullAgingReportWithMultipleFilters instead,
+        // which correctly loads all matching rows before filtering/paginating). A
+        // single-column filter-then-paginate branch used to live here too, but it
+        // filtered *after* already slicing one DB page, giving wrong totals - removed
+        // rather than left as a landmine for a future caller.
         return buildResponse(dccPage, groupedResults, page, size);
     }
 
@@ -914,30 +940,28 @@ private String calculateTotalAgingCustom(DCC dcc, tbCategoryApprovalRequests lat
         size = Math.max(size, 1);
 
         boolean hasFilters = filters != null && !filters.isEmpty();
-
-        System.out.println("Service - hasFilters: " + hasFilters + ", filters: " + filters);
-        System.out.println("SupplierId: " + supplierId);
-
-        Page<DCC> pagedDcc;
-        List<DCC> dccList;
-
         final String excludedStatus = "incomplete";
 
         if (hasFilters) {
-            Pageable unpaged = Pageable.unpaged();
-            pagedDcc = (supplierId != null && !"0".equals(supplierId.trim()))
-                    ? dccRepository.findAllBySupplierVendorAndStatusNot(supplierId, excludedStatus, unpaged)
-                    : dccRepository.findAllByStatusNot(excludedStatus, unpaged);
-            dccList = pagedDcc.getContent();
-            System.out.println("Loaded " + dccList.size() + " DCC records for filtering");
-        } else {
-            Pageable pageable = PageRequest.of(page - 1, size, Sort.by(Sort.Direction.DESC, "recordNo"));
-            pagedDcc = (supplierId != null && !"0".equals(supplierId.trim()))
-                    ? dccRepository.findAllBySupplierVendorAndStatusNot(supplierId, excludedStatus, pageable)
-                    : dccRepository.findAllByStatusNot(excludedStatus, pageable);
-            dccList = pagedDcc.getContent();
-            System.out.println("Loaded " + dccList.size() + " DCC records with pagination");
+            // Filtering needs every matching row loaded first (can't filter accurately
+            // against just one already-sliced DB page) - see loadAndFilterAgingRows.
+            List<Map<String, Object>> filtered = loadAndFilterAgingRows(supplierId, filters, excludedStatus, false);
+
+            int totalRecords = filtered.size();
+            int totalPages = totalRecords == 0 ? 0 : (int) Math.ceil((double) totalRecords / size);
+            int fromIndex = Math.max(0, (page - 1) * size);
+            int toIndex = Math.min(fromIndex + size, totalRecords);
+            List<Map<String, Object>> pageData = fromIndex < toIndex ? filtered.subList(fromIndex, toIndex) : Collections.emptyList();
+
+            return buildResponseFromList(pageData, page, size, totalRecords, totalPages);
         }
+
+        // No filters: real DB-level pagination, no need to load the whole table.
+        Pageable pageable = PageRequest.of(page - 1, size, Sort.by(Sort.Direction.DESC, "recordNo"));
+        Page<DCC> pagedDcc = (supplierId != null && !"0".equals(supplierId.trim()))
+                ? dccRepository.findAllBySupplierVendorAndStatusNot(supplierId, excludedStatus, pageable)
+                : dccRepository.findAllByStatusNot(excludedStatus, pageable);
+        List<DCC> dccList = pagedDcc.getContent();
 
         if (dccList.isEmpty()) {
             Map<String, Object> emptyResponse = new HashMap<>();
@@ -949,7 +973,6 @@ private String calculateTotalAgingCustom(DCC dcc, tbCategoryApprovalRequests lat
             return emptyResponse;
         }
 
-        // Preload related data
         Map<String, Object> preloaded = preloadRelatedData(dccList);
 
         @SuppressWarnings("unchecked")
@@ -969,56 +992,20 @@ private String calculateTotalAgingCustom(DCC dcc, tbCategoryApprovalRequests lat
         @SuppressWarnings("unchecked")
         Map<Long, departmentsdata> depMap = (Map<Long, departmentsdata>) preloaded.get("departmentsMap");
 
-        System.out.println("Preloaded data - PO Map size: " + poMap.size() + ", Line Items: " + lineItemsMap.size());
-
-        // Build grouped results
         List<Map<String, Object>> groupedResults = dccList.stream()
                 .map(dcc -> buildGroupedRow(dcc, poMap, lineItemsMap, approvalRequestMap, approvalsMap,
                         userMap, uplMap, poByNumberLine, depMap))
                 .collect(Collectors.toList());
 
-        System.out.println("Generated " + groupedResults.size() + " grouped rows");
-
-        if (hasFilters) {
-            // Debug: Check first row to see available data
-            if (!groupedResults.isEmpty()) {
-                System.out.println("Sample row keys: " + groupedResults.get(0).keySet());
-
-            }
-
-            List<Map<String, Object>> filtered = groupedResults.stream()
-                    .filter(row -> {
-                        boolean matchesAll = filters.entrySet().stream().allMatch(filterEntry -> {
-                            String columnName = filterEntry.getKey();
-                            String searchQuery = filterEntry.getValue();
-
-                            if (searchQuery == null || searchQuery.trim().isEmpty()) {
-                                return true;
-                            }
-
-                            // System.out.println("Checking filter: " + columnName + " = '" + searchQuery + "'");
-
-                            boolean matches = matchesFilter(row, columnName, searchQuery);
-                            // System.out.println("Row matches filter " + columnName + ": " + matches);
-                            return matches;
-                        });
-                        return matchesAll;
-                    })
-                    .collect(Collectors.toList());
-
-            // System.out.println("After filtering: " + filtered.size() + " results");
-
-            int totalRecords = filtered.size();
-            int totalPages = totalRecords == 0 ? 0 : (int) Math.ceil((double) totalRecords / size);
-            int fromIndex = Math.max(0, (page - 1) * size);
-            int toIndex = Math.min(fromIndex + size, totalRecords);
-            List<Map<String, Object>> pageData = fromIndex < toIndex ? filtered.subList(fromIndex, toIndex) : Collections.emptyList();
-
-            return buildResponseFromList(pageData, page, size, totalRecords, totalPages);
-        }
-
-        // No filters: return DB pagination
         return buildResponse(pagedDcc, groupedResults, page, size);
+    }
+
+    /**
+     * Used by the export job worker (RQ: stream-export rollout) - always returns the
+     * FULL matching row set, unpaginated, regardless of whether filters is empty.
+     */
+    public List<Map<String, Object>> getFullAgingReportForExport(String supplierId, Map<String, String> filters) {
+        return loadAndFilterAgingRows(supplierId, filters, "incomplete", false);
     }
 
     //  debug method for troubleshooting
