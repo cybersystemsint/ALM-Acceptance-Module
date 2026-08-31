@@ -69,8 +69,11 @@ import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 import com.zain.almksazain.model.ExportJob;
 import com.zain.almksazain.repo.ExportJobRepository;
+import com.zain.almksazain.services.DccPoCombinedService;
 import com.zain.almksazain.services.PurchaseOrderExportService;
+import com.zain.almksazain.specs.PoFilterBuilder;
 import com.zain.almksazain.specs.QueryFilterBuilder;
+import com.zain.almksazain.specs.UplFilterBuilder;
 
 @RestController
 // Note: this app registers a global CorsFilter (see GlobalCorsConfig) that handles CORS at the
@@ -83,6 +86,8 @@ public class ExportsController {
     private static final int DEFAULT_FETCH_SIZE = 1000;
     private static final int MAX_ROWS_PER_SHEET = 1_000_000;
     private static final long PROGRESS_UPDATE_EVERY_N_ROWS = 5_000;
+    private static final int MAX_UPL_EXPORT_RECORDS = 250_000;
+    private static final int MAX_PO_EXPORT_RECORDS = 250_000;
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
@@ -92,6 +97,8 @@ public class ExportsController {
     private PurchaseOrderExportService exportService;
     @Autowired
     private ExportJobRepository exportJobRepository;
+    @Autowired
+    private DccPoCombinedService dccPoCombinedService;
 
     @Value("${app.export.dir:/data/app/logs/ALM/Exports/}")
     private String exportDir;
@@ -390,6 +397,228 @@ public class ExportsController {
             cell.setCellValue(headers.get(i));
             cell.setCellStyle(headerStyle);
         }
+    }
+
+    // ============================================================================
+    // Aging Report / Full Aging Report Export
+    //
+    // Both report types share the exact same column set (verified against both
+    // grids' column definitions) and the same underlying row shape - a flat
+    // Map<String,Object> per DCC, already fully filtered and aggregated by
+    // DccPoCombinedService's getAgingReportForExport/getFullAgingReportForExport
+    // (RQ: stream-export rollout). Unlike the acceptance-report export above, the
+    // read side here isn't a raw streaming SQL query - it reuses the same in-memory
+    // "load all matching rows, then filter" logic the interactive fetch endpoint
+    // already relies on for filter accuracy, so the source rows are fully
+    // materialized before writing starts. The write side still streams via
+    // SXSSFWorkbook, which is what actually bounds memory at scale.
+    // ============================================================================
+
+    private static final List<String> AGING_REPORT_EXPORT_HEADERS = Arrays.asList(
+            "Request No", "PO Number", "Project Name", "Acceptance Type", "Status",
+            "Created Date", "Approval Date", "Request Amount (SAR)", "Location",
+            "Scope of Work", "In Service Date", "Vendor", "Requested By",
+            "Remaining Approval Count", "Pending Approver", "Department",
+            "User Aging", "User Aging (In days)", "Total Aging", "Total Aging (In days)"
+    );
+
+    private static final List<String> AGING_REPORT_EXPORT_FIELDS = Arrays.asList(
+            "recordNo", "poNumber", "projectName", "dccAcceptanceType", "dccStatus",
+            "dccCreatedDate", "dateApproved", "requestAmountSAR", "lnLocationName",
+            "lnScopeOfWork", "lnInserviceDate", "vendorName", "requestedBy",
+            "approvalCount", "pendingApprovers", "departmentName",
+            "userAging", "userAgingInDays", "totalAging", "totalAgingInDays"
+    );
+
+    @PostMapping(value = "/reports/v2/agingReport/export")
+    public ResponseEntity<Map<String, String>> startAgingReportExport(@RequestBody String req) {
+        logger.info("Aging report export requested : " + req);
+        return startAgingLikeReportExport("agingReport", req);
+    }
+
+    @GetMapping(value = "/reports/v2/agingReport/export/{jobId}/status")
+    public ResponseEntity<?> getAgingReportExportStatus(@PathVariable String jobId) {
+        return getAgingLikeExportStatus(jobId);
+    }
+
+    @GetMapping(value = "/reports/v2/agingReport/export/{jobId}/download")
+    public ResponseEntity<?> downloadAgingReportExport(@PathVariable String jobId) {
+        return downloadAgingLikeExport(jobId);
+    }
+
+    @PostMapping(value = "/reports/v2/fullAgingReport/export")
+    public ResponseEntity<Map<String, String>> startFullAgingReportExport(@RequestBody String req) {
+        logger.info("Full aging report export requested : " + req);
+        return startAgingLikeReportExport("fullAgingReport", req);
+    }
+
+    @GetMapping(value = "/reports/v2/fullAgingReport/export/{jobId}/status")
+    public ResponseEntity<?> getFullAgingReportExportStatus(@PathVariable String jobId) {
+        return getAgingLikeExportStatus(jobId);
+    }
+
+    @GetMapping(value = "/reports/v2/fullAgingReport/export/{jobId}/download")
+    public ResponseEntity<?> downloadFullAgingReportExport(@PathVariable String jobId) {
+        return downloadAgingLikeExport(jobId);
+    }
+
+    private ResponseEntity<Map<String, String>> startAgingLikeReportExport(String reportType, String req) {
+        String jobId = UUID.randomUUID().toString();
+        ExportJob job = new ExportJob();
+        job.setJobId(jobId);
+        job.setReportType(reportType);
+        job.setStatus(ExportJob.STATUS_PENDING);
+        job.setRowsWritten(0);
+        job.setSheetCount(0);
+        job.setCreatedAt(LocalDateTime.now());
+        exportJobRepository.save(job);
+
+        CompletableFuture.runAsync(() -> runAgingLikeReportExportJob(reportType, jobId, req));
+
+        Map<String, String> resp = new HashMap<>();
+        resp.put("jobId", jobId);
+        return ResponseEntity.accepted().body(resp);
+    }
+
+    private ResponseEntity<?> getAgingLikeExportStatus(String jobId) {
+        Optional<ExportJob> jobOpt = exportJobRepository.findById(jobId);
+        if (jobOpt.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        ExportJob job = jobOpt.get();
+        Map<String, Object> resp = new HashMap<>();
+        resp.put("jobId", job.getJobId());
+        resp.put("status", job.getStatus());
+        resp.put("rowsWritten", job.getRowsWritten());
+        resp.put("sheetCount", job.getSheetCount());
+        resp.put("fileName", job.getFileName());
+        resp.put("errorMessage", job.getErrorMessage());
+        return ResponseEntity.ok(resp);
+    }
+
+    private ResponseEntity<?> downloadAgingLikeExport(String jobId) {
+        Optional<ExportJob> jobOpt = exportJobRepository.findById(jobId);
+        if (jobOpt.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        ExportJob job = jobOpt.get();
+        if (!ExportJob.STATUS_DONE.equals(job.getStatus())) {
+            return ResponseEntity.status(HttpStatus.CONFLICT)
+                    .body("Export not ready yet, status=" + job.getStatus());
+        }
+        File file = new File(job.getFilePath());
+        if (!file.exists()) {
+            return ResponseEntity.status(HttpStatus.GONE).body("Export file no longer available");
+        }
+
+        HttpHeaders responseHeaders = new HttpHeaders();
+        responseHeaders.setContentType(MediaType.parseMediaType(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"));
+        responseHeaders.add("Content-Disposition", "attachment; filename=" + job.getFileName());
+        return ResponseEntity.ok().headers(responseHeaders).body(new FileSystemResource(file));
+    }
+
+    private void runAgingLikeReportExportJob(String reportType, String jobId, String req) {
+        ExportJob job = exportJobRepository.findById(jobId).orElse(null);
+        if (job == null) {
+            logger.error("Export job {} disappeared before it could start", jobId);
+            return;
+        }
+        job.setStatus(ExportJob.STATUS_RUNNING);
+        exportJobRepository.save(job);
+
+        boolean isAgingReport = "agingReport".equals(reportType);
+
+        JsonObject obj = JsonParser.parseString(req).getAsJsonObject();
+        AgingReportRequestParser.ParsedRequest parsed = AgingReportRequestParser.parse(obj);
+
+        List<Map<String, Object>> rows = isAgingReport
+                ? dccPoCombinedService.getAgingReportForExport(parsed.supplierId(), parsed.filters())
+                : dccPoCombinedService.getFullAgingReportForExport(parsed.supplierId(), parsed.filters());
+
+        File dir = new File(exportDir);
+        if (!dir.exists()) {
+            dir.mkdirs();
+        }
+        String storedFileName = (isAgingReport ? "aging_report_" : "full_aging_report_")
+                + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
+                + "_" + jobId.substring(0, 8) + ".xlsx";
+        File outFile = new File(dir, storedFileName);
+
+        String sheetLabel = isAgingReport ? "Aging Report" : "Full Aging Report";
+        SXSSFWorkbook workbook = new SXSSFWorkbook(2000);
+        long[] totalRows = {0};
+        int[] sheetCount = {0};
+        boolean success = false;
+        String errorMessage = null;
+
+        try {
+            CellStyle headerStyle = buildHeaderStyle(workbook);
+            CellStyle numberStyle = buildNumberStyle(workbook);
+
+            Sheet[] sheetRef = {workbook.createSheet(sheetLabel)};
+            sheetCount[0] = 1;
+            writeHeaderRow(sheetRef[0], AGING_REPORT_EXPORT_HEADERS, headerStyle);
+            int[] rowIdx = {1};
+
+            for (Map<String, Object> rowData : rows) {
+                if (rowIdx[0] > MAX_ROWS_PER_SHEET) {
+                    sheetCount[0]++;
+                    sheetRef[0] = workbook.createSheet(sheetLabel + " (" + sheetCount[0] + ")");
+                    writeHeaderRow(sheetRef[0], AGING_REPORT_EXPORT_HEADERS, headerStyle);
+                    rowIdx[0] = 1;
+                }
+                Row row = sheetRef[0].createRow(rowIdx[0]++);
+                for (int i = 0; i < AGING_REPORT_EXPORT_FIELDS.size(); i++) {
+                    Object value = rowData.get(AGING_REPORT_EXPORT_FIELDS.get(i));
+                    Cell cell = row.createCell(i);
+                    if (value == null) {
+                        cell.setBlank();
+                    } else if (value instanceof Number) {
+                        cell.setCellValue(((Number) value).doubleValue());
+                        cell.setCellStyle(numberStyle);
+                    } else {
+                        cell.setCellValue(value.toString());
+                    }
+                }
+                totalRows[0]++;
+                if (totalRows[0] % PROGRESS_UPDATE_EVERY_N_ROWS == 0) {
+                    job.setRowsWritten(totalRows[0]);
+                    job.setSheetCount(sheetCount[0]);
+                    exportJobRepository.save(job);
+                }
+            }
+
+            try (FileOutputStream fos = new FileOutputStream(outFile)) {
+                workbook.write(fos);
+            }
+            success = true;
+
+        } catch (Exception e) {
+            logger.error("{} export job {} failed", reportType, jobId, e);
+            errorMessage = e.getMessage();
+        } finally {
+            workbook.dispose();
+        }
+
+        LocalDateTime completedAt = LocalDateTime.now();
+        job.setRowsWritten(totalRows[0]);
+        job.setSheetCount(sheetCount[0]);
+        job.setCompletedAt(completedAt);
+        if (success) {
+            job.setStatus(ExportJob.STATUS_DONE);
+            String namePrefix = isAgingReport ? "AGING_REPORT" : "FULL_AGING_REPORT";
+            job.setFileName(namePrefix + "_"
+                    + completedAt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")) + ".xlsx");
+            job.setFilePath(outFile.getAbsolutePath());
+        } else {
+            job.setStatus(ExportJob.STATUS_FAILED);
+            job.setErrorMessage(errorMessage);
+            if (outFile.exists()) {
+                outFile.delete();
+            }
+        }
+        exportJobRepository.save(job);
     }
 
     // ============================================================================
@@ -830,9 +1059,80 @@ public class ExportsController {
     // Nested Purchase Orders Export
     // ============================================================================
 
-    @PostMapping(value = "/reports/getNestedPurchaseOrders/export")
-    public void exportPurchaseOrdersNested(@RequestBody String req,
-                                           HttpServletResponse response) throws IOException {
+    // ─── /reports/getNestedPurchaseOrders/export — job-based (start/status/download) ──
+    // Converted from a synchronous HttpServletResponse write to the same async job pattern used
+    // elsewhere in this controller (RQ: stream-export rollout) - returns a jobId immediately,
+    // builds the workbook on a background thread, persists the finished file to disk keyed by
+    // jobId. Row/column shape is unchanged (PurchaseOrderExportService.exportToExcel still builds
+    // the same flattened, one-row-per-line-item output) - only the filter coverage (date ranges,
+    // total* aggregates, via PoFilterBuilder) and delivery mechanism changed.
+    @PostMapping(value = "/reports/getNestedPurchaseOrders/export", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<Map<String, String>> startPurchaseOrdersNestedExport(@RequestBody String req) {
+        String jobId = UUID.randomUUID().toString();
+        ExportJob job = new ExportJob();
+        job.setJobId(jobId);
+        job.setReportType("purchaseOrders");
+        job.setStatus(ExportJob.STATUS_PENDING);
+        job.setRowsWritten(0);
+        job.setSheetCount(0);
+        job.setCreatedAt(LocalDateTime.now());
+        exportJobRepository.save(job);
+
+        CompletableFuture.runAsync(() -> runPurchaseOrdersNestedExportJob(jobId, req));
+
+        Map<String, String> resp = new HashMap<>();
+        resp.put("jobId", jobId);
+        return ResponseEntity.accepted().body(resp);
+    }
+
+    @GetMapping(value = "/reports/getNestedPurchaseOrders/export/{jobId}/status")
+    public ResponseEntity<?> getPurchaseOrdersNestedExportStatus(@PathVariable String jobId) {
+        Optional<ExportJob> jobOpt = exportJobRepository.findById(jobId);
+        if (jobOpt.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        ExportJob job = jobOpt.get();
+        Map<String, Object> resp = new HashMap<>();
+        resp.put("jobId", job.getJobId());
+        resp.put("status", job.getStatus());
+        resp.put("rowsWritten", job.getRowsWritten());
+        resp.put("sheetCount", job.getSheetCount());
+        resp.put("fileName", job.getFileName());
+        resp.put("errorMessage", job.getErrorMessage());
+        return ResponseEntity.ok(resp);
+    }
+
+    @GetMapping(value = "/reports/getNestedPurchaseOrders/export/{jobId}/download")
+    public ResponseEntity<?> downloadPurchaseOrdersNestedExport(@PathVariable String jobId) {
+        Optional<ExportJob> jobOpt = exportJobRepository.findById(jobId);
+        if (jobOpt.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        ExportJob job = jobOpt.get();
+        if (!ExportJob.STATUS_DONE.equals(job.getStatus())) {
+            return ResponseEntity.status(HttpStatus.CONFLICT)
+                    .body("Export not ready yet, status=" + job.getStatus());
+        }
+        File file = new File(job.getFilePath());
+        if (!file.exists()) {
+            return ResponseEntity.status(HttpStatus.GONE).body("Export file no longer available");
+        }
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.parseMediaType(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"));
+        headers.add("Content-Disposition", "attachment; filename=" + job.getFileName());
+        return ResponseEntity.ok().headers(headers).body(new FileSystemResource(file));
+    }
+
+    private void runPurchaseOrdersNestedExportJob(String jobId, String req) {
+        ExportJob job = exportJobRepository.findById(jobId).orElse(null);
+        if (job == null) {
+            logger.error("PO export job {} disappeared before it could start", jobId);
+            return;
+        }
+        job.setStatus(ExportJob.STATUS_RUNNING);
+        exportJobRepository.save(job);
+
         try {
             JsonObject obj = JsonParser.parseString(req).getAsJsonObject();
 
@@ -861,6 +1161,18 @@ public class ExportsController {
                     if (col != null && !col.trim().isEmpty() && q != null && !q.trim().isEmpty()) {
                         filtersObj.add(col, new JsonPrimitive(q));
                     }
+                }
+            }
+
+            // Flat copy for PoFilterBuilder's date-range/aggregate-restriction helpers (Stage A/E) -
+            // createdDateStart/End, approvedDateStart/End, and the 7 total* aggregate filters had no
+            // export-side equivalent at all before this; the plain-field matching above (poNumber,
+            // projectName, etc via searchableColumns) is untouched and unaffected.
+            Map<String, String> flatFilters = new HashMap<>();
+            for (Map.Entry<String, JsonElement> entry : filtersObj.entrySet()) {
+                JsonElement val = entry.getValue();
+                if (val != null && !val.isJsonNull()) {
+                    flatFilters.put(entry.getKey(), val.getAsString());
                 }
             }
 
@@ -904,6 +1216,21 @@ public class ExportsController {
                 }
             }
 
+            // Explicit, dedicated vendor scoping - not routed through the generic searchableColumns
+            // loop above, so it can never be silently dropped or reshaped by future changes to that
+            // shared map. "0" is this codebase's established sentinel for "no vendor restriction"
+            // (see getNestedPurchaseOrders), used by AMU-side callers that omit supplierId entirely
+            // or pass "0" deliberately; a vendor session always supplies its own real vendor number.
+            String supplierId = obj.has("supplierId") && !obj.get("supplierId").isJsonNull()
+                    ? obj.get("supplierId").getAsString().trim() : "0";
+            if (!supplierId.isEmpty() && !"0".equals(supplierId)) {
+                whereFrag.append(" AND PO.vendorNumber = ?");
+                params.add(supplierId);
+            }
+
+            whereFrag.append(PoFilterBuilder.buildDateRangeClause(flatFilters, params));
+            whereFrag.append(PoFilterBuilder.buildAggregateRestriction(flatFilters, params));
+
             String poDateFrom = obj.has("poDateFrom") ? convertToSqlDate(safeGetAsString(obj, "poDateFrom")) : "";
             String poDateTo   = obj.has("poDateTo")   ? convertToSqlDate(safeGetAsString(obj, "poDateTo"))   : "";
             if (!poDateFrom.isEmpty() && !poDateTo.isEmpty()) {
@@ -917,26 +1244,52 @@ public class ExportsController {
                 params.add(poDateTo);
             }
 
-            int page = obj.has("page") ? Math.max(1, obj.get("page").getAsInt()) : 1;
-            int size = obj.has("size") ? Math.max(1, obj.get("size").getAsInt()) : 20000;
-
-            Integer limit  = null;
-            Integer offset = null;
-            if (!(page == 1 && size == 20000)) {
-                limit  = size;
-                offset = (page - 1) * size;
+            String countSql = "SELECT COUNT(*) FROM tb_PurchaseOrder PO WHERE 1=1 " + whereFrag;
+            Integer totalRecords = jdbcTemplate.queryForObject(countSql, params.toArray(), Integer.class);
+            if (totalRecords != null && totalRecords > MAX_PO_EXPORT_RECORDS) {
+                logger.warn("PO export job {} would return {} records, exceeding limit of {}",
+                        jobId, totalRecords, MAX_PO_EXPORT_RECORDS);
+                job.setStatus(ExportJob.STATUS_FAILED);
+                job.setErrorMessage(String.format(
+                        "Export would return %d records. Maximum allowed is %d. Please add more filters.",
+                        totalRecords, MAX_PO_EXPORT_RECORDS));
+                job.setCompletedAt(LocalDateTime.now());
+                exportJobRepository.save(job);
+                return;
             }
 
-            exportService.exportToExcel(whereFrag.toString(), params, response, limit, offset);
-
-        } catch (Exception e) {
-            if (!response.isCommitted()) {
-                response.reset();
-                response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
-                response.setContentType("text/plain; charset=utf-8");
-                response.getWriter().write("Excel export failed: " + e.toString());
-                response.getWriter().flush();
+            File dir = new File(exportDir);
+            if (!dir.exists()) {
+                dir.mkdirs();
             }
+            String storedFileName = "purchase_orders_export_"
+                    + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
+                    + "_" + jobId.substring(0, 8) + ".xlsx";
+            File outFile = new File(dir, storedFileName);
+
+            exportService.exportToExcel(whereFrag.toString(), params, outFile, null, null,
+                    rowsWritten -> {
+                        job.setRowsWritten(rowsWritten);
+                        exportJobRepository.save(job);
+                    });
+
+            LocalDateTime completedAt = LocalDateTime.now();
+            job.setStatus(ExportJob.STATUS_DONE);
+            String filterTag = flatFilters.isEmpty() ? "" : "_FILTERED";
+            job.setFileName("PURCHASE_ORDERS" + filterTag + "_"
+                    + completedAt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")) + ".xlsx");
+            job.setFilePath(outFile.getAbsolutePath());
+            job.setSheetCount(1);
+            job.setCompletedAt(completedAt);
+            exportJobRepository.save(job);
+            logger.info("PO export job {} complete — {} rows", jobId, job.getRowsWritten());
+
+        } catch (Exception ex) {
+            logger.error("PO export job {} failed", jobId, ex);
+            job.setStatus(ExportJob.STATUS_FAILED);
+            job.setErrorMessage(ex.getMessage());
+            job.setCompletedAt(LocalDateTime.now());
+            exportJobRepository.save(job);
         }
     }
 
@@ -964,7 +1317,9 @@ public class ExportsController {
             map.put(field, "PO." + field);
         }
         // Common API aliases / column name variants
-        map.put("supplierId",                    "PO.vendorNumber");
+        // Note: "supplierId" is intentionally NOT mapped here - it's handled by a dedicated,
+        // explicit scoping check in runPurchaseOrdersNestedExportJob instead, so vendor scoping
+        // can never be silently dropped or reshaped by future changes to this generic map.
         map.put("currency",                        "PO.currencyCode");
         map.put("releaseNumber",                   "PO.releaseNum");
         map.put("authorizationStatus",             "PO.authorisationStatus");
@@ -1067,6 +1422,35 @@ public class ExportsController {
                 String val = entry.getValue().getAsString().trim();
                 if (val.isEmpty()) continue;
                 appendCondition(where, params, sqlCol, col, val, numericColumns);
+            }
+
+            // Date range filters - createdDate / approvalDate, against the raw DCC.createdDate /
+            // DCC.approvedDate columns (mirrors the same block in ReportsController's fetch
+            // endpoint, so export respects the same date range as the on-screen grid).
+            try {
+                java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("dd-MMM-yyyy", java.util.Locale.ENGLISH);
+                if (filterBy.has("createdDateStart") && !filterBy.get("createdDateStart").getAsString().trim().isEmpty()) {
+                    java.util.Date d = sdf.parse(filterBy.get("createdDateStart").getAsString().trim());
+                    where.append(" AND DCC.createdDate >= ?");
+                    params.add(new java.sql.Date(d.getTime()));
+                }
+                if (filterBy.has("createdDateEnd") && !filterBy.get("createdDateEnd").getAsString().trim().isEmpty()) {
+                    java.util.Date d = sdf.parse(filterBy.get("createdDateEnd").getAsString().trim());
+                    where.append(" AND DCC.createdDate <= ?");
+                    params.add(new java.sql.Date(d.getTime()));
+                }
+                if (filterBy.has("approvalDateStart") && !filterBy.get("approvalDateStart").getAsString().trim().isEmpty()) {
+                    java.util.Date d = sdf.parse(filterBy.get("approvalDateStart").getAsString().trim());
+                    where.append(" AND DCC.approvedDate >= ?");
+                    params.add(new java.sql.Date(d.getTime()));
+                }
+                if (filterBy.has("approvalDateEnd") && !filterBy.get("approvalDateEnd").getAsString().trim().isEmpty()) {
+                    java.util.Date d = sdf.parse(filterBy.get("approvalDateEnd").getAsString().trim());
+                    where.append(" AND DCC.approvedDate <= ?");
+                    params.add(new java.sql.Date(d.getTime()));
+                }
+            } catch (Exception e) {
+                // ignore malformed date range filters, same defensive style as ReportsController
             }
         }
     }
@@ -1175,6 +1559,242 @@ public class ExportsController {
         CellStyle style = workbook.createCellStyle();
         style.setDataFormat(workbook.createDataFormat().getFormat("#,##0.##"));
         return style;
+    }
+
+    // ============================================================================
+    // Unified Price List Export — job-based (start/status/download)
+    // ============================================================================
+    // Mirrors the acceptance-report export trio above: returns a jobId immediately, builds the
+    // workbook on a background thread, and persists the finished file to disk keyed by jobId.
+    // A genuinely distinct route from the fetch endpoints (/reports/getAllCreatedUPLs, /filterUPLs)
+    // - those were previously "reused" for export only via trailing-slash URL variants.
+    // Filter-building reuses UplFilterBuilder (the same builder /filterUPLs now calls), so a fix
+    // or added column there applies to both fetch and export at once.
+
+    private static final String[] UPL_EXPORT_HEADERS = {
+            "Record No", "Created Date", "Vendor", "Manufacturer", "Country Of Origin", "Project Name",
+            "PO Type", "Release Number", "PO Number", "PO Line Number", "UPL Line", "PO Line Item Type",
+            "PO Line Item Code", "PO Line Description", "UPL Line Item Type", "UPL Line Item Code",
+            "UPL Line Description", "Zain Item Category Code", "Zain Item Category Description",
+            "Serialized", "Active Or Passive", "UOM", "Currency", "PO Line Quantity", "PO Line Unit Price",
+            "UPL Line Quantity", "UPL Line Unit Price", "Substitute Item Code", "Remarks", "Created By",
+            "Updated By", "Updated Date"
+    };
+
+    private static final String UPL_EXPORT_SELECT_SQL =
+            "SELECT UPL.recordNo, UPL.recordDatetime, UPL.vendor, UPL.manufacturer, UPL.countryOfOrigin, UPL.projectName, "
+            + "UPL.poType, UPL.releaseNumber, UPL.poNumber, UPL.poLineNumber, UPL.uplLine, UPL.poLineItemType, UPL.poLineItemCode, "
+            + "UPL.poLineDescription, UPL.uplLineItemType, UPL.uplLineItemCode, UPL.uplLineDescription, UPL.zainItemCategoryCode, "
+            + "UPL.zainItemCategoryDescription, UPL.uplItemSerialized, UPL.activeOrPassive, UPL.uom, UPL.currency, "
+            + "UPL.poLineQuantity, UPL.poLineUnitPrice, UPL.uplLineQuantity, UPL.uplLineUnitPrice, UPL.substituteItemCode, "
+            + "UPL.remarks, UPL.createdByName, UPL.uplModifiedBy AS updatedByName, UPL.uplModifiedDate AS updatedDatetime "
+            + "FROM tb_PurchaseOrderUPL UPL";
+
+    // Column order matching UPL_EXPORT_HEADERS, keyed by the result map's column names (as
+    // returned by JdbcTemplate.queryForList, i.e. the SELECT list's own names/aliases above).
+    private static final String[] UPL_EXPORT_ROW_KEYS = {
+            "recordNo", "recordDatetime", "vendor", "manufacturer", "countryOfOrigin", "projectName",
+            "poType", "releaseNumber", "poNumber", "poLineNumber", "uplLine", "poLineItemType",
+            "poLineItemCode", "poLineDescription", "uplLineItemType", "uplLineItemCode",
+            "uplLineDescription", "zainItemCategoryCode", "zainItemCategoryDescription",
+            "uplItemSerialized", "activeOrPassive", "uom", "currency", "poLineQuantity", "poLineUnitPrice",
+            "uplLineQuantity", "uplLineUnitPrice", "substituteItemCode", "remarks", "createdByName",
+            "updatedByName", "updatedDatetime"
+    };
+
+    @PostMapping(value = "/reports/getAllCreatedUPLs/export", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<Map<String, String>> startUplExport(@RequestBody(required = false) Map<String, String> filters) {
+        String jobId = UUID.randomUUID().toString();
+        ExportJob job = new ExportJob();
+        job.setJobId(jobId);
+        job.setReportType("unifiedPriceList");
+        job.setStatus(ExportJob.STATUS_PENDING);
+        job.setRowsWritten(0);
+        job.setSheetCount(0);
+        job.setCreatedAt(LocalDateTime.now());
+        exportJobRepository.save(job);
+
+        Map<String, String> effectiveFilters = filters != null ? filters : new HashMap<>();
+        CompletableFuture.runAsync(() -> runUplExportJob(jobId, effectiveFilters));
+
+        Map<String, String> resp = new HashMap<>();
+        resp.put("jobId", jobId);
+        return ResponseEntity.accepted().body(resp);
+    }
+
+    @GetMapping(value = "/reports/getAllCreatedUPLs/export/{jobId}/status")
+    public ResponseEntity<?> getUplExportStatus(@PathVariable String jobId) {
+        Optional<ExportJob> jobOpt = exportJobRepository.findById(jobId);
+        if (jobOpt.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        ExportJob job = jobOpt.get();
+        Map<String, Object> resp = new HashMap<>();
+        resp.put("jobId", job.getJobId());
+        resp.put("status", job.getStatus());
+        resp.put("rowsWritten", job.getRowsWritten());
+        resp.put("sheetCount", job.getSheetCount());
+        resp.put("fileName", job.getFileName());
+        resp.put("errorMessage", job.getErrorMessage());
+        return ResponseEntity.ok(resp);
+    }
+
+    @GetMapping(value = "/reports/getAllCreatedUPLs/export/{jobId}/download")
+    public ResponseEntity<?> downloadUplExport(@PathVariable String jobId) {
+        Optional<ExportJob> jobOpt = exportJobRepository.findById(jobId);
+        if (jobOpt.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        ExportJob job = jobOpt.get();
+        if (!ExportJob.STATUS_DONE.equals(job.getStatus())) {
+            return ResponseEntity.status(HttpStatus.CONFLICT)
+                    .body("Export not ready yet, status=" + job.getStatus());
+        }
+        File file = new File(job.getFilePath());
+        if (!file.exists()) {
+            return ResponseEntity.status(HttpStatus.GONE).body("Export file no longer available");
+        }
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.parseMediaType(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"));
+        headers.add("Content-Disposition", "attachment; filename=" + job.getFileName());
+        return ResponseEntity.ok().headers(headers).body(new FileSystemResource(file));
+    }
+
+    private void runUplExportJob(String jobId, Map<String, String> filters) {
+        ExportJob job = exportJobRepository.findById(jobId).orElse(null);
+        if (job == null) {
+            logger.error("UPL export job {} disappeared before it could start", jobId);
+            return;
+        }
+        job.setStatus(ExportJob.STATUS_RUNNING);
+        exportJobRepository.save(job);
+
+        try {
+            List<Object> params = new ArrayList<>();
+            String whereClause = " WHERE 1=1 AND UPL.status = 'ACTIVE'" + UplFilterBuilder.buildWhereClause(filters, params);
+
+            String countSql = "SELECT COUNT(*) FROM tb_PurchaseOrderUPL UPL" + whereClause;
+            int totalRecords = jdbcTemplate.queryForObject(countSql, params.toArray(), Integer.class);
+
+            if (totalRecords > MAX_UPL_EXPORT_RECORDS) {
+                logger.warn("UPL export job {} would return {} records, exceeding limit of {}",
+                        jobId, totalRecords, MAX_UPL_EXPORT_RECORDS);
+                job.setStatus(ExportJob.STATUS_FAILED);
+                job.setErrorMessage(String.format(
+                        "Export would return %d records. Maximum allowed is %d. Please add more filters.",
+                        totalRecords, MAX_UPL_EXPORT_RECORDS));
+                job.setCompletedAt(LocalDateTime.now());
+                exportJobRepository.save(job);
+                return;
+            }
+
+            String sql = UPL_EXPORT_SELECT_SQL + whereClause + " ORDER BY UPL.recordNo DESC";
+            List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql, params.toArray());
+
+            if (rows.isEmpty()) {
+                logger.warn("No data found for UPL export job {} with given filters", jobId);
+                job.setStatus(ExportJob.STATUS_FAILED);
+                job.setErrorMessage("No data found matching the specified filters.");
+                job.setCompletedAt(LocalDateTime.now());
+                exportJobRepository.save(job);
+                return;
+            }
+
+            File dir = new File(exportDir);
+            if (!dir.exists()) {
+                dir.mkdirs();
+            }
+            String storedFileName = "unified_price_list_export_"
+                    + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
+                    + "_" + jobId.substring(0, 8) + ".xlsx";
+            File outFile = new File(dir, storedFileName);
+
+            int sheetCount = buildUplExcelToFile(rows, outFile, job);
+
+            LocalDateTime completedAt = LocalDateTime.now();
+            job.setStatus(ExportJob.STATUS_DONE);
+            String filterTag = filters != null && !filters.isEmpty() ? "_FILTERED" : "";
+            job.setFileName("UNIFIED_PRICE_LIST" + filterTag + "_"
+                    + completedAt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")) + ".xlsx");
+            job.setFilePath(outFile.getAbsolutePath());
+            job.setRowsWritten(rows.size());
+            job.setSheetCount(sheetCount);
+            job.setCompletedAt(completedAt);
+            exportJobRepository.save(job);
+            logger.info("UPL export job {} complete — {} rows, {} sheet(s)", jobId, rows.size(), sheetCount);
+
+        } catch (Exception ex) {
+            logger.error("UPL export job {} failed", jobId, ex);
+            job.setStatus(ExportJob.STATUS_FAILED);
+            job.setErrorMessage(ex.getMessage());
+            job.setCompletedAt(LocalDateTime.now());
+            exportJobRepository.save(job);
+        }
+    }
+
+    private String uplSheetName(int sheetNumber) {
+        return sheetNumber == 1 ? "Unified Price List" : "Unified Price List (" + sheetNumber + ")";
+    }
+
+    private int buildUplExcelToFile(List<Map<String, Object>> rows, File outFile, ExportJob job) throws IOException {
+        try (SXSSFWorkbook workbook = new SXSSFWorkbook(DEFAULT_FETCH_SIZE)) {
+            CellStyle headerStyle = workbook.createCellStyle();
+            Font headerFont = workbook.createFont();
+            headerFont.setBold(true);
+            headerFont.setColor(IndexedColors.BLACK.getIndex());
+            headerStyle.setFont(headerFont);
+
+            int sheetCount = 1;
+            Sheet sheet = workbook.createSheet(uplSheetName(sheetCount));
+            writeUplHeaderRow(sheet, headerStyle);
+
+            int rowNum = 1;
+            long written = 0;
+            for (Map<String, Object> rowData : rows) {
+                if (rowNum > MAX_ROWS_PER_SHEET) {
+                    sheetCount++;
+                    sheet = workbook.createSheet(uplSheetName(sheetCount));
+                    writeUplHeaderRow(sheet, headerStyle);
+                    rowNum = 1;
+                }
+
+                Row row = sheet.createRow(rowNum++);
+                for (int col = 0; col < UPL_EXPORT_ROW_KEYS.length; col++) {
+                    Object value = rowData.get(UPL_EXPORT_ROW_KEYS[col]);
+                    Cell cell = row.createCell(col);
+                    if (value == null) {
+                        cell.setCellValue("");
+                    } else if (value instanceof Number) {
+                        cell.setCellValue(((Number) value).doubleValue());
+                    } else {
+                        cell.setCellValue(value.toString());
+                    }
+                }
+
+                written++;
+                if (written % PROGRESS_UPDATE_EVERY_N_ROWS == 0) {
+                    job.setRowsWritten(written);
+                    job.setSheetCount(sheetCount);
+                    exportJobRepository.save(job);
+                }
+            }
+
+            try (FileOutputStream fos = new FileOutputStream(outFile)) {
+                workbook.write(fos);
+            }
+            workbook.dispose();
+            return sheetCount;
+        }
+    }
+
+    private void writeUplHeaderRow(Sheet sheet, CellStyle headerStyle) {
+        Row headerRow = sheet.createRow(0);
+        for (int i = 0; i < UPL_EXPORT_HEADERS.length; i++) {
+            Cell cell = headerRow.createCell(i);
+            cell.setCellValue(UPL_EXPORT_HEADERS[i]);
+            cell.setCellStyle(headerStyle);
+        }
     }
 
     // ============================================================================
