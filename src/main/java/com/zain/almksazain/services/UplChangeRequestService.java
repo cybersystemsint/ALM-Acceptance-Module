@@ -382,7 +382,7 @@ public class UplChangeRequestService {
      * Formats a quantity/price for validation messages as a grouped, human-readable number
      * ("48,454,782.10" / "1,025") instead of double's raw toString, which switches to scientific
      * notation ("4.845478210373945E7") once the magnitude passes ~10^7.
-     */ /
+     */
     private String formatQty(double value) {
         if (value == Math.floor(value) && !Double.isInfinite(value)) {
             return new DecimalFormat("#,##0").format(value);
