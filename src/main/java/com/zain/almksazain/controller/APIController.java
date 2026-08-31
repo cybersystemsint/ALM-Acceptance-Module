@@ -50,6 +50,8 @@ import com.zain.almksazain.repo.tbScopeRepo;
 import com.zain.almksazain.repo.tbNodeRepo;
 import com.zain.almksazain.repo.tbPassiveInventoryRepo;
 import com.zain.almksazain.repo.tbSerialNumberRepo;
+import com.zain.almksazain.repo.UplChangeRequestRepo;
+import com.zain.almksazain.model.UplChangeRequestStatus;
 import com.zain.almksazain.utlities.Httpcall;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -121,6 +123,9 @@ public class APIController {
 
     @Autowired
     tbPurchaseOrderUPLRepo purchaseOrderUPLRepo;
+
+    @Autowired
+    UplChangeRequestRepo uplChangeRequestRepo;
 
     @Autowired
     tbChargeAccountRepo chargeAccountRepo;
@@ -1169,6 +1174,11 @@ public class APIController {
             List<String> acceptanceQuantity = new ArrayList<>();
             Set<String> mismatchedScopeUplLines = new LinkedHashSet<>();
             Set<String> mismatchedScopeNonUplLines = new LinkedHashSet<>();
+            // UPL edit/delete approval workflow: a UPL line soft-deleted via that workflow, or one
+            // with an update/delete change request still pending approval, must not be usable to
+            // raise a new acceptance request.
+            Set<String> deletedUplLines = new LinkedHashSet<>();
+            Set<String> pendingApprovalUplLines = new LinkedHashSet<>();
             List<Integer> recordNumbers = new ArrayList<>();
             String actualItemCode = "";
             String itemCode = "";
@@ -1311,6 +1321,12 @@ public class APIController {
                         }
                         if (upllineitem.length() != 0) {
                             tb_PurchaseOrderUPL topRecord = purchaseOrderUPLRepo.findTopByPoNumberAndPoLineNumberAndUplLine(poNumber, polineitem, upllineitem);
+                            if (topRecord != null && topRecord.getStatus() != null && !"ACTIVE".equalsIgnoreCase(topRecord.getStatus())) {
+                                deletedUplLines.add(polineitem + "+" + upllineitem);
+                            } else if (topRecord != null && !uplChangeRequestRepo
+                                    .findByUplRecordNoAndStatus(topRecord.getRecordNo(), UplChangeRequestStatus.PENDING).isEmpty()) {
+                                pendingApprovalUplLines.add(polineitem + "+" + upllineitem);
+                            }
                             String itemSerialized = topRecord != null ? String.valueOf(topRecord.getUplItemSerialized()) : "";
                             String activeOrPassive = topRecord != null ? String.valueOf(topRecord.getActiveOrPassive()) : "";
                             String uplItemCode = topRecord != null ? String.valueOf(topRecord.getUplLineItemCode()) : "";
@@ -1622,6 +1638,12 @@ public class APIController {
                         }
                         if (upllineitem.length() != 0) {
                             tb_PurchaseOrderUPL topRecord = purchaseOrderUPLRepo.findTopByPoNumberAndPoLineNumberAndUplLine(poNumber, polineitem, upllineitem);
+                            if (topRecord != null && topRecord.getStatus() != null && !"ACTIVE".equalsIgnoreCase(topRecord.getStatus())) {
+                                deletedUplLines.add(polineitem + "+" + upllineitem);
+                            } else if (topRecord != null && !uplChangeRequestRepo
+                                    .findByUplRecordNoAndStatus(topRecord.getRecordNo(), UplChangeRequestStatus.PENDING).isEmpty()) {
+                                pendingApprovalUplLines.add(polineitem + "+" + upllineitem);
+                            }
                             String itemSerialized = topRecord != null ? String.valueOf(topRecord.getUplItemSerialized()) : "";
                             String activeOrPassive = topRecord != null ? String.valueOf(topRecord.getActiveOrPassive()) : "";
                             String uplItemCode = topRecord != null ? String.valueOf(topRecord.getUplLineItemCode()) : "";
@@ -1895,6 +1917,18 @@ public class APIController {
                 errorMessages.add("PO line (" + String.join(", ", mismatchedScopeNonUplLines)
                         + ") for PO " + poNumber
                         + " does not belong to the submitted scope " + submittedScope + ".");
+            }
+
+            if (!deletedUplLines.isEmpty()) {
+                errorMessages.add("PO line + UPL line (" + String.join(", ", deletedUplLines)
+                        + ") for PO " + poNumber
+                        + " has been deleted and can no longer be used to raise an acceptance request.");
+            }
+
+            if (!pendingApprovalUplLines.isEmpty()) {
+                errorMessages.add("PO line + UPL line (" + String.join(", ", pendingApprovalUplLines)
+                        + ") for PO " + poNumber
+                        + " has an edit/delete request pending approval and cannot be used to raise an acceptance request until that's decided.");
             }
 
             //commenting for UAT

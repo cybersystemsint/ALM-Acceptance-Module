@@ -1161,6 +1161,7 @@ private String convertToSqlDate(String input) {
         li.put("poNumber", lineItem.get("poNumber"));
         li.put("lineNumber", lineItem.get("lineNumber"));
         li.put("itemPartNumber", lineItem.get("itemPartNumber"));
+        li.put("activeOrPassive", lineItem.get("activeOrPassive"));
         li.put("countryOfOrigin", lineItem.get("countryOfOrigin"));
         li.put("poOrderQuantity", lineItem.get("poOrderQuantity"));
         li.put("poQtyNew", lineItem.get("poQtyNew"));
@@ -2011,7 +2012,7 @@ private String convertToSqlDate(String input) {
         size = Math.max(size, 0);
 
         String paginationSql = "";
-        String whereClause = " WHERE 1=1 ";
+        String whereClause = " WHERE 1=1 AND UPL.status = 'ACTIVE'";
         List<Object> params = new ArrayList<>();
 
         if (!poNumber.equalsIgnoreCase("0")) {
@@ -2061,7 +2062,7 @@ private String convertToSqlDate(String input) {
                 + "UPL.poLineDescription, UPL.uplLineItemType, UPL.uplLineItemCode, UPL.uplLineDescription, UPL.zainItemCategoryCode, "
                 + "UPL.zainItemCategoryDescription, UPL.uplItemSerialized, UPL.activeOrPassive, UPL.uom, UPL.currency, "
                 + "UPL.poLineQuantity, UPL.poLineUnitPrice, UPL.uplLineQuantity, UPL.uplLineUnitPrice, UPL.substituteItemCode, "
-                + "UPL.remarks,"
+                + "UPL.remarks, UPL.status,"
                 + "UPL.createdByName, UPL.uplModifiedBy AS updatedByName, UPL.uplModifiedDate AS updatedDatetime "
                 + "FROM tb_PurchaseOrderUPL UPL " + whereClause + paginationSql;
 
@@ -2074,6 +2075,50 @@ private String convertToSqlDate(String input) {
         response.put("pageSize", size);
         response.put("totalPages", (int) Math.ceil((double) totalRecords / size));
 
+        return response;
+    }
+
+    // Bulk Update :: Unified Price List needs to validate/diff an uploaded file's rows against
+    // their CURRENT values regardless of what page the grid happens to have loaded (it's
+    // paginated - 100 of potentially thousands - and defaults to page 1 on every visit, so
+    // "currently loaded" was never a workable definition of "exists"). This looks the exact
+    // record numbers in the file up directly, independent of any grid state.
+    @PostMapping(value = "/reports/getUplsByRecordNos", produces = "application/json")
+    @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
+    public Map<String, Object> getUplsByRecordNos(@RequestBody String req) {
+        JsonObject obj = new JsonParser().parse(req).getAsJsonObject();
+        Map<String, Object> response = new HashMap<>();
+
+        if (!obj.has("recordNos") || !obj.get("recordNos").isJsonArray()) {
+            response.put("data", Collections.emptyList());
+            return response;
+        }
+
+        List<Long> recordNos = new ArrayList<>();
+        for (JsonElement el : obj.getAsJsonArray("recordNos")) {
+            try {
+                recordNos.add(Long.parseLong(el.getAsString().trim()));
+            } catch (Exception ignored) {
+                // Skip anything that isn't a valid record number rather than failing the whole lookup
+            }
+        }
+        if (recordNos.isEmpty()) {
+            response.put("data", Collections.emptyList());
+            return response;
+        }
+
+        String placeholders = String.join(",", Collections.nCopies(recordNos.size(), "?"));
+        String sql = "SELECT UPL.recordNo, UPL.recordDatetime, UPL.vendor, UPL.manufacturer, UPL.countryOfOrigin, UPL.projectName, "
+                + "UPL.poType, UPL.releaseNumber, UPL.poNumber, UPL.poLineNumber, UPL.uplLine, UPL.poLineItemType, UPL.poLineItemCode, "
+                + "UPL.poLineDescription, UPL.uplLineItemType, UPL.uplLineItemCode, UPL.uplLineDescription, UPL.zainItemCategoryCode, "
+                + "UPL.zainItemCategoryDescription, UPL.uplItemSerialized, UPL.activeOrPassive, UPL.uom, UPL.currency, "
+                + "UPL.poLineQuantity, UPL.poLineUnitPrice, UPL.uplLineQuantity, UPL.uplLineUnitPrice, UPL.substituteItemCode, "
+                + "UPL.remarks, UPL.status, "
+                + "UPL.createdByName, UPL.uplModifiedBy AS updatedByName, UPL.uplModifiedDate AS updatedDatetime "
+                + "FROM tb_PurchaseOrderUPL UPL WHERE UPL.status = 'ACTIVE' AND UPL.recordNo IN (" + placeholders + ")";
+
+        List<Map<String, Object>> result = jdbcTemplate.queryForList(sql, recordNos.toArray());
+        response.put("data", result);
         return response;
     }
 
@@ -3205,7 +3250,7 @@ private String convertToSqlDate(String input) {
 
             // Shared with the async /reports/getAllCreatedUPLs/export job (UplFilterBuilder), so a
             // fix or added column here applies to fetch and export identically.
-            String whereClause = " WHERE 1=1" + UplFilterBuilder.buildWhereClause(filters, params);
+            String whereClause = " WHERE 1=1 AND UPL.status = 'ACTIVE'" + UplFilterBuilder.buildWhereClause(filters, params);
 
             // Count total records
             String countSql = "SELECT COUNT(*) FROM tb_PurchaseOrderUPL UPL" + whereClause;
@@ -3232,7 +3277,7 @@ private String convertToSqlDate(String input) {
                     + "UPL.poLineDescription, UPL.uplLineItemType, UPL.uplLineItemCode, UPL.uplLineDescription, UPL.zainItemCategoryCode, "
                     + "UPL.zainItemCategoryDescription, UPL.uplItemSerialized, UPL.activeOrPassive, UPL.uom, UPL.currency, "
                     + "UPL.poLineQuantity, UPL.poLineUnitPrice, UPL.uplLineQuantity, UPL.uplLineUnitPrice, UPL.substituteItemCode, "
-                    + "UPL.remarks, UPL.createdByName, UPL.uplModifiedBy AS updatedByName, UPL.uplModifiedDate AS updatedDatetime "
+                    + "UPL.remarks, UPL.status, UPL.createdByName, UPL.uplModifiedBy AS updatedByName, UPL.uplModifiedDate AS updatedDatetime "
                     + "FROM tb_PurchaseOrderUPL UPL" + whereClause + orderBy + paginationSql;
 
             List<Map<String, Object>> result = jdbcTemplate.queryForList(sql, params.toArray());
@@ -3253,6 +3298,142 @@ private String convertToSqlDate(String input) {
         } catch (Exception e) {
             loggger.error("Error filtering UPLs", e);
             return new ResponseEntity<>(Collections.singletonMap("message", "Error filtering UPLs: " + e.getMessage()),
+                    HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    // ==================== UPL APPROVAL AUDIT TRAIL ====================
+    // One row per level decision on a tb_UPL_Change_Request — a request still
+    // pending at level 1 with zero decisions yet still appears (LEFT JOINs),
+    // with decision-related columns null. columnName/searchQuery and the
+    // multi-filter map are both validated against uplAuditTrailColumns before
+    // being used in the query, same pattern as getAllCreatedUPLs/filterUPLs.
+
+    private static final Map<String, String> uplAuditTrailColumns = new HashMap<>();
+    static {
+        uplAuditTrailColumns.put("recordId", "cr.recordId");
+        uplAuditTrailColumns.put("batchId", "cr.batchId");
+        uplAuditTrailColumns.put("uplRecordNo", "cr.uplRecordNo");
+        uplAuditTrailColumns.put("poNumber", "upl.poNumber");
+        uplAuditTrailColumns.put("poLineNumber", "upl.poLineNumber");
+        uplAuditTrailColumns.put("uplLine", "upl.uplLine");
+        uplAuditTrailColumns.put("changeType", "cr.changeType");
+        uplAuditTrailColumns.put("requestStatus", "cr.status");
+        uplAuditTrailColumns.put("currentLevelNo", "cr.currentLevelNo");
+        uplAuditTrailColumns.put("totalLevels", "cr.totalLevels");
+        uplAuditTrailColumns.put("requestedByName", "cr.requestedByName");
+        uplAuditTrailColumns.put("requestedAt", "cr.requestedAt");
+        uplAuditTrailColumns.put("levelNo", "d.levelNo");
+        uplAuditTrailColumns.put("decision", "d.decision");
+        uplAuditTrailColumns.put("decidedByName", "d.decidedByName");
+        uplAuditTrailColumns.put("decidedAt", "d.decidedAt");
+        uplAuditTrailColumns.put("comments", "d.comments");
+    }
+
+    private static final String UPL_AUDIT_TRAIL_SELECT =
+            "SELECT cr.recordId AS recordId, cr.batchId AS batchId, cr.uplRecordNo AS uplRecordNo, "
+                    + "upl.poNumber AS poNumber, upl.poLineNumber AS poLineNumber, upl.uplLine AS uplLine, "
+                    + "cr.changeType AS changeType, cr.fieldChanges AS fieldChanges, cr.status AS requestStatus, "
+                    + "cr.currentLevelNo AS currentLevelNo, cr.totalLevels AS totalLevels, "
+                    + "cr.requestedBy AS requestedBy, cr.requestedByName AS requestedByName, cr.requestedAt AS requestedAt, "
+                    + "d.levelNo AS levelNo, d.decision AS decision, d.decidedBy AS decidedBy, "
+                    + "d.decidedByName AS decidedByName, d.decidedAt AS decidedAt, d.comments AS comments ";
+    private static final String UPL_AUDIT_TRAIL_FROM =
+            "FROM tb_UPL_Change_Request cr "
+                    + "LEFT JOIN tb_PurchaseOrderUPL upl ON upl.recordNo = cr.uplRecordNo "
+                    + "LEFT JOIN tb_UPL_Change_Request_Decision d ON d.changeRequestId = cr.recordId ";
+
+    @PostMapping(value = "/reports/getUplAuditTrail", produces = "application/json")
+    @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
+    public ResponseEntity<Map<String, Object>> getUplAuditTrail(@RequestBody String req) {
+        try {
+            JsonObject obj = new JsonParser().parse(req).getAsJsonObject();
+            String columnName = obj.has("columnName") ? obj.get("columnName").getAsString() : "";
+            String searchQuery = obj.has("searchQuery") ? obj.get("searchQuery").getAsString() : "";
+            int page = obj.has("page") ? obj.get("page").getAsInt() : 0;
+            int size = obj.has("size") ? obj.get("size").getAsInt() : 100;
+            page = Math.max(page, 0);
+            size = Math.max(size, 1);
+
+            String whereClause = " WHERE 1=1";
+            List<Object> params = new ArrayList<>();
+            if (!columnName.isEmpty() && !searchQuery.isEmpty() && uplAuditTrailColumns.containsKey(columnName)) {
+                whereClause += " AND " + uplAuditTrailColumns.get(columnName) + " LIKE ?";
+                params.add("%" + searchQuery + "%");
+            }
+
+            String countSql = "SELECT COUNT(*) " + UPL_AUDIT_TRAIL_FROM + whereClause;
+            int totalRecords = jdbcTemplate.queryForObject(countSql, params.toArray(), Integer.class);
+
+            int offset = page * size;
+            String sql = UPL_AUDIT_TRAIL_SELECT + UPL_AUDIT_TRAIL_FROM + whereClause
+                    + " ORDER BY cr.recordId DESC, d.levelNo ASC LIMIT ? OFFSET ?";
+            List<Object> sqlParams = new ArrayList<>(params);
+            sqlParams.add(size);
+            sqlParams.add(offset);
+            List<Map<String, Object>> result = jdbcTemplate.queryForList(sql, sqlParams.toArray());
+
+            Map<String, Object> response = new HashMap<>();
+            response.put("responseCode", "0");
+            response.put("auditTrail", result);
+            response.put("totalElements", totalRecords);
+            response.put("totalPages", (int) Math.ceil((double) totalRecords / size));
+            response.put("currentPage", page);
+            return new ResponseEntity<>(response, HttpStatus.OK);
+        } catch (Exception e) {
+            loggger.error("Error fetching UPL audit trail", e);
+            return new ResponseEntity<>(Collections.singletonMap("message", "Error fetching UPL audit trail: " + e.getMessage()),
+                    HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    @PostMapping("/uplAuditTrailFilter")
+    @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
+    public ResponseEntity<Map<String, Object>> filterUplAuditTrail(@RequestBody Map<String, String> filters,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "100") int size,
+            @RequestParam(defaultValue = "recordId") String sortBy,
+            @RequestParam(defaultValue = "desc") String sortDir) {
+        try {
+            page = Math.max(page, 0);
+            size = Math.max(size, 1);
+
+            String whereClause = " WHERE 1=1";
+            List<Object> params = new ArrayList<>();
+            if (filters != null) {
+                for (Map.Entry<String, String> entry : filters.entrySet()) {
+                    if (uplAuditTrailColumns.containsKey(entry.getKey()) && entry.getValue() != null && !entry.getValue().isEmpty()) {
+                        whereClause += " AND " + uplAuditTrailColumns.get(entry.getKey()) + " = ?";
+                        params.add(entry.getValue());
+                    }
+                }
+            }
+
+            String countSql = "SELECT COUNT(*) " + UPL_AUDIT_TRAIL_FROM + whereClause;
+            int totalRecords = jdbcTemplate.queryForObject(countSql, params.toArray(), Integer.class);
+
+            String orderColumn = uplAuditTrailColumns.getOrDefault(sortBy, "cr.recordId");
+            String orderBy = " ORDER BY " + orderColumn + (sortDir.equalsIgnoreCase("asc") ? " ASC" : " DESC");
+            int offset = page * size;
+            String sql = UPL_AUDIT_TRAIL_SELECT + UPL_AUDIT_TRAIL_FROM + whereClause + orderBy + " LIMIT ? OFFSET ?";
+            List<Object> sqlParams = new ArrayList<>(params);
+            sqlParams.add(size);
+            sqlParams.add(offset);
+            List<Map<String, Object>> result = jdbcTemplate.queryForList(sql, sqlParams.toArray());
+
+            Map<String, Object> response = new HashMap<>();
+            response.put("reports", result);
+            response.put("currentPage", page);
+            response.put("totalItems", totalRecords);
+            response.put("totalPages", (int) Math.ceil((double) totalRecords / size));
+            response.put("first", page == 0);
+            response.put("last", result.size() < size || (page + 1) * size >= totalRecords);
+            response.put("size", size);
+            response.put("sort", sortBy + "," + sortDir);
+            return new ResponseEntity<>(response, HttpStatus.OK);
+        } catch (Exception e) {
+            loggger.error("Error filtering UPL audit trail", e);
+            return new ResponseEntity<>(Collections.singletonMap("message", "Error filtering UPL audit trail: " + e.getMessage()),
                     HttpStatus.INTERNAL_SERVER_ERROR);
         }
     }

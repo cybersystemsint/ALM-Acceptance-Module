@@ -1672,7 +1672,7 @@ public class ExportsController {
 
         try {
             List<Object> params = new ArrayList<>();
-            String whereClause = " WHERE 1=1" + UplFilterBuilder.buildWhereClause(filters, params);
+            String whereClause = " WHERE 1=1 AND UPL.status = 'ACTIVE'" + UplFilterBuilder.buildWhereClause(filters, params);
 
             String countSql = "SELECT COUNT(*) FROM tb_PurchaseOrderUPL UPL" + whereClause;
             int totalRecords = jdbcTemplate.queryForObject(countSql, params.toArray(), Integer.class);

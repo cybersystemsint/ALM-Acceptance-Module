@@ -74,4 +74,23 @@ public interface DccLineRepo extends JpaRepository<DCCLineItem, Long> {
     List<DCCLineItem> findActiveTagConflicts(
             @Param("tagNumbers") List<String> tagNumbers,
             @Param("excludedStatuses") List<String> excludedStatuses);
+
+    // --- UPL edit/delete approval workflow: PAC lookups ---
+    // A "PAC raised" line is a tb_DCC_LN row whose parent tb_DCC is not incomplete/rejected —
+    // same definition combinedPurchaseOrderView uses for POAcceptanceQty / poPendingQuantity.
+    @Query("SELECT COUNT(d) FROM DCCLineItem d JOIN d.dcc c "
+            + "WHERE d.poId = :poId AND d.lineNumber = :lineNumber AND d.uplLineNumber = :uplLineNumber "
+            + "AND c.status NOT IN :excludedStatuses")
+    long countActivePacsForUplLine(@Param("poId") String poId,
+            @Param("lineNumber") String lineNumber,
+            @Param("uplLineNumber") String uplLineNumber,
+            @Param("excludedStatuses") List<String> excludedStatuses);
+
+    @Query("SELECT COALESCE(SUM(d.deliveredQty), 0) FROM DCCLineItem d JOIN d.dcc c "
+            + "WHERE d.poId = :poId AND d.lineNumber = :lineNumber AND d.uplLineNumber = :uplLineNumber "
+            + "AND c.status NOT IN :excludedStatuses")
+    Double sumAcceptedQtyForUplLine(@Param("poId") String poId,
+            @Param("lineNumber") String lineNumber,
+            @Param("uplLineNumber") String uplLineNumber,
+            @Param("excludedStatuses") List<String> excludedStatuses);
 }
