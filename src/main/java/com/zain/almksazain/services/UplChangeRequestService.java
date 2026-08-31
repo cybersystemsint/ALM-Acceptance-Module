@@ -1,5 +1,6 @@
 package com.zain.almksazain.services;
 
+import java.text.DecimalFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -377,12 +378,16 @@ public class UplChangeRequestService {
         }
     }
 
-    /** Trims a whole-number double's trailing ".0" so quantities in messages read like "80" not "80.0". */
+    /**
+     * Formats a quantity/price for validation messages as a grouped, human-readable number
+     * ("48,454,782.10" / "1,025") instead of double's raw toString, which switches to scientific
+     * notation ("4.845478210373945E7") once the magnitude passes ~10^7.
+     */ /
     private String formatQty(double value) {
         if (value == Math.floor(value) && !Double.isInfinite(value)) {
-            return String.valueOf((long) value);
+            return new DecimalFormat("#,##0").format(value);
         }
-        return String.valueOf(value);
+        return new DecimalFormat("#,##0.00").format(value);
     }
 
     private void validateNoPac(tb_PurchaseOrderUPL uplLine) {
