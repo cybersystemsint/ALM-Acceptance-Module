@@ -39,6 +39,11 @@ import com.zain.almksazain.model.tb_Region;
 import com.zain.almksazain.model.tbCategory;
 import com.zain.almksazain.model.tbItemCodeSubstitute;
 import com.zain.almksazain.model.tbNode;
+import com.zain.almksazain.model.User;
+import com.zain.almksazain.services.CategoryApprovalInitializationService;
+import com.zain.almksazain.services.EmailService;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import com.zain.almksazain.repo.tbSiteRepo;
 import com.zain.almksazain.repo.tbRegionRepo;
 import com.zain.almksazain.repo.tbCategoryRepo;
@@ -156,6 +161,12 @@ public class APIController {
 
     @Autowired
     supplierrepo suprepo;
+
+    @Autowired
+    CategoryApprovalInitializationService categoryApprovalInitializationService;
+
+    @Autowired
+    EmailService emailService;
 
     @Autowired
     tbPassiveInventoryRepo passiveRepo;
@@ -1034,6 +1045,7 @@ public class APIController {
 
     @PostMapping(value = "/postdcc")
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
+    @org.springframework.transaction.annotation.Transactional(rollbackFor = Exception.class)
     public Map<String, String> postdcc(@RequestPart(value = "file", required = false) List<MultipartFile> files, @RequestPart("data") String req) {
         logger.info("| CREATE ACCEPTANCE REQUEST " + req);
         SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd"); // Adjust the pattern as per your date format
@@ -2103,6 +2115,15 @@ public class APIController {
             logger.info("POST DCC EXCEPTION" + excc);
 
             System.out.println(excc.toString());
+        } catch (RuntimeException rte) {
+            // Covers failures from approval-chain creation (missing/misconfigured
+            // approval levels, unresolvable region/supplier/approver, etc.) - the
+            // DCC and its line items were written earlier in this same method
+            // call, so without an explicit rollback here they'd otherwise be
+            // committed even though no approval chain exists for them.
+            logger.error("POST DCC EXCEPTION (acceptance request creation failed): " + rte.getMessage(), rte);
+            org.springframework.transaction.interceptor.TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
+            return response("Error", "Failed to create acceptance request: " + rte.getMessage());
         }
         return response("Error", jsonArrayresponse.toString());
     }
@@ -2400,44 +2421,79 @@ public class APIController {
             }
 
             Set<String> uniqueItemCategoryCodes = new LinkedHashSet<>(ItemCategoryCodes);
+            List<String> regionNamesForApproval = Arrays.asList(workflowRegion.split(","));
+            List<User> firstApproversToNotify = new ArrayList<>();
 
-            net.minidev.json.JSONArray jsonArraynew = new net.minidev.json.JSONArray();
+            if (status.equalsIgnoreCase("incomplete")) {
+                // Draft/incomplete submissions never got an approval chain
+                // before either - preserved as-is.
+                logger.info("| DCC status is incomplete - skipping approval chain creation for recordId " + recordId);
+            } else if (status.equalsIgnoreCase("request-info")) {
+                // Re-activates the existing request-info child back to
+                // pending for the same approver - mirrors
+                // ScopeApprovalService.reInitializeRequestForInfo(), run
+                // locally so it shares this same transaction too.
+                Optional<User> infoRequester = categoryApprovalInitializationService
+                        .reInitializeRequestForInfo(Integer.parseInt(recordId));
+                infoRequester.ifPresent(firstApproversToNotify::add);
 
-            for (String newitemCategoryCode : uniqueItemCategoryCodes) {
-                // Create a new JSONObject for each unique itemCategoryCode
-                net.minidev.json.JSONObject params = new net.minidev.json.JSONObject();
-                params.put("acceptanceRequestRecordNo", recordId);
-                params.put("tableName", "tb_DCC");
-                params.put("poNumber", poNumber);
-                params.put("poLineItemDescription", poLineDecription);
-                params.put("scope", newitemCategoryCode);
-                params.put("requestedBy", createdByName);
-                params.put("vendorName", vendorName);
-                params.put("createdBy", createdBy.toString());
-                params.put("regions", workflowRegion);
-                if (status.equalsIgnoreCase("request-info")) {
-                    params.put("status", "request-info");
-                } else {
-                    params.put("status", "");
+                if (TransactionSynchronizationManager.isSynchronizationActive()) {
+                    TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                        @Override
+                        public void afterCommit() {
+                            for (User approver : firstApproversToNotify) {
+                                try {
+                                    if (approver.getEmailAddress() != null && !approver.getEmailAddress().isBlank()) {
+                                        emailService.sendEmail(approver.getEmailAddress(),
+                                                "Action Required: Approval - PO # " + poNumber,
+                                                "The acceptance request (PO # " + poNumber + ") has been resubmitted with the additional information you requested.",
+                                                null, null, approver.getUsername(), null, null, null, null);
+                                    }
+                                } catch (Exception mailEx) {
+                                    logger.error("| Failed to send resubmission notification email to " + approver.getEmailAddress() + ": " + mailEx);
+                                }
+                            }
+                        }
+                    });
                 }
-                jsonArraynew.add(params);
+            } else {
+                // Brand-new DCC, or resubmission of a returned DCC - both
+                // create a fresh approval chain, run locally so it shares
+                // this same database transaction with the DCC/line items
+                // already written above: if this fails, everything rolls
+                // back together instead of leaving an orphaned DCC with no
+                // approval chain.
+                for (String newitemCategoryCode : uniqueItemCategoryCodes) {
+                    tbScope scopeRecord = scopeRepo.findByScope(newitemCategoryCode.trim());
+                    if (scopeRecord == null) {
+                        throw new RuntimeException("Scope not found: " + newitemCategoryCode);
+                    }
+                    Optional<User> firstApprover = categoryApprovalInitializationService.initializeApproval(
+                            Integer.parseInt(recordId), vendorName, createdByName, (int) scopeRecord.getRecordNo(),
+                            createdBy, regionNamesForApproval, "tb_DCC", poLineDecription, poNumber);
+                    firstApprover.ifPresent(firstApproversToNotify::add);
+                }
+
+                if (TransactionSynchronizationManager.isSynchronizationActive()) {
+                    TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                        @Override
+                        public void afterCommit() {
+                            for (User approver : firstApproversToNotify) {
+                                try {
+                                    if (approver.getEmailAddress() != null && !approver.getEmailAddress().isBlank()) {
+                                        emailService.sendEmail(approver.getEmailAddress(),
+                                                "Action Required: Approval - PO # " + poNumber,
+                                                "A new acceptance request (PO # " + poNumber + ") requires your approval.",
+                                                null, null, approver.getUsername(), null, null, null, null);
+                                    }
+                                } catch (Exception mailEx) {
+                                    logger.error("| Failed to send approval notification email to " + approver.getEmailAddress() + ": " + mailEx);
+                                }
+                            }
+                        }
+                    });
+                }
             }
-
-            logger.info("| POST WORKFLOW REQUEST " + jsonArraynew.toString());
-            String ipaddress = getIPAddress();
-            CompletableFuture.runAsync(() -> {
-                try {
-                    if (!status.equalsIgnoreCase("incomplete")) {
-                        requestMap = utils.httpPOST(jsonArraynew.toString(), "http://" + ipaddress + ":8080/alm-zain-ksa/workflow/initialize-approval", requestMap);
-                    }
-                    if (status.equalsIgnoreCase("request-info")) {
-                        //Update the DCC table
-                    }
-                    logger.info("| POST WORKFLOW RESPONSE  " + requestMap);
-                } catch (Exception ex) {
-                    logger.info("| POST WORKFLOW EXCEPTION " + ex.toString());
-                }
-            });
 
             if (jsonArrayresponse.length() > 0) {
                 return (jsonArrayresponse.toString());
