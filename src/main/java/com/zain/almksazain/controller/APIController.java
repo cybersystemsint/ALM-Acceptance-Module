@@ -1354,8 +1354,8 @@ public class APIController {
                             if (topRecord == null || zainCategory == null || zainCategory.isBlank()) {
                                 mismatchedScopeUplLines.add(polineitem + "+" + upllineitem);
                             } else {
-                                List<tbCategory> cats = categoryRepo.findByItemCategoryCodeAndScope(
-                                        zainCategory.trim(), scopeofWork.trim());
+                                List<tbCategory> cats = categoryRepo.findByItemCategoryCodeAndScopeAndStatus(
+                                        zainCategory.trim(), scopeofWork.trim(), 1);
                                 if (cats.isEmpty()) {
                                     mismatchedScopeUplLines.add(polineitem + "+" + upllineitem);
                                 }
@@ -1428,8 +1428,8 @@ public class APIController {
                             if (podetails == null || itemCategoryInventory == null || itemCategoryInventory.isBlank()) {
                                 mismatchedScopeNonUplLines.add(polineitem);
                             } else {
-                                List<tbCategory> cats = categoryRepo.findByItemCategoryCodeAndScope(
-                                        itemCategoryInventory.trim(), scopeofWork.trim());
+                                List<tbCategory> cats = categoryRepo.findByItemCategoryCodeAndScopeAndStatus(
+                                        itemCategoryInventory.trim(), scopeofWork.trim(), 1);
                                 if (cats.isEmpty()) {
                                     mismatchedScopeNonUplLines.add(polineitem);
                                 }
@@ -1664,8 +1664,8 @@ public class APIController {
                             if (topRecord == null || zainCategory == null || zainCategory.isBlank()) {
                                 mismatchedScopeUplLines.add(polineitem + "+" + upllineitem);
                             } else {
-                                List<tbCategory> cats = categoryRepo.findByItemCategoryCodeAndScope(
-                                        zainCategory.trim(), scopeofWork.trim());
+                                List<tbCategory> cats = categoryRepo.findByItemCategoryCodeAndScopeAndStatus(
+                                        zainCategory.trim(), scopeofWork.trim(), 1);
                                 if (cats.isEmpty()) {
                                     mismatchedScopeUplLines.add(polineitem + "+" + upllineitem);
                                 }
@@ -1700,8 +1700,8 @@ public class APIController {
                             if (podetails == null || itemCategoryInventory == null || itemCategoryInventory.isBlank()) {
                                 mismatchedScopeNonUplLines.add(polineitem);
                             } else {
-                                List<tbCategory> cats = categoryRepo.findByItemCategoryCodeAndScope(
-                                        itemCategoryInventory.trim(), scopeofWork.trim());
+                                List<tbCategory> cats = categoryRepo.findByItemCategoryCodeAndScopeAndStatus(
+                                        itemCategoryInventory.trim(), scopeofWork.trim(), 1);
                                 if (cats.isEmpty()) {
                                     mismatchedScopeNonUplLines.add(polineitem);
                                 }

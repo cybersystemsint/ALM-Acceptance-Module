@@ -88,7 +88,9 @@ public class UplChangeRequestController {
                 default:
                     return ResponseEntity.badRequest().body(error("Unknown view: " + view));
             }
-            return ResponseEntity.ok(success(result));
+            // Adds poNumber/poLineNumber/uplLine alongside each request's own fields (looked up
+            // from tb_PurchaseOrderUPL), matching the Audit Trail page's columns.
+            return ResponseEntity.ok(success(service.enrichWithUplLineDetails(result)));
         } catch (Exception ex) {
             logger.error("Failed to filter UPL change requests", ex);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(error("Unexpected error: " + ex.getMessage()));
