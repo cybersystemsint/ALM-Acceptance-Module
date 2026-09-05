@@ -20,6 +20,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -68,9 +69,11 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 import com.zain.almksazain.model.ExportJob;
+import com.zain.almksazain.model.UplChangeRequest;
 import com.zain.almksazain.repo.ExportJobRepository;
 import com.zain.almksazain.services.DccPoCombinedService;
 import com.zain.almksazain.services.PurchaseOrderExportService;
+import com.zain.almksazain.services.UplChangeRequestService;
 import com.zain.almksazain.specs.PoFilterBuilder;
 import com.zain.almksazain.specs.QueryFilterBuilder;
 import com.zain.almksazain.specs.UplFilterBuilder;
@@ -88,6 +91,7 @@ public class ExportsController {
     private static final long PROGRESS_UPDATE_EVERY_N_ROWS = 5_000;
     private static final int MAX_UPL_EXPORT_RECORDS = 250_000;
     private static final int MAX_PO_EXPORT_RECORDS = 250_000;
+    private static final int MAX_UPL_AUDIT_TRAIL_EXPORT_RECORDS = 250_000;
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
@@ -99,6 +103,8 @@ public class ExportsController {
     private ExportJobRepository exportJobRepository;
     @Autowired
     private DccPoCombinedService dccPoCombinedService;
+    @Autowired
+    private UplChangeRequestService uplChangeRequestService;
 
     @Value("${app.export.dir:/data/app/logs/ALM/Exports/}")
     private String exportDir;
@@ -1795,6 +1801,472 @@ public class ExportsController {
             cell.setCellValue(UPL_EXPORT_HEADERS[i]);
             cell.setCellStyle(headerStyle);
         }
+    }
+
+    // ============================================================================
+    // UPL Change Request (Approval) Export — job-based (start/status/download)
+    // ============================================================================
+    // Exports exactly what the "UPL Approval" page (/uplMassiveApproval) shows: the change
+    // requests currently assigned to this approver (UplChangeRequestService.findAssignedToApprover
+    // - the same call the grid's "assigned-to-me" fetch makes), so what's on screen is what gets
+    // exported. This dataset is inherently small (open approvals, not a historical table), but
+    // uses the same job-based start/status/download shape as every other export in this app so
+    // the frontend's download tray/progress polling works identically everywhere.
+
+    private static final String[] UPL_CHANGE_REQUEST_EXPORT_HEADERS = {
+            "Record ID", "Type", "UPL Line ID", "PO Number", "PO Line", "UPL Line", "Level",
+            "Field", "Old Value", "New Value", "Requested By", "Requested At"
+    };
+
+    // Mirrors UPLApprovalGrid.js's FIELD_LABELS so the exported "Field" column reads the same way
+    // the grid's own "Change" detail dialog does.
+    private static final Map<String, String> UPL_CHANGE_FIELD_LABELS = new LinkedHashMap<>();
+    static {
+        UPL_CHANGE_FIELD_LABELS.put("activeOrPassive", "Active/Passive");
+        UPL_CHANGE_FIELD_LABELS.put("uplItemSerialized", "Serialized");
+        UPL_CHANGE_FIELD_LABELS.put("uplLineUnitPrice", "UPL Unit Price");
+        UPL_CHANGE_FIELD_LABELS.put("uplLineQuantity", "UPL Line Qty");
+        UPL_CHANGE_FIELD_LABELS.put("uplLineDescription", "UPL Line Description");
+        UPL_CHANGE_FIELD_LABELS.put("projectName", "Project Name");
+        UPL_CHANGE_FIELD_LABELS.put("uplLineItemCode", "UPL Line-Item Code");
+    }
+
+    @PostMapping(value = "/upl/change-requests/export", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<Map<String, String>> startUplChangeRequestExport(@RequestBody Map<String, Object> body) {
+        Integer userId = body != null && body.get("userId") != null
+                ? Integer.valueOf(String.valueOf(body.get("userId"))) : null;
+        if (userId == null) {
+            Map<String, String> resp = new HashMap<>();
+            resp.put("errorMessage", "userId is required");
+            return ResponseEntity.badRequest().body(resp);
+        }
+
+        String jobId = UUID.randomUUID().toString();
+        ExportJob job = new ExportJob();
+        job.setJobId(jobId);
+        job.setReportType("uplChangeRequestApprovals");
+        job.setStatus(ExportJob.STATUS_PENDING);
+        job.setRowsWritten(0);
+        job.setSheetCount(0);
+        job.setCreatedAt(LocalDateTime.now());
+        exportJobRepository.save(job);
+
+        CompletableFuture.runAsync(() -> runUplChangeRequestExportJob(jobId, userId));
+
+        Map<String, String> resp = new HashMap<>();
+        resp.put("jobId", jobId);
+        return ResponseEntity.accepted().body(resp);
+    }
+
+    @GetMapping(value = "/upl/change-requests/export/{jobId}/status")
+    public ResponseEntity<?> getUplChangeRequestExportStatus(@PathVariable String jobId) {
+        Optional<ExportJob> jobOpt = exportJobRepository.findById(jobId);
+        if (jobOpt.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        ExportJob job = jobOpt.get();
+        Map<String, Object> resp = new HashMap<>();
+        resp.put("jobId", job.getJobId());
+        resp.put("status", job.getStatus());
+        resp.put("rowsWritten", job.getRowsWritten());
+        resp.put("sheetCount", job.getSheetCount());
+        resp.put("fileName", job.getFileName());
+        resp.put("errorMessage", job.getErrorMessage());
+        return ResponseEntity.ok(resp);
+    }
+
+    @GetMapping(value = "/upl/change-requests/export/{jobId}/download")
+    public ResponseEntity<?> downloadUplChangeRequestExport(@PathVariable String jobId) {
+        Optional<ExportJob> jobOpt = exportJobRepository.findById(jobId);
+        if (jobOpt.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        ExportJob job = jobOpt.get();
+        if (!ExportJob.STATUS_DONE.equals(job.getStatus())) {
+            return ResponseEntity.status(HttpStatus.CONFLICT)
+                    .body("Export not ready yet, status=" + job.getStatus());
+        }
+        File file = new File(job.getFilePath());
+        if (!file.exists()) {
+            return ResponseEntity.status(HttpStatus.GONE).body("Export file no longer available");
+        }
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.parseMediaType(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"));
+        headers.add("Content-Disposition", "attachment; filename=" + job.getFileName());
+        return ResponseEntity.ok().headers(headers).body(new FileSystemResource(file));
+    }
+
+    private void runUplChangeRequestExportJob(String jobId, Integer userId) {
+        ExportJob job = exportJobRepository.findById(jobId).orElse(null);
+        if (job == null) {
+            logger.error("UPL change request export job {} disappeared before it could start", jobId);
+            return;
+        }
+        job.setStatus(ExportJob.STATUS_RUNNING);
+        exportJobRepository.save(job);
+
+        try {
+            List<UplChangeRequest> requests = uplChangeRequestService.findAssignedToApprover(userId);
+
+            if (requests.isEmpty()) {
+                job.setStatus(ExportJob.STATUS_FAILED);
+                job.setErrorMessage("No change requests are currently assigned to you for approval.");
+                job.setCompletedAt(LocalDateTime.now());
+                exportJobRepository.save(job);
+                return;
+            }
+            List<Map<String, Object>> enriched = uplChangeRequestService.enrichWithUplLineDetails(requests);
+
+            File dir = new File(exportDir);
+            if (!dir.exists()) {
+                dir.mkdirs();
+            }
+            String storedFileName = "upl_change_request_approvals_export_"
+                    + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
+                    + "_" + jobId.substring(0, 8) + ".xlsx";
+            File outFile = new File(dir, storedFileName);
+
+            int rowsWritten = buildUplChangeRequestExcelToFile(enriched, outFile);
+
+            LocalDateTime completedAt = LocalDateTime.now();
+            job.setStatus(ExportJob.STATUS_DONE);
+            job.setFileName("UPL_APPROVALS_"
+                    + completedAt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")) + ".xlsx");
+            job.setFilePath(outFile.getAbsolutePath());
+            job.setRowsWritten(rowsWritten);
+            job.setSheetCount(1);
+            job.setCompletedAt(completedAt);
+            exportJobRepository.save(job);
+            logger.info("UPL change request export job {} complete — {} request(s), {} row(s)",
+                    jobId, requests.size(), rowsWritten);
+        } catch (Exception ex) {
+            logger.error("UPL change request export job {} failed", jobId, ex);
+            job.setStatus(ExportJob.STATUS_FAILED);
+            job.setErrorMessage(ex.getMessage());
+            job.setCompletedAt(LocalDateTime.now());
+            exportJobRepository.save(job);
+        }
+    }
+
+    /** Returns the total number of data rows written (one per changed field, not one per
+     *  request - see {@link #parseFieldChangeRows}). Takes the poNumber/poLineNumber/uplLine-
+     *  enriched map shape from {@link UplChangeRequestService#enrichWithUplLineDetails}. */
+    private int buildUplChangeRequestExcelToFile(List<Map<String, Object>> requests, File outFile) throws IOException {
+        try (SXSSFWorkbook workbook = new SXSSFWorkbook(DEFAULT_FETCH_SIZE)) {
+            CellStyle headerStyle = workbook.createCellStyle();
+            Font headerFont = workbook.createFont();
+            headerFont.setBold(true);
+            headerFont.setColor(IndexedColors.BLACK.getIndex());
+            headerStyle.setFont(headerFont);
+
+            Sheet sheet = workbook.createSheet("UPL Approvals");
+            Row headerRow = sheet.createRow(0);
+            for (int i = 0; i < UPL_CHANGE_REQUEST_EXPORT_HEADERS.length; i++) {
+                Cell cell = headerRow.createCell(i);
+                cell.setCellValue(UPL_CHANGE_REQUEST_EXPORT_HEADERS[i]);
+                cell.setCellStyle(headerStyle);
+            }
+
+            DateTimeFormatter requestedAtFormat = DateTimeFormatter.ofPattern("MMM d, yyyy HH:mm");
+            int rowNum = 1;
+            for (Map<String, Object> cr : requests) {
+                Object changeType = cr.get("changeType");
+                String changeTypeStr = changeType != null ? changeType.toString() : null;
+                Object requestedAtObj = cr.get("requestedAt");
+                String requestedAtText = requestedAtObj instanceof LocalDateTime
+                        ? ((LocalDateTime) requestedAtObj).format(requestedAtFormat)
+                        : cellToString(requestedAtObj);
+                Object fieldChanges = cr.get("fieldChanges");
+
+                // One row per changed field (matching the grid's own "Change" detail dialog table)
+                // - every other column repeats the same request-level values on each of those rows.
+                for (String[] fieldChange : parseFieldChangeRows(
+                        changeTypeStr, fieldChanges != null ? fieldChanges.toString() : null, cr.get("recordId"))) {
+                    Row row = sheet.createRow(rowNum++);
+                    row.createCell(0).setCellValue(cellToString(cr.get("recordId")));
+                    row.createCell(1).setCellValue(changeTypeStr != null ? changeTypeStr : "");
+                    row.createCell(2).setCellValue(cellToString(cr.get("uplRecordNo")));
+                    row.createCell(3).setCellValue(cellToString(cr.get("poNumber")));
+                    row.createCell(4).setCellValue(cellToString(cr.get("poLineNumber")));
+                    row.createCell(5).setCellValue(cellToString(cr.get("uplLine")));
+                    row.createCell(6).setCellValue(cellToString(cr.get("currentLevelNo")) + " of " + cellToString(cr.get("totalLevels")));
+                    row.createCell(7).setCellValue(fieldChange[0]);
+                    row.createCell(8).setCellValue(fieldChange[1]);
+                    row.createCell(9).setCellValue(fieldChange[2]);
+                    row.createCell(10).setCellValue(cellToString(cr.get("requestedByName")));
+                    row.createCell(11).setCellValue(requestedAtText);
+                }
+            }
+
+            try (FileOutputStream fos = new FileOutputStream(outFile)) {
+                workbook.write(fos);
+            }
+            workbook.dispose();
+            return rowNum - 1;
+        }
+    }
+
+    /**
+     * One {field label, old value, new value} triple per changed field - mirrors
+     * UPLApprovalGrid.js's / UPLAuditTrailGrid.js's "Change" detail dialog table exactly, e.g.
+     * {"UPL Line Qty", "1020", "1025"}. A DELETE request (no field-level diff) or an
+     * unparseable/empty diff still gets exactly one row, describing that instead, so every
+     * request contributes at least one export row. Shared by both UPL exports (Approval and
+     * Audit Trail) since both flatten the same {@code fieldChanges} JSON column the same way.
+     */
+    private List<String[]> parseFieldChangeRows(String changeType, String fieldChangesJson, Object logId) {
+        List<String[]> rows = new ArrayList<>();
+        if ("DELETE".equals(changeType)) {
+            rows.add(new String[]{"(whole UPL line)", "", "Deleted"});
+            return rows;
+        }
+        if (fieldChangesJson != null && !fieldChangesJson.isEmpty()) {
+            try {
+                JsonObject diff = new JsonParser().parse(fieldChangesJson).getAsJsonObject();
+                for (Map.Entry<String, JsonElement> entry : diff.entrySet()) {
+                    String label = UPL_CHANGE_FIELD_LABELS.getOrDefault(entry.getKey(), entry.getKey());
+                    JsonObject pair = entry.getValue().getAsJsonObject();
+                    rows.add(new String[]{
+                            label,
+                            jsonValueToDisplayString(pair.get("old")),
+                            jsonValueToDisplayString(pair.get("new")),
+                    });
+                }
+            } catch (Exception ex) {
+                logger.warn("Could not parse fieldChanges for UPL change request {}", logId, ex);
+            }
+        }
+        if (rows.isEmpty()) {
+            rows.add(new String[]{"", "", ""});
+        }
+        return rows;
+    }
+
+    private String jsonValueToDisplayString(JsonElement el) {
+        if (el == null || el.isJsonNull()) {
+            return "(empty)";
+        }
+        return el.getAsString();
+    }
+
+    // ============================================================================
+    // UPL Audit Trail Export — job-based (start/status/download)
+    // ============================================================================
+    // Exports what the "UPL Audit Trail" page (/uplAuditTrail) shows: reuses
+    // ReportsController.uplAuditTrailColumns/UPL_AUDIT_TRAIL_SELECT/UPL_AUDIT_TRAIL_FROM directly
+    // (same filter map, same SELECT/JOINs as filterUplAuditTrail) so fetch and export can never
+    // drift apart. Same "Field"/"Old Value"/"New Value" per-changed-field row expansion as the
+    // UPL Approval export above, applied on top of the audit SQL's existing one-row-per-decision-
+    // level shape - so a request with 2 changed fields and 1 decision so far becomes 2 export rows.
+
+    private static final String[] UPL_AUDIT_TRAIL_EXPORT_HEADERS = {
+            "Request ID", "UPL Line ID", "PO Number", "PO Line", "UPL Line", "Type",
+            "Field", "Old Value", "New Value", "Request Status", "Level", "Requested By", "Requested At",
+            "Decided Level", "Action", "Actioned By", "Actioned At", "Comments"
+    };
+
+    @PostMapping(value = "/uplAuditTrailFilter/export", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<Map<String, String>> startUplAuditTrailExport(
+            @RequestBody(required = false) Map<String, String> filters) {
+        String jobId = UUID.randomUUID().toString();
+        ExportJob job = new ExportJob();
+        job.setJobId(jobId);
+        job.setReportType("uplAuditTrail");
+        job.setStatus(ExportJob.STATUS_PENDING);
+        job.setRowsWritten(0);
+        job.setSheetCount(0);
+        job.setCreatedAt(LocalDateTime.now());
+        exportJobRepository.save(job);
+
+        Map<String, String> effectiveFilters = filters != null ? filters : new HashMap<>();
+        CompletableFuture.runAsync(() -> runUplAuditTrailExportJob(jobId, effectiveFilters));
+
+        Map<String, String> resp = new HashMap<>();
+        resp.put("jobId", jobId);
+        return ResponseEntity.accepted().body(resp);
+    }
+
+    @GetMapping(value = "/uplAuditTrailFilter/export/{jobId}/status")
+    public ResponseEntity<?> getUplAuditTrailExportStatus(@PathVariable String jobId) {
+        Optional<ExportJob> jobOpt = exportJobRepository.findById(jobId);
+        if (jobOpt.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        ExportJob job = jobOpt.get();
+        Map<String, Object> resp = new HashMap<>();
+        resp.put("jobId", job.getJobId());
+        resp.put("status", job.getStatus());
+        resp.put("rowsWritten", job.getRowsWritten());
+        resp.put("sheetCount", job.getSheetCount());
+        resp.put("fileName", job.getFileName());
+        resp.put("errorMessage", job.getErrorMessage());
+        return ResponseEntity.ok(resp);
+    }
+
+    @GetMapping(value = "/uplAuditTrailFilter/export/{jobId}/download")
+    public ResponseEntity<?> downloadUplAuditTrailExport(@PathVariable String jobId) {
+        Optional<ExportJob> jobOpt = exportJobRepository.findById(jobId);
+        if (jobOpt.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        ExportJob job = jobOpt.get();
+        if (!ExportJob.STATUS_DONE.equals(job.getStatus())) {
+            return ResponseEntity.status(HttpStatus.CONFLICT)
+                    .body("Export not ready yet, status=" + job.getStatus());
+        }
+        File file = new File(job.getFilePath());
+        if (!file.exists()) {
+            return ResponseEntity.status(HttpStatus.GONE).body("Export file no longer available");
+        }
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.parseMediaType(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"));
+        headers.add("Content-Disposition", "attachment; filename=" + job.getFileName());
+        return ResponseEntity.ok().headers(headers).body(new FileSystemResource(file));
+    }
+
+    private void runUplAuditTrailExportJob(String jobId, Map<String, String> filters) {
+        ExportJob job = exportJobRepository.findById(jobId).orElse(null);
+        if (job == null) {
+            logger.error("UPL audit trail export job {} disappeared before it could start", jobId);
+            return;
+        }
+        job.setStatus(ExportJob.STATUS_RUNNING);
+        exportJobRepository.save(job);
+
+        try {
+            String whereClause = " WHERE 1=1";
+            List<Object> params = new ArrayList<>();
+            for (Map.Entry<String, String> entry : filters.entrySet()) {
+                if (ReportsController.uplAuditTrailColumns.containsKey(entry.getKey())
+                        && entry.getValue() != null && !entry.getValue().isEmpty()) {
+                    whereClause += " AND " + ReportsController.uplAuditTrailColumns.get(entry.getKey()) + " = ?";
+                    params.add(entry.getValue());
+                }
+            }
+
+            String countSql = "SELECT COUNT(*) " + ReportsController.UPL_AUDIT_TRAIL_FROM + whereClause;
+            int totalRecords = jdbcTemplate.queryForObject(countSql, params.toArray(), Integer.class);
+
+            if (totalRecords > MAX_UPL_AUDIT_TRAIL_EXPORT_RECORDS) {
+                logger.warn("UPL audit trail export job {} would return {} records, exceeding limit of {}",
+                        jobId, totalRecords, MAX_UPL_AUDIT_TRAIL_EXPORT_RECORDS);
+                job.setStatus(ExportJob.STATUS_FAILED);
+                job.setErrorMessage(String.format(
+                        "Export would return %d records. Maximum allowed is %d. Please add more filters.",
+                        totalRecords, MAX_UPL_AUDIT_TRAIL_EXPORT_RECORDS));
+                job.setCompletedAt(LocalDateTime.now());
+                exportJobRepository.save(job);
+                return;
+            }
+
+            String sql = ReportsController.UPL_AUDIT_TRAIL_SELECT + ReportsController.UPL_AUDIT_TRAIL_FROM
+                    + whereClause + " ORDER BY cr.recordId DESC, d.levelNo ASC";
+            List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql, params.toArray());
+
+            if (rows.isEmpty()) {
+                job.setStatus(ExportJob.STATUS_FAILED);
+                job.setErrorMessage("No data found matching the specified filters.");
+                job.setCompletedAt(LocalDateTime.now());
+                exportJobRepository.save(job);
+                return;
+            }
+
+            File dir = new File(exportDir);
+            if (!dir.exists()) {
+                dir.mkdirs();
+            }
+            String storedFileName = "upl_audit_trail_export_"
+                    + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
+                    + "_" + jobId.substring(0, 8) + ".xlsx";
+            File outFile = new File(dir, storedFileName);
+
+            int rowsWritten = buildUplAuditTrailExcelToFile(rows, outFile);
+
+            LocalDateTime completedAt = LocalDateTime.now();
+            job.setStatus(ExportJob.STATUS_DONE);
+            String filterTag = !filters.isEmpty() ? "_FILTERED" : "";
+            job.setFileName("UPL_AUDIT_TRAIL" + filterTag + "_"
+                    + completedAt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")) + ".xlsx");
+            job.setFilePath(outFile.getAbsolutePath());
+            job.setRowsWritten(rowsWritten);
+            job.setSheetCount(1);
+            job.setCompletedAt(completedAt);
+            exportJobRepository.save(job);
+            logger.info("UPL audit trail export job {} complete — {} decision row(s), {} export row(s)",
+                    jobId, rows.size(), rowsWritten);
+        } catch (Exception ex) {
+            logger.error("UPL audit trail export job {} failed", jobId, ex);
+            job.setStatus(ExportJob.STATUS_FAILED);
+            job.setErrorMessage(ex.getMessage());
+            job.setCompletedAt(LocalDateTime.now());
+            exportJobRepository.save(job);
+        }
+    }
+
+    /** Returns the total number of data rows written (one per changed field per audit row - see
+     *  {@link #parseFieldChangeRows}). */
+    private int buildUplAuditTrailExcelToFile(List<Map<String, Object>> rows, File outFile) throws IOException {
+        try (SXSSFWorkbook workbook = new SXSSFWorkbook(DEFAULT_FETCH_SIZE)) {
+            CellStyle headerStyle = workbook.createCellStyle();
+            Font headerFont = workbook.createFont();
+            headerFont.setBold(true);
+            headerFont.setColor(IndexedColors.BLACK.getIndex());
+            headerStyle.setFont(headerFont);
+
+            Sheet sheet = workbook.createSheet("UPL Audit Trail");
+            Row headerRow = sheet.createRow(0);
+            for (int i = 0; i < UPL_AUDIT_TRAIL_EXPORT_HEADERS.length; i++) {
+                Cell cell = headerRow.createCell(i);
+                cell.setCellValue(UPL_AUDIT_TRAIL_EXPORT_HEADERS[i]);
+                cell.setCellStyle(headerStyle);
+            }
+
+            int rowNum = 1;
+            for (Map<String, Object> auditRow : rows) {
+                Object changeType = auditRow.get("changeType");
+                Object fieldChanges = auditRow.get("fieldChanges");
+                Object currentLevelNo = auditRow.get("currentLevelNo");
+                Object totalLevels = auditRow.get("totalLevels");
+                String levelText = cellToString(currentLevelNo) + " of " + cellToString(totalLevels);
+
+                for (String[] fieldChange : parseFieldChangeRows(
+                        changeType != null ? changeType.toString() : null,
+                        fieldChanges != null ? fieldChanges.toString() : null,
+                        auditRow.get("recordId"))) {
+                    Row row = sheet.createRow(rowNum++);
+                    row.createCell(0).setCellValue(cellToString(auditRow.get("recordId")));
+                    row.createCell(1).setCellValue(cellToString(auditRow.get("uplRecordNo")));
+                    row.createCell(2).setCellValue(cellToString(auditRow.get("poNumber")));
+                    row.createCell(3).setCellValue(cellToString(auditRow.get("poLineNumber")));
+                    row.createCell(4).setCellValue(cellToString(auditRow.get("uplLine")));
+                    row.createCell(5).setCellValue(cellToString(changeType));
+                    row.createCell(6).setCellValue(fieldChange[0]);
+                    row.createCell(7).setCellValue(fieldChange[1]);
+                    row.createCell(8).setCellValue(fieldChange[2]);
+                    row.createCell(9).setCellValue(cellToString(auditRow.get("requestStatus")));
+                    row.createCell(10).setCellValue(levelText);
+                    row.createCell(11).setCellValue(cellToString(auditRow.get("requestedByName")));
+                    row.createCell(12).setCellValue(cellToString(auditRow.get("requestedAt")));
+                    row.createCell(13).setCellValue(cellToString(auditRow.get("levelNo")));
+                    row.createCell(14).setCellValue(cellToString(auditRow.get("decision")));
+                    row.createCell(15).setCellValue(cellToString(auditRow.get("decidedByName")));
+                    row.createCell(16).setCellValue(cellToString(auditRow.get("decidedAt")));
+                    row.createCell(17).setCellValue(cellToString(auditRow.get("comments")));
+                }
+            }
+
+            try (FileOutputStream fos = new FileOutputStream(outFile)) {
+                workbook.write(fos);
+            }
+            workbook.dispose();
+            return rowNum - 1;
+        }
+    }
+
+    private String cellToString(Object value) {
+        return value != null ? value.toString() : "";
     }
 
     // ============================================================================

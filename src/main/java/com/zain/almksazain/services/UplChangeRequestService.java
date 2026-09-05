@@ -1,5 +1,6 @@
 package com.zain.almksazain.services;
 
+import java.math.BigDecimal;
 import java.text.DecimalFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -84,6 +85,19 @@ public class UplChangeRequestService {
     private static final Set<String> EDITABLE_FIELDS = new LinkedHashSet<>(Arrays.asList(
             "activeOrPassive", "uplItemSerialized", "uplLineUnitPrice", "uplLineQuantity",
             "uplLineDescription", "projectName", "uplLineItemCode"));
+
+    // Mirrors UPLApprovalGrid.js's FIELD_LABELS / ExportsController's UPL_CHANGE_FIELD_LABELS, so
+    // the "approval needed" email's grid table reads the same way the page and export do.
+    private static final Map<String, String> EMAIL_FIELD_LABELS = new LinkedHashMap<>();
+    static {
+        EMAIL_FIELD_LABELS.put("activeOrPassive", "Active/Passive");
+        EMAIL_FIELD_LABELS.put("uplItemSerialized", "Serialized");
+        EMAIL_FIELD_LABELS.put("uplLineUnitPrice", "UPL Unit Price");
+        EMAIL_FIELD_LABELS.put("uplLineQuantity", "UPL Line Qty");
+        EMAIL_FIELD_LABELS.put("uplLineDescription", "UPL Line Description");
+        EMAIL_FIELD_LABELS.put("projectName", "Project Name");
+        EMAIL_FIELD_LABELS.put("uplLineItemCode", "UPL Line-Item Code");
+    }
 
     @Autowired private UplChangeRequestRepo changeRequestRepo;
     @Autowired private UplChangeRequestDecisionRepo decisionRepo;
@@ -187,7 +201,7 @@ public class UplChangeRequestService {
             throw new UplValidationException("You don't have permission to do that");
         }
 
-        List<UplChangeRequest> prepared = new ArrayList<>();
+        List<PreparedItem> preparedItems = new ArrayList<>();
         List<UplChangeRequestFailure> failures = new ArrayList<>();
         // Catches the same UPL line appearing twice in one submission — since nothing is saved
         // until every item has passed, the usual "already has a change pending approval" check
@@ -200,9 +214,35 @@ public class UplChangeRequestService {
                     throw new UplValidationException(
                             "UPL line " + item.getUplRecordNo() + " appears more than once in this submission");
                 }
-                prepared.add(prepareOne(item, requester, batchId));
+                preparedItems.add(prepareDiff(item));
             } catch (UplValidationException ex) {
                 failures.add(new UplChangeRequestFailure(item.getUplRecordNo(), ex.getMessage()));
+            }
+        }
+
+        // Other lines under the same PO+line may be edited by a different row in this same
+        // submission - collect every line's proposed quantity/price up front so the line-total
+        // check below reflects the combined effect of the whole batch, not just one row
+        // validated in isolation against everyone else's stale, pre-edit DB values.
+        Map<Long, double[]> batchProposedByRecordNo = new java.util.HashMap<>();
+        for (PreparedItem p : preparedItems) {
+            if (p.diff != null
+                    && (p.diff.containsKey("uplLineQuantity") || p.diff.containsKey("uplLineUnitPrice"))) {
+                double qty = diffValue(p.diff, "uplLineQuantity", p.uplLine.getUplLineQuantity());
+                double price = diffValue(p.diff, "uplLineUnitPrice", p.uplLine.getUplLineUnitPrice());
+                batchProposedByRecordNo.put(p.uplLine.getRecordNo(), new double[]{qty, price});
+            }
+        }
+
+        List<UplChangeRequest> prepared = new ArrayList<>();
+        for (PreparedItem p : preparedItems) {
+            try {
+                if (p.diff != null) {
+                    validateAgainstLineTotalAndPac(p.uplLine, p.diff, batchProposedByRecordNo);
+                }
+                prepared.add(buildChangeRequest(p, requester, batchId));
+            } catch (UplValidationException ex) {
+                failures.add(new UplChangeRequestFailure(p.item.getUplRecordNo(), ex.getMessage()));
             }
         }
 
@@ -235,9 +275,13 @@ public class UplChangeRequestService {
         return new UplChangeRequestBatchResult(created, failures);
     }
 
-    /** Validates one item and builds its (unsaved) UplChangeRequest — persistence happens only
-     *  after every item in the batch has passed this. */
-    private UplChangeRequest prepareOne(UplChangeRequestItem item, User requester, String batchId) {
+    /**
+     * Loads the UPL line, does existence/pending-change checks, and builds the whitelisted diff —
+     * everything that doesn't depend on what else is in this same batch submission. Cross-line
+     * validation (line total vs PO ceiling) happens afterwards, once every item's diff is known,
+     * so it can see every line's proposed values, not just this one.
+     */
+    private PreparedItem prepareDiff(UplChangeRequestItem item) {
         if (item.getUplRecordNo() == null || item.getChangeType() == null) {
             throw new UplValidationException("Each item needs a uplRecordNo and a changeType");
         }
@@ -250,31 +294,52 @@ public class UplChangeRequestService {
                     "UPL line " + uplLine.getUplLine() + " already has a change pending approval");
         }
 
-        String fieldChangesJson = null;
         if (item.getChangeType() == UplActionType.DELETE) {
             validateNoPac(uplLine);
-        } else {
-            Map<String, Map<String, Object>> diff = buildDiff(uplLine, item.getFields());
-            if (diff.isEmpty()) {
-                throw new UplValidationException("No changes to submit for UPL line " + uplLine.getUplLine());
-            }
-            validateAgainstLineTotalAndPac(uplLine, diff);
-            fieldChangesJson = writeJson(diff);
+            return new PreparedItem(item, uplLine, null);
         }
+        Map<String, Map<String, Object>> diff = buildDiff(uplLine, item.getFields());
+        if (diff.isEmpty()) {
+            throw new UplValidationException("No changes to submit for UPL line " + uplLine.getUplLine());
+        }
+        return new PreparedItem(item, uplLine, diff);
+    }
 
-        int totalLevels = requireLevelCount(item.getChangeType());
+    /** Finishes building the (unsaved) UplChangeRequest once cross-line validation has passed. */
+    private UplChangeRequest buildChangeRequest(PreparedItem p, User requester, String batchId) {
+        String fieldChangesJson = p.diff != null ? writeJson(p.diff) : null;
+        int totalLevels = requireLevelCount(p.item.getChangeType());
 
         UplChangeRequest cr = new UplChangeRequest();
         cr.setBatchId(batchId);
-        cr.setUplRecordNo(item.getUplRecordNo());
-        cr.setChangeType(item.getChangeType());
+        cr.setUplRecordNo(p.item.getUplRecordNo());
+        cr.setChangeType(p.item.getChangeType());
         cr.setFieldChanges(fieldChangesJson);
         cr.setTotalLevels(totalLevels);
         cr.setCurrentLevelNo(1);
         cr.setStatus(UplChangeRequestStatus.PENDING);
         cr.setRequestedBy(requester.getUserId());
         cr.setRequestedByName(requester.getFullName());
+        // requestedAt is @Column(insertable = false, updatable = false) - the DB assigns it via
+        // DEFAULT CURRENT_TIMESTAMP and there's no setter, so this in-memory object never carries
+        // it. notifyLevelApprovers() re-queries via findAssignedToApprover() (a real SELECT) to
+        // build its email, which picks up the DB-assigned value correctly - don't read
+        // cr.getRequestedAt() on THIS just-built object, it will be null.
         return cr;
+    }
+
+    /** Holds one item's loaded UPL line and computed diff between {@link #prepareDiff} and
+     *  {@link #buildChangeRequest}. {@code diff} is null for DELETE items. */
+    private static final class PreparedItem {
+        final UplChangeRequestItem item;
+        final tb_PurchaseOrderUPL uplLine;
+        final Map<String, Map<String, Object>> diff;
+
+        PreparedItem(UplChangeRequestItem item, tb_PurchaseOrderUPL uplLine, Map<String, Map<String, Object>> diff) {
+            this.item = item;
+            this.uplLine = uplLine;
+            this.diff = diff;
+        }
     }
 
     /** Whitelists the 7 approved fields and returns only the ones that actually changed. */
@@ -328,13 +393,13 @@ public class UplChangeRequestService {
         return v instanceof Number ? ((Number) v).doubleValue() : Double.parseDouble(String.valueOf(v));
     }
 
-    private void validateAgainstLineTotalAndPac(tb_PurchaseOrderUPL uplLine, Map<String, Map<String, Object>> diff) {
+    private void validateAgainstLineTotalAndPac(tb_PurchaseOrderUPL uplLine, Map<String, Map<String, Object>> diff,
+            Map<Long, double[]> batchProposedByRecordNo) {
         if (!diff.containsKey("uplLineQuantity") && !diff.containsKey("uplLineUnitPrice")) {
             return;
         }
         double proposedQty = diffValue(diff, "uplLineQuantity", uplLine.getUplLineQuantity());
-        double proposedPrice = diffValue(diff, "uplLineUnitPrice", uplLine.getUplLineUnitPrice());
-        validateLineTotal(uplLine, proposedQty, proposedPrice);
+        validateLineTotal(uplLine, batchProposedByRecordNo);
         if (diff.containsKey("uplLineQuantity") && proposedQty < uplLine.getUplLineQuantity()) {
             validatePacQtyFloor(uplLine, proposedQty);
         }
@@ -344,7 +409,7 @@ public class UplChangeRequestService {
     // Validation rules
     // ============================================================
 
-    private void validateLineTotal(tb_PurchaseOrderUPL uplLine, double proposedQty, double proposedUnitPrice) {
+    private void validateLineTotal(tb_PurchaseOrderUPL uplLine, Map<Long, double[]> batchProposedByRecordNo) {
         tbPurchaseOrder po = poRepo.findTopByPoNumberAndLineNumber(uplLine.getPoNumber(), uplLine.getPoLineNumber());
         if (po == null) {
             return; // PO existence is enforced when the line is first created; nothing further to check here
@@ -354,17 +419,32 @@ public class UplChangeRequestService {
                 uplLine.getPoNumber(), uplLine.getPoLineNumber(), ACTIVE);
         double total = 0;
         for (tb_PurchaseOrderUPL sibling : siblings) {
-            if (sibling.getRecordNo() == uplLine.getRecordNo()) {
-                total += proposedQty * proposedUnitPrice;
+            // A sibling line may also be edited by a different row in this same batch submission -
+            // use its proposed (not-yet-saved) quantity/price instead of its stale DB value, so the
+            // combined total reflects the whole batch's effect, not just this one line in isolation
+            // (which previously understated the total whenever more than one sibling was edited
+            // together, since only the line being validated got its new value substituted in).
+            //
+            // A sibling NOT part of this same call's batch map is read straight from
+            // tb_PurchaseOrderUPL - deliberately never from another sibling's own still-PENDING,
+            // not-yet-approved change request. That pending value isn't real yet: it could be
+            // rejected, so trusting it here could let a decision through on a number that never
+            // actually materializes. A single decide() call only validates against what's
+            // currently true in the database; if a batch of siblings needs to be evaluated
+            // together, it needs to be decided together (see decide()'s own re-validation).
+            double[] batchValues = batchProposedByRecordNo.get(sibling.getRecordNo());
+            if (batchValues != null) {
+                total += batchValues[0] * batchValues[1];
             } else {
                 total += sibling.getUplLineQuantity() * sibling.getUplLineUnitPrice();
             }
         }
         if (ceiling > 0 && total > ceiling) {
+            double difference = total - ceiling;
             throw new UplValidationException("UPL Line total cannot exceed PO Line Total Price. The combined total "
                     + "of all UPL line(s) under PO " + uplLine.getPoNumber() + " line " + uplLine.getPoLineNumber()
                     + " would be " + formatQty(total) + ", which exceeds the PO line's total price of "
-                    + formatQty(ceiling) + ".");
+                    + formatQty(ceiling) + " by " + formatQty(difference) + ".");
         }
     }
 
@@ -380,14 +460,20 @@ public class UplChangeRequestService {
 
     /**
      * Formats a quantity/price for validation messages as a grouped, human-readable number
-     * ("48,454,782.10" / "1,025") instead of double's raw toString, which switches to scientific
-     * notation ("4.845478210373945E7") once the magnitude passes ~10^7.
+     * ("48,454,782.10373945" / "1,025") instead of double's raw toString, which switches to
+     * scientific notation ("4.845478210373945E7") once the magnitude passes ~10^7. Deliberately
+     * not rounded to a fixed number of decimals - the message must show the exact value being
+     * compared, not an approximation of it, so validation failures can be verified against the
+     * database value as-is.
      */
     private String formatQty(double value) {
-        if (value == Math.floor(value) && !Double.isInfinite(value)) {
-            return new DecimalFormat("#,##0").format(value);
-        }
-        return new DecimalFormat("#,##0.00").format(value);
+        // BigDecimal(Double.toString(value)) - not `new BigDecimal(value)` - to get the shortest
+        // decimal that round-trips to this exact double (what Double.toString shows), rather than
+        // the double's full noisy binary expansion.
+        BigDecimal exact = new BigDecimal(Double.toString(value));
+        DecimalFormat fmt = new DecimalFormat("#,##0.#");
+        fmt.setMaximumFractionDigits(340); // effectively unlimited: never truncates/rounds
+        return fmt.format(exact);
     }
 
     private void validateNoPac(tb_PurchaseOrderUPL uplLine) {
@@ -433,6 +519,47 @@ public class UplChangeRequestService {
         // act on levels they aren't individually named on.
         requireLowerLevelsApproved(cr);
 
+        // Safety-net re-validation happens BEFORE anything is recorded, and only for APPROVED -
+        // rejecting never applies anything, so there's nothing to re-check. If this line's own
+        // change no longer fits (e.g. a sibling under the same PO line was itself edited/applied
+        // since this request was submitted), the whole decide() call fails outright: nothing is
+        // persisted (the decision is never recorded as "Approved" only to be silently overridden),
+        // the request stays PENDING, and the approver gets a clear error telling them why and what
+        // to do about it - they cannot approve this line in isolation right now.
+        tb_PurchaseOrderUPL uplLine = null;
+        if (decision == UplDecision.APPROVED) {
+            uplLine = uplRepo.findByRecordNo(cr.getUplRecordNo());
+            if (uplLine == null) {
+                throw new UplValidationException(
+                        "This UPL line no longer exists, so this request can't be approved. Please reject it instead.");
+            }
+            try {
+                if (cr.getChangeType() == UplActionType.DELETE) {
+                    validateNoPac(uplLine);
+                } else {
+                    Map<String, Map<String, Object>> diff = readDiff(cr.getFieldChanges());
+                    // Siblings are read from tb_PurchaseOrderUPL only - never from another
+                    // sibling's own still-pending, not-yet-approved request. A single decide()
+                    // call only ever knows this one line's proposed value is real; every other
+                    // sibling's pending edit might still be rejected, so trusting it here could
+                    // let a combined total through that later turns out to be wrong. If this
+                    // batch was meant to be validated together, it needs to be approved together.
+                    Map<Long, double[]> onlyThisLine = new java.util.HashMap<>();
+                    double proposedQty = diffValue(diff, "uplLineQuantity", uplLine.getUplLineQuantity());
+                    double proposedPrice = diffValue(diff, "uplLineUnitPrice", uplLine.getUplLineUnitPrice());
+                    onlyThisLine.put(uplLine.getRecordNo(), new double[]{proposedQty, proposedPrice});
+                    validateAgainstLineTotalAndPac(uplLine, diff, onlyThisLine);
+                }
+            } catch (UplValidationException ex) {
+                logger.info("UPL change request {} blocked from approval at level {}: {}",
+                        cr.getRecordId(), cr.getCurrentLevelNo(), ex.getMessage());
+                throw new UplValidationException(ex.getMessage()
+                        + " This line was likely submitted together with other UPL line(s) under the same PO "
+                        + "line that are still pending their own approval - approve or reject those first (or "
+                        + "together with this one), then try approving this line again.");
+            }
+        }
+
         UplChangeRequestDecision decisionRow = new UplChangeRequestDecision();
         decisionRow.setChangeRequestId(cr.getRecordId());
         decisionRow.setLevelNo(cr.getCurrentLevelNo());
@@ -446,29 +573,6 @@ public class UplChangeRequestService {
             cr.setStatus(UplChangeRequestStatus.REJECTED);
             changeRequestRepo.save(cr);
             notifyRequester(cr, "rejected", comments);
-            return cr;
-        }
-
-        tb_PurchaseOrderUPL uplLine = uplRepo.findByRecordNo(cr.getUplRecordNo());
-        if (uplLine == null) {
-            cr.setStatus(UplChangeRequestStatus.AUTO_REJECTED);
-            changeRequestRepo.save(cr);
-            notifyRequester(cr, "auto-rejected", "The UPL line no longer exists");
-            return cr;
-        }
-
-        try {
-            if (cr.getChangeType() == UplActionType.DELETE) {
-                validateNoPac(uplLine);
-            } else {
-                Map<String, Map<String, Object>> diff = readDiff(cr.getFieldChanges());
-                validateAgainstLineTotalAndPac(uplLine, diff);
-            }
-        } catch (UplValidationException ex) {
-            cr.setStatus(UplChangeRequestStatus.AUTO_REJECTED);
-            changeRequestRepo.save(cr);
-            notifyRequester(cr, "auto-rejected", "System: " + ex.getMessage());
-            logger.info("UPL change request {} auto-rejected at level {}: {}", cr.getRecordId(), cr.getCurrentLevelNo(), ex.getMessage());
             return cr;
         }
 
@@ -575,6 +679,40 @@ public class UplChangeRequestService {
         return decisionRepo.findByChangeRequestIdOrderByLevelNoAsc(changeRequestId);
     }
 
+    /**
+     * Attaches poNumber/poLineNumber/uplLine (looked up from tb_PurchaseOrderUPL) alongside each
+     * change request's own fields - UplChangeRequest itself has no such columns since those live
+     * on the UPL line, not the request. Mirrors what the Audit Trail's SQL JOIN already surfaces,
+     * so the UPL Approval grid/export can show the same PO Number/PO Line/UPL Line columns.
+     */
+    public List<Map<String, Object>> enrichWithUplLineDetails(List<UplChangeRequest> requests) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (UplChangeRequest cr : requests) {
+            tb_PurchaseOrderUPL uplLine = cr.getUplRecordNo() != null ? uplRepo.findByRecordNo(cr.getUplRecordNo()) : null;
+            // Built field-by-field (not via ObjectMapper.convertValue) so this doesn't depend on
+            // this class's local, un-configured ObjectMapper handling LocalDateTime/enum fields -
+            // the raw values below are formatted by Spring's own (JavaTimeModule-registered)
+            // response serializer, same as returning the entity directly would be.
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("recordId", cr.getRecordId());
+            row.put("batchId", cr.getBatchId());
+            row.put("uplRecordNo", cr.getUplRecordNo());
+            row.put("changeType", cr.getChangeType());
+            row.put("fieldChanges", cr.getFieldChanges());
+            row.put("totalLevels", cr.getTotalLevels());
+            row.put("currentLevelNo", cr.getCurrentLevelNo());
+            row.put("status", cr.getStatus());
+            row.put("requestedBy", cr.getRequestedBy());
+            row.put("requestedByName", cr.getRequestedByName());
+            row.put("requestedAt", cr.getRequestedAt());
+            row.put("poNumber", uplLine != null ? uplLine.getPoNumber() : null);
+            row.put("poLineNumber", uplLine != null ? uplLine.getPoLineNumber() : null);
+            row.put("uplLine", uplLine != null ? uplLine.getUplLine() : null);
+            result.add(row);
+        }
+        return result;
+    }
+
     // ============================================================
     // Notifications — reuses EmailService + the shared tb_InApp_Notifications
     // table the existing bell (WorkFlow-Management's NotificationController)
@@ -588,17 +726,153 @@ public class UplChangeRequestService {
                     cr.getCurrentLevelNo(), cr.getChangeType(), cr.getRecordId());
             return;
         }
+        // Plain-text version stays on the in-app bell notification (tb_InApp_Notifications) -
+        // only the email body gets the HTML grid table below.
         String message = String.format("%s requested to %s a Unified Price List line — Level %d of %d approval needed",
                 cr.getRequestedByName(), cr.getChangeType(), cr.getCurrentLevelNo(), cr.getTotalLevels());
         for (Integer approverId : approverIdsForLevel(level.get().getRecordNo())) {
             userRepository.findById(approverId).ifPresent(u -> {
                 insertNotification(cr.getRecordId(), u.getUserId(), message, "UPL_CHANGE_REQUEST");
                 if (u.getEmailAddress() != null && !u.getEmailAddress().isBlank()) {
-                    emailService.sendEmail(u.getEmailAddress(), "UPL approval needed", message,
+                    // The email lists everything currently assigned to this approver (matching
+                    // the UPL Approval page/export), not just the one request that triggered this
+                    // particular notification - so a fresh table always reflects their full queue.
+                    List<UplChangeRequest> assigned = findAssignedToApprover(approverId);
+                    String emailHtml = buildLevelApprovalEmailHtml(assigned, u.getFullName());
+                    emailService.sendEmail(u.getEmailAddress(), "UPL approval needed", emailHtml,
                             Collections.emptyList(), null, u.getFullName(), null, null, null, null);
                 }
             });
         }
+    }
+
+    /**
+     * Builds the "UPL approval needed" email body as an HTML page with a grid table listing every
+     * request currently assigned to this approver - same column set and one-row-per-changed-field
+     * shape as the UPL Approval page's export (Record ID, Type, UPL Line ID, PO Number, PO Line,
+     * UPL Line, Level, Field, Old Value, New Value, Requested By). Styling (green header,
+     * black-bordered cells, alternating row background, .desc-table summary block, red warning
+     * footer) mirrors the SLA reminder emails in SlaNotificationService, so approvers get a
+     * visually consistent set of automated emails from this app.
+     */
+    private String buildLevelApprovalEmailHtml(List<UplChangeRequest> requests, String approverName) {
+        String approverDisplay = approverName == null ? "Approver" : approverName;
+
+        String thBase = "style=\"background:#74B72E;color:#ffffff;font-weight:700;padding:10px 8px;"
+                + "border:1px solid #000000;text-align:left;white-space:nowrap;\"";
+        String tdBase = "style=\"border:1px solid #000000;padding:8px;vertical-align:top;\"";
+
+        StringBuilder table = new StringBuilder(4096);
+        table.append("<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" "
+                + "style=\"border-collapse:collapse;table-layout:fixed;font-size:12px;word-break:break-word;"
+                + "width:100%;border:1px solid #000000;\">");
+        table.append("<thead><tr>");
+        for (String header : new String[]{"Record ID", "Type", "UPL Line ID", "PO Number", "PO Line", "UPL Line",
+                "Level", "Field", "Old Value", "New Value", "Requested By"}) {
+            table.append("<th ").append(thBase).append(">").append(header).append("</th>");
+        }
+        table.append("</tr></thead><tbody>");
+
+        int rowIndex = 0;
+        for (UplChangeRequest cr : requests) {
+            tb_PurchaseOrderUPL uplLine = uplRepo.findByRecordNo(cr.getUplRecordNo());
+            String changeType = cr.getChangeType() != null ? cr.getChangeType().toString() : "";
+            String poNumber = uplLine != null ? uplLine.getPoNumber() : "";
+            String poLineNumber = uplLine != null ? uplLine.getPoLineNumber() : "";
+            String uplLineNo = uplLine != null ? uplLine.getUplLine() : "";
+            String levelText = cr.getCurrentLevelNo() + " of " + cr.getTotalLevels();
+
+            for (String[] fieldRow : emailFieldChangeRows(cr)) {
+                String rowBg = (rowIndex % 2 == 0) ? "background:#ffffff;" : "background:#fbfff9;";
+                rowIndex++;
+                table.append("<tr style=\"").append(rowBg).append("\">");
+                table.append("<td ").append(tdBase).append(">").append(cr.getRecordId()).append("</td>");
+                table.append("<td ").append(tdBase).append(">").append(escapeHtml(changeType)).append("</td>");
+                table.append("<td ").append(tdBase).append(">").append(cr.getUplRecordNo()).append("</td>");
+                table.append("<td ").append(tdBase).append(">").append(escapeHtml(poNumber)).append("</td>");
+                table.append("<td ").append(tdBase).append(">").append(escapeHtml(poLineNumber)).append("</td>");
+                table.append("<td ").append(tdBase).append(">").append(escapeHtml(uplLineNo)).append("</td>");
+                table.append("<td ").append(tdBase).append(">").append(escapeHtml(levelText)).append("</td>");
+                table.append("<td ").append(tdBase).append(">").append(escapeHtml(fieldRow[0])).append("</td>");
+                table.append("<td ").append(tdBase).append(">").append(escapeHtml(fieldRow[1])).append("</td>");
+                table.append("<td ").append(tdBase).append(">").append(escapeHtml(fieldRow[2])).append("</td>");
+                table.append("<td ").append(tdBase).append(">").append(escapeHtml(cr.getRequestedByName())).append("</td>");
+                table.append("</tr>");
+            }
+        }
+        table.append("</tbody></table>");
+
+        String salutation = "<p>Dear " + escapeHtml(approverDisplay) + ",</p>";
+        return String.format("""
+            <!doctype html>
+            <html>
+              <head>
+                <meta charset="utf-8"/>
+                <meta name="viewport" content="width=device-width,initial-scale=1"/>
+                <style>
+                  body { font-family: Arial, Helvetica, sans-serif; color: #333; margin: 0; padding: 0; background: #fff; }
+                  table { width: 100%%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+                  th, td { border: 1px solid #74B72E; padding: 6px; text-align: left; font-size: 12px; }
+                  th { background-color: #74B72E; color: #fff; }
+                  .desc-table { border: none; }
+                  .desc-table td { border: none; padding: 3px 8px 3px 0; }
+                  p { font-size: 13px; }
+                  .footer { margin-top: 16px; font-size: 11px; color: #9c1b1b; }
+                </style>
+              </head>
+              <body>
+                %s
+                <table class="desc-table">
+                  <tr><td style="font-weight:700;width:160px;">Request(s):</td><td>%d</td></tr>
+                  <tr><td style="font-weight:700;">Note:</td><td>The Unified Price List change(s) below are awaiting your approval.</td></tr>
+                </table>
+                <p>Please review the change(s) below and action these requests.</p>
+                <div style='overflow:auto;'>%s</div>
+                <p class="footer">Warning: This is an automated email. Please do not reply or forward.</p>
+              </body>
+            </html>
+        """,
+        salutation,
+        requests.size(),
+        table.toString()
+        );
+    }
+
+    /**
+     * One {field label, old value, new value} triple per changed field, built from this class's
+     * own already-parsed diff ({@link #readDiff}) - used only for the level-approval-needed
+     * email's grid table. A DELETE request still gets exactly one row, describing that instead.
+     */
+    private List<String[]> emailFieldChangeRows(UplChangeRequest cr) {
+        List<String[]> rows = new ArrayList<>();
+        if (cr.getChangeType() == UplActionType.DELETE) {
+            rows.add(new String[]{"(whole UPL line)", "", "Deleted"});
+            return rows;
+        }
+        Map<String, Map<String, Object>> diff = readDiff(cr.getFieldChanges());
+        for (Map.Entry<String, Map<String, Object>> entry : diff.entrySet()) {
+            String label = EMAIL_FIELD_LABELS.getOrDefault(entry.getKey(), entry.getKey());
+            Object oldValue = entry.getValue().get("old");
+            Object newValue = entry.getValue().get("new");
+            rows.add(new String[]{
+                    label,
+                    oldValue != null ? oldValue.toString() : "(empty)",
+                    newValue != null ? newValue.toString() : "(empty)",
+            });
+        }
+        if (rows.isEmpty()) {
+            rows.add(new String[]{"", "", ""});
+        }
+        return rows;
+    }
+
+    private String escapeHtml(String s) {
+        if (s == null) return "";
+        return s.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;")
+                .replace("'", "&#39;");
     }
 
     private void notifyRequester(UplChangeRequest cr, String outcome, String comments) {

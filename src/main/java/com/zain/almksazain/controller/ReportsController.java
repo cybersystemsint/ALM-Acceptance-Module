@@ -3309,7 +3309,9 @@ private String convertToSqlDate(String input) {
     // multi-filter map are both validated against uplAuditTrailColumns before
     // being used in the query, same pattern as getAllCreatedUPLs/filterUPLs.
 
-    private static final Map<String, String> uplAuditTrailColumns = new HashMap<>();
+    // Package-private (not private) so ExportsController's audit-trail export job can reuse
+    // these exact same column mappings/SQL - fetch and export must never drift apart.
+    static final Map<String, String> uplAuditTrailColumns = new HashMap<>();
     static {
         uplAuditTrailColumns.put("recordId", "cr.recordId");
         uplAuditTrailColumns.put("batchId", "cr.batchId");
@@ -3330,7 +3332,7 @@ private String convertToSqlDate(String input) {
         uplAuditTrailColumns.put("comments", "d.comments");
     }
 
-    private static final String UPL_AUDIT_TRAIL_SELECT =
+    static final String UPL_AUDIT_TRAIL_SELECT =
             "SELECT cr.recordId AS recordId, cr.batchId AS batchId, cr.uplRecordNo AS uplRecordNo, "
                     + "upl.poNumber AS poNumber, upl.poLineNumber AS poLineNumber, upl.uplLine AS uplLine, "
                     + "cr.changeType AS changeType, cr.fieldChanges AS fieldChanges, cr.status AS requestStatus, "
@@ -3338,7 +3340,7 @@ private String convertToSqlDate(String input) {
                     + "cr.requestedBy AS requestedBy, cr.requestedByName AS requestedByName, cr.requestedAt AS requestedAt, "
                     + "d.levelNo AS levelNo, d.decision AS decision, d.decidedBy AS decidedBy, "
                     + "d.decidedByName AS decidedByName, d.decidedAt AS decidedAt, d.comments AS comments ";
-    private static final String UPL_AUDIT_TRAIL_FROM =
+    static final String UPL_AUDIT_TRAIL_FROM =
             "FROM tb_UPL_Change_Request cr "
                     + "LEFT JOIN tb_PurchaseOrderUPL upl ON upl.recordNo = cr.uplRecordNo "
                     + "LEFT JOIN tb_UPL_Change_Request_Decision d ON d.changeRequestId = cr.recordId ";
