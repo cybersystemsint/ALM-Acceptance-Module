@@ -1254,8 +1254,14 @@ public class APIController {
                             actualItemCode = dcclinejsonObject.getString("actualItemCode").trim();
                         }
                         if (actualItemCode.length() > 1) {
-                            //VALIDATE USING ITEM CODE AND ACTUAL ITEM CODE
-                            List<tbItemCodeSubstitute> validateActualItemCode = itemCodeSubstituteRepo.findByItemCodeAndRelatedItemCode(dcclinejsonObject.getString("itemCode"), actualItemCode);
+                            // Non-UPL lines send itemCode blank and identify the item via
+                            // itemPartNumber instead - fall back to that so the substitute-pair
+                            // check (same tb_ItemCodeSubstitute registry the UPL path uses) still
+                            // runs for non-UPL lines instead of always failing against "".
+                            String itemPartNumberForValidation = dcclinejsonObject.optString("itemPartNumber", "").trim();
+                            String baseCodeForSubstituteCheck = itemCode.length() > 1 ? itemCode : itemPartNumberForValidation;
+                            //VALIDATE USING ITEM CODE (OR ITEM PART NUMBER) AND ACTUAL ITEM CODE
+                            List<tbItemCodeSubstitute> validateActualItemCode = itemCodeSubstituteRepo.findByItemCodeAndRelatedItemCode(baseCodeForSubstituteCheck, actualItemCode);
                             if (validateActualItemCode.isEmpty()) {
                                 missingItemCode.add(actualItemCode);
                             }
@@ -1439,9 +1445,14 @@ public class APIController {
                             }
 
                             if (!serialcontrol.equalsIgnoreCase("NO CONTROL")) {
-                                List<tbSerialNumber> validateSerialNumberforPo = serialNumberRepo.findBySerialNumber(serialNumber);
-                                if (!validateSerialNumberforPo.isEmpty()) {
+                                if (serialNumber.isBlank()) {
                                     missingSerialsforNONUPLBased.add(polineitem);
+                                } else {
+                                    List<tbSerialNumber> validateSerialNumberforPo = serialNumberRepo.findBySerialNumber(serialNumber);
+                                    if (!validateSerialNumberforPo.isEmpty()) {
+                                        existingSerialNumbers.add(serialNumber);
+                                        serialnumberItemCode.add(actualItemCode.length() > 1 ? actualItemCode : itemCode);
+                                    }
                                 }
                             }
                             //HERE WE ARE ADDING A VALIDATION TO CHECK THERE IS A RAISED REQUEST
@@ -1562,8 +1573,13 @@ public class APIController {
                         UpdateItemCode = dcclineUpdatejsonObject.getString("itemCode");
 
                         if (UpdateActualItemCode.length() > 1) {
-
-                            List<tbItemCodeSubstitute> validateActualItemCode = itemCodeSubstituteRepo.findByItemCodeAndRelatedItemCode(dcclineUpdatejsonObject.getString("itemCode"), UpdateActualItemCode);
+                            // Non-UPL lines send itemCode blank and identify the item via
+                            // itemPartNumber instead - fall back to that so the substitute-pair
+                            // check (same tb_ItemCodeSubstitute registry the UPL path uses) still
+                            // runs for non-UPL lines instead of always failing against "".
+                            String itemPartNumberForValidation = dcclineUpdatejsonObject.optString("itemPartNumber", "").trim();
+                            String baseCodeForSubstituteCheck = UpdateItemCode.length() > 1 ? UpdateItemCode : itemPartNumberForValidation;
+                            List<tbItemCodeSubstitute> validateActualItemCode = itemCodeSubstituteRepo.findByItemCodeAndRelatedItemCode(baseCodeForSubstituteCheck, UpdateActualItemCode);
 
                             if (validateActualItemCode.isEmpty()) {
                                 missingItemCode.add(UpdateActualItemCode);
@@ -1711,9 +1727,14 @@ public class APIController {
                             }
 
                             if (!serialcontrol.equalsIgnoreCase("NO CONTROL")) {
-                                List<tbSerialNumber> validateSerialNumberforPo = serialNumberRepo.findBySerialNumber(serialNumber);
-                                if (!validateSerialNumberforPo.isEmpty()) {
+                                if (serialNumber.isBlank()) {
                                     missingSerialsforNONUPLBased.add(polineitem);
+                                } else {
+                                    List<tbSerialNumber> validateSerialNumberforPo = serialNumberRepo.findBySerialNumber(serialNumber);
+                                    if (!validateSerialNumberforPo.isEmpty()) {
+                                        existingSerialNumbers.add(serialNumber);
+                                        serialnumberItemCode.add(UpdateActualItemCode.length() > 1 ? UpdateActualItemCode : UpdateItemCode);
+                                    }
                                 }
                             }
                             Double poqtyNew = podetails != null ? podetails.getPoQtyNew() : 0;
