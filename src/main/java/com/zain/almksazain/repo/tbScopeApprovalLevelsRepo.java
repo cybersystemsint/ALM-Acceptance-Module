@@ -18,4 +18,6 @@ public interface tbScopeApprovalLevelsRepo extends JpaRepository<tbScopeApproval
 
     List<tbScopeApprovalLevels> findByScope(Integer scope);
 
+    List<tbScopeApprovalLevels> findByScopeOrderByLevelAsc(Integer scope);
+
 }
