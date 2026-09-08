@@ -663,9 +663,14 @@ public CompletableFuture<List<DccPOCombinedViewDTO>> getExportData(DccPORequest 
         dto.setVendorName(po.getVendorName());
 
         if (upl == null) {
-            // No UPL row: keep UPL-derived fields null/blank; fall back to PO qty when available.
+            // No UPL row (non-UPL PO line): fall back to the PO's own item code/description,
+            // matching the same fallback already used by dccPOCombinedView's SQL for the edit
+            // flow. There's no PO-side equivalent for UOM (tb_PurchaseOrder has no such column),
+            // so unitOfMeasure intentionally stays blank here.
             dto.setPoLineQuantity(parsePoQty(po));
             dto.setPoOrderQuantity(parsePoQty(po));
+            dto.setItemPartNumber(po.getItemPartNumber());
+            dto.setPoLineDescription(po.getPoLineDescription());
             return;
         }
 
