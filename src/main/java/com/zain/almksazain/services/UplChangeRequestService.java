@@ -203,14 +203,24 @@ public class UplChangeRequestService {
 
         List<PreparedItem> preparedItems = new ArrayList<>();
         List<UplChangeRequestFailure> failures = new ArrayList<>();
-        // Catches the same UPL line appearing twice in one submission — since nothing is saved
-        // until every item has passed, the usual "already has a change pending approval" check
-        // (which only sees already-persisted requests) can't catch that on its own.
+        // Catches the same UPL line (or, for CREATE, the same PO+line+UPL-line triple) appearing
+        // twice in one submission — since nothing is saved until every item has passed, the usual
+        // "already has a change pending approval"/"already exists" checks (which only see
+        // already-persisted rows) can't catch that on their own.
         Set<Long> seenInThisBatch = new java.util.HashSet<>();
+        Set<String> seenNewLinesInThisBatch = new java.util.HashSet<>();
 
         for (UplChangeRequestItem item : items) {
             try {
-                if (item.getUplRecordNo() != null && !seenInThisBatch.add(item.getUplRecordNo())) {
+                if (item.getChangeType() == UplActionType.CREATE) {
+                    Map<String, Object> f = item.getFields();
+                    String key = f == null ? "" : stringField(f, "poNumber") + "|" + stringField(f, "poLineNumber")
+                            + "|" + stringField(f, "uplLine");
+                    if (!seenNewLinesInThisBatch.add(key)) {
+                        throw new UplValidationException(
+                                "UPL line " + stringField(f, "uplLine") + " appears more than once in this submission");
+                    }
+                } else if (item.getUplRecordNo() != null && !seenInThisBatch.add(item.getUplRecordNo())) {
                     throw new UplValidationException(
                             "UPL line " + item.getUplRecordNo() + " appears more than once in this submission");
                 }
@@ -233,14 +243,27 @@ public class UplChangeRequestService {
                 batchProposedByRecordNo.put(p.uplLine.getRecordNo(), new double[]{qty, price});
             }
         }
+        // Same idea for brand new lines: several CREATE items under the same PO+line in one
+        // upload need to be validated against their combined effect, not each in isolation.
+        Map<String, Double> newLineBatchTotals = new java.util.HashMap<>();
+        for (PreparedItem p : preparedItems) {
+            if (p.item.getChangeType() == UplActionType.CREATE) {
+                String key = p.uplLine.getPoNumber() + "|" + p.uplLine.getPoLineNumber();
+                newLineBatchTotals.merge(key, p.uplLine.getUplLineQuantity() * p.uplLine.getUplLineUnitPrice(), Double::sum);
+            }
+        }
 
         List<UplChangeRequest> prepared = new ArrayList<>();
+        List<PreparedItem> succeeded = new ArrayList<>();
         for (PreparedItem p : preparedItems) {
             try {
                 if (p.diff != null) {
                     validateAgainstLineTotalAndPac(p.uplLine, p.diff, batchProposedByRecordNo);
+                } else if (p.item.getChangeType() == UplActionType.CREATE) {
+                    validateNewLineAgainstCeiling(p.uplLine, newLineBatchTotals);
                 }
                 prepared.add(buildChangeRequest(p, requester, batchId));
+                succeeded.add(p);
             } catch (UplValidationException ex) {
                 failures.add(new UplChangeRequestFailure(p.item.getUplRecordNo(), ex.getMessage()));
             }
@@ -249,7 +272,10 @@ public class UplChangeRequestService {
         if (!failures.isEmpty()) {
             // Account for every submitted line, not just the ones that actually had a problem —
             // otherwise a line that passed its own validation would just silently vanish from the
-            // response with no explanation for why it wasn't submitted.
+            // response with no explanation for why it wasn't submitted. Nothing was persisted for
+            // any CREATE item either (the new tb_PurchaseOrderUPL row is only ever inserted in the
+            // commit loop below, which this early return skips entirely), so there's nothing to
+            // clean up here.
             List<UplChangeRequestFailure> allFailures = new ArrayList<>(failures);
             for (UplChangeRequest cr : prepared) {
                 allFailures.add(new UplChangeRequestFailure(cr.getUplRecordNo(),
@@ -260,7 +286,17 @@ public class UplChangeRequestService {
         }
 
         List<UplChangeRequest> created = new ArrayList<>();
-        for (UplChangeRequest cr : prepared) {
+        for (int i = 0; i < prepared.size(); i++) {
+            UplChangeRequest cr = prepared.get(i);
+            PreparedItem p = succeeded.get(i);
+            if (p.item.getChangeType() == UplActionType.CREATE) {
+                // Only actually inserted now that the whole batch is known to have passed -
+                // matches the "nothing persisted until everything passes" guarantee above.
+                p.uplLine.setCreatedBy(requester.getUserId());
+                p.uplLine.setCreatedByName(requester.getFullName());
+                tb_PurchaseOrderUPL savedNewLine = uplRepo.save(p.uplLine);
+                cr.setUplRecordNo(savedNewLine.getRecordNo());
+            }
             created.add(changeRequestRepo.save(cr));
         }
 
@@ -282,8 +318,14 @@ public class UplChangeRequestService {
      * so it can see every line's proposed values, not just this one.
      */
     private PreparedItem prepareDiff(UplChangeRequestItem item) {
-        if (item.getUplRecordNo() == null || item.getChangeType() == null) {
-            throw new UplValidationException("Each item needs a uplRecordNo and a changeType");
+        if (item.getChangeType() == null) {
+            throw new UplValidationException("Each item needs a changeType");
+        }
+        if (item.getChangeType() == UplActionType.CREATE) {
+            return prepareCreate(item);
+        }
+        if (item.getUplRecordNo() == null) {
+            throw new UplValidationException("Each item needs a uplRecordNo");
         }
         tb_PurchaseOrderUPL uplLine = uplRepo.findByRecordNo(item.getUplRecordNo());
         if (uplLine == null || !ACTIVE.equals(uplLine.getStatus())) {
@@ -303,6 +345,122 @@ public class UplChangeRequestService {
             throw new UplValidationException("No changes to submit for UPL line " + uplLine.getUplLine());
         }
         return new PreparedItem(item, uplLine, diff);
+    }
+
+    /**
+     * Builds a brand new (not-yet-saved) tb_PurchaseOrderUPL from item.getFields() - the full set
+     * of a new line's values, unlike UPDATE's whitelisted 7-field diff, since there's no existing
+     * row to diff against. Runs the same required-field/duplicate/PO-existence checks
+     * createpoupl() already applied for new rows, plus the PO-line-price-ceiling check that path
+     * never had. The returned PreparedItem's uplLine is transient (status "PENDING", no recordNo
+     * yet) - it's only actually inserted once the whole submission batch has passed validation
+     * (see createChangeRequests's commit loop), same all-or-nothing guarantee as everything else
+     * in that method.
+     */
+    private PreparedItem prepareCreate(UplChangeRequestItem item) {
+        Map<String, Object> fields = item.getFields();
+        if (fields == null) {
+            throw new UplValidationException("New UPL line is missing its field values");
+        }
+        String poNumber = stringField(fields, "poNumber");
+        String poLineNumber = stringField(fields, "poLineNumber");
+        String uplLineNo = stringField(fields, "uplLine");
+        if (isBlank(poNumber) || isBlank(poLineNumber) || isBlank(uplLineNo)) {
+            throw new UplValidationException("New UPL line needs poNumber, poLineNumber and uplLine");
+        }
+        if (uplRepo.findFirstByPoNumberAndPoLineNumberAndUplLine(poNumber, poLineNumber, uplLineNo) != null) {
+            throw new UplValidationException(
+                    "UPL line " + uplLineNo + " already exists under PO " + poNumber + " line " + poLineNumber);
+        }
+        tbPurchaseOrder po = poRepo.findTopByPoNumberAndLineNumber(poNumber, poLineNumber);
+        if (po == null) {
+            throw new UplValidationException("PO " + poNumber + " line " + poLineNumber + " does not exist");
+        }
+
+        tb_PurchaseOrderUPL newLine = new tb_PurchaseOrderUPL();
+        newLine.setPoNumber(poNumber);
+        newLine.setPoLineNumber(poLineNumber);
+        newLine.setUplLine(uplLineNo);
+        newLine.setVendor(stringField(fields, "vendor"));
+        newLine.setManufacturer(stringField(fields, "manufacturer"));
+        newLine.setCountryOfOrigin(stringField(fields, "countryOfOrigin"));
+        newLine.setProjectName(stringField(fields, "projectName"));
+        newLine.setPoType(stringField(fields, "poType"));
+        newLine.setReleaseNumber(stringField(fields, "releaseNumber"));
+        newLine.setPoLineItemType(stringField(fields, "poLineItemType"));
+        newLine.setPoLineItemCode(stringField(fields, "poLineItemCode"));
+        newLine.setPoLineDescription(stringField(fields, "poLineDescription"));
+        newLine.setUplLineItemType(stringField(fields, "uplLineItemType"));
+        newLine.setUplLineItemCode(stringField(fields, "uplLineItemCode"));
+        newLine.setUplLineDescription(stringField(fields, "uplLineDescription"));
+        newLine.setZainItemCategoryCode(stringField(fields, "zainItemCategoryCode"));
+        newLine.setZainItemCategoryDescription(stringField(fields, "zainItemCategoryDescription"));
+        newLine.setUplItemSerialized(stringField(fields, "uplItemSerialized"));
+        newLine.setActiveOrPassive(stringField(fields, "activeOrPassive"));
+        newLine.setUom(stringField(fields, "uom"));
+        newLine.setCurrency(stringField(fields, "currency"));
+        newLine.setPoLineQuantity(doubleField(fields, "poLineQuantity"));
+        newLine.setPoLineUnitPrice(doubleField(fields, "poLineUnitPrice"));
+        newLine.setUplLineQuantity(doubleField(fields, "uplLineQuantity"));
+        newLine.setUplLineUnitPrice(doubleField(fields, "uplLineUnitPrice"));
+        newLine.setSubstituteItemCode(stringField(fields, "substituteItemCode"));
+        newLine.setRemarks(stringField(fields, "remarks"));
+        // createdBy/createdByName are set once the requester is known, in createChangeRequests's
+        // commit loop, right before this row is actually inserted.
+        newLine.setStatus("PENDING");
+        return new PreparedItem(item, newLine, null);
+    }
+
+    private String stringField(Map<String, Object> fields, String key) {
+        Object v = fields.get(key);
+        return v == null ? null : String.valueOf(v);
+    }
+
+    private boolean isBlank(String s) {
+        return s == null || s.trim().isEmpty();
+    }
+
+    private double doubleField(Map<String, Object> fields, String key) {
+        Object v = fields.get(key);
+        if (v == null) {
+            return 0.0;
+        }
+        return v instanceof Number ? ((Number) v).doubleValue() : Double.parseDouble(String.valueOf(v));
+    }
+
+    /**
+     * PO-line-price-ceiling check for a brand new UPL line - existing ACTIVE siblings' current
+     * total, plus this new line's own contribution. Reused two ways: at submission time,
+     * newLineBatchTotals carries the combined total of every other new line proposed for the same
+     * PO+line in the SAME upload (so several new lines submitted together are validated against
+     * their combined effect, not each looked at alone) - pass null at decide time, since a pending
+     * CREATE only ever gets approved one at a time (each approval flips PENDING -&gt; ACTIVE and
+     * commits before the next decide() call runs), so the next one's own siblings query already
+     * sees it - unlike edits, there's no stale-sibling problem here to work around.
+     */
+    private void validateNewLineAgainstCeiling(tb_PurchaseOrderUPL newLine, Map<String, Double> newLineBatchTotals) {
+        tbPurchaseOrder po = poRepo.findTopByPoNumberAndLineNumber(newLine.getPoNumber(), newLine.getPoLineNumber());
+        if (po == null) {
+            return; // existence already checked when the request was created; defensive no-op only
+        }
+        double ceiling = po.getLinePriceInSAR() > 0 ? po.getLinePriceInSAR() : po.getLinePriceInPoCurrency();
+        List<tb_PurchaseOrderUPL> siblings = uplRepo.findByPoNumberAndPoLineNumberAndStatus(
+                newLine.getPoNumber(), newLine.getPoLineNumber(), ACTIVE);
+        double total = 0;
+        for (tb_PurchaseOrderUPL sibling : siblings) {
+            total += sibling.getUplLineQuantity() * sibling.getUplLineUnitPrice();
+        }
+        String key = newLine.getPoNumber() + "|" + newLine.getPoLineNumber();
+        total += (newLineBatchTotals != null && newLineBatchTotals.containsKey(key))
+                ? newLineBatchTotals.get(key)
+                : newLine.getUplLineQuantity() * newLine.getUplLineUnitPrice();
+        if (ceiling > 0 && total > ceiling) {
+            double difference = total - ceiling;
+            throw new UplValidationException("UPL Line total cannot exceed PO Line Total Price. The combined total "
+                    + "of all UPL line(s) under PO " + newLine.getPoNumber() + " line " + newLine.getPoLineNumber()
+                    + " would be " + formatQty(total) + ", which exceeds the PO line's total price of "
+                    + formatQty(ceiling) + " by " + formatQty(difference) + ".");
+        }
     }
 
     /** Finishes building the (unsaved) UplChangeRequest once cross-line validation has passed. */
@@ -488,8 +646,62 @@ public class UplChangeRequestService {
     // Decide (approve / reject a single level)
     // ============================================================
 
-    @Transactional
     public UplChangeRequest decide(Long changeRequestId, Integer deciderId, UplDecision decision, String comments) {
+        return decide(changeRequestId, deciderId, decision, comments, Collections.emptyMap());
+    }
+
+    /**
+     * Precomputes every OTHER pending, non-DELETE change request's proposed quantity/price ahead
+     * of a batch decide (e.g. "Massive Approval" selecting several rows at once), keyed by UPL
+     * line record number - mirrors createChangeRequests()'s own batchProposedByRecordNo, just
+     * built from already-persisted change requests instead of not-yet-saved ones. Pass the result
+     * into {@link #decide(Long, Integer, UplDecision, String, Map)} for every id being decided
+     * together so each one's line-total check sees the whole batch's combined effect, not just
+     * itself against everyone else's stale, pre-edit DB values - which is what previously made it
+     * impossible to approve several corrective edits under the same PO line in one go, even when
+     * their combined effect brings the line back under its price ceiling.
+     */
+    public Map<Long, double[]> buildBatchProposedValues(List<Long> changeRequestIds) {
+        Map<Long, double[]> batchProposedByRecordNo = new java.util.HashMap<>();
+        if (changeRequestIds == null) {
+            return batchProposedByRecordNo;
+        }
+        for (Long id : changeRequestIds) {
+            changeRequestRepo.findById(id).ifPresent(cr -> {
+                if (cr.getStatus() != UplChangeRequestStatus.PENDING
+                        || cr.getChangeType() == UplActionType.DELETE
+                        || cr.getChangeType() == UplActionType.CREATE) {
+                    // CREATE has its own decide-time check (validateNewLineAgainstCeiling) that
+                    // doesn't need batch context - see the note where it's called from decide().
+                    return;
+                }
+                tb_PurchaseOrderUPL uplLine = uplRepo.findByRecordNo(cr.getUplRecordNo());
+                if (uplLine == null) {
+                    return;
+                }
+                try {
+                    Map<String, Map<String, Object>> diff = readDiff(cr.getFieldChanges());
+                    double qty = diffValue(diff, "uplLineQuantity", uplLine.getUplLineQuantity());
+                    double price = diffValue(diff, "uplLineUnitPrice", uplLine.getUplLineUnitPrice());
+                    batchProposedByRecordNo.put(uplLine.getRecordNo(), new double[]{qty, price});
+                } catch (Exception ignored) {
+                    // Malformed fieldChanges surfaces its own error when this request is actually decided.
+                }
+            });
+        }
+        return batchProposedByRecordNo;
+    }
+
+    /**
+     * @param batchProposedByRecordNo proposed quantity/price for OTHER UPL lines being decided
+     *        together in the same batch (see {@link #buildBatchProposedValues}) - merged with
+     *        this request's own proposed value before validating the combined line total. Pass
+     *        {@link Collections#emptyMap()} (or use the 4-arg overload) to validate this request
+     *        in isolation, matching the previous behaviour.
+     */
+    @Transactional
+    public UplChangeRequest decide(Long changeRequestId, Integer deciderId, UplDecision decision, String comments,
+            Map<Long, double[]> batchProposedByRecordNo) {
         UplChangeRequest cr = changeRequestRepo.findById(changeRequestId)
                 .orElseThrow(() -> new UplValidationException("Change request not found"));
         if (cr.getStatus() != UplChangeRequestStatus.PENDING) {
@@ -536,19 +748,27 @@ public class UplChangeRequestService {
             try {
                 if (cr.getChangeType() == UplActionType.DELETE) {
                     validateNoPac(uplLine);
+                } else if (cr.getChangeType() == UplActionType.CREATE) {
+                    // No batch map needed - see validateNewLineAgainstCeiling's own note: unlike
+                    // edits, approving several pending CREATEs one after another is already
+                    // correct without it, since each commit makes the next one's siblings query
+                    // see it as a real ACTIVE row.
+                    validateNewLineAgainstCeiling(uplLine, null);
                 } else {
                     Map<String, Map<String, Object>> diff = readDiff(cr.getFieldChanges());
-                    // Siblings are read from tb_PurchaseOrderUPL only - never from another
-                    // sibling's own still-pending, not-yet-approved request. A single decide()
-                    // call only ever knows this one line's proposed value is real; every other
-                    // sibling's pending edit might still be rejected, so trusting it here could
-                    // let a combined total through that later turns out to be wrong. If this
-                    // batch was meant to be validated together, it needs to be approved together.
-                    Map<Long, double[]> onlyThisLine = new java.util.HashMap<>();
+                    // A sibling not covered by batchProposedByRecordNo is read from
+                    // tb_PurchaseOrderUPL only - never from another sibling's own still-pending,
+                    // not-yet-approved request that this same call wasn't explicitly told is being
+                    // decided together (see buildBatchProposedValues). Trusting an arbitrary
+                    // pending edit here could let a combined total through that later turns out to
+                    // be wrong, since that other request might still be rejected.
+                    Map<Long, double[]> effectiveBatch = batchProposedByRecordNo == null
+                            ? new java.util.HashMap<>()
+                            : new java.util.HashMap<>(batchProposedByRecordNo);
                     double proposedQty = diffValue(diff, "uplLineQuantity", uplLine.getUplLineQuantity());
                     double proposedPrice = diffValue(diff, "uplLineUnitPrice", uplLine.getUplLineUnitPrice());
-                    onlyThisLine.put(uplLine.getRecordNo(), new double[]{proposedQty, proposedPrice});
-                    validateAgainstLineTotalAndPac(uplLine, diff, onlyThisLine);
+                    effectiveBatch.put(uplLine.getRecordNo(), new double[]{proposedQty, proposedPrice});
+                    validateAgainstLineTotalAndPac(uplLine, diff, effectiveBatch);
                 }
             } catch (UplValidationException ex) {
                 logger.info("UPL change request {} blocked from approval at level {}: {}",
@@ -570,6 +790,18 @@ public class UplChangeRequestService {
         decisionRepo.save(decisionRow);
 
         if (decision == UplDecision.REJECTED) {
+            if (cr.getChangeType() == UplActionType.CREATE) {
+                // The pending row was already inserted (status "PENDING") when this request was
+                // submitted - rejecting it needs to soft-delete it the same way an approved DELETE
+                // would, otherwise it sits forever as neither visible nor re-creatable (the
+                // duplicate check in prepareCreate matches on PO+line+UPL-line regardless of
+                // status).
+                tb_PurchaseOrderUPL pendingLine = uplRepo.findByRecordNo(cr.getUplRecordNo());
+                if (pendingLine != null) {
+                    pendingLine.setStatus(DELETED);
+                    uplRepo.save(pendingLine);
+                }
+            }
             cr.setStatus(UplChangeRequestStatus.REJECTED);
             changeRequestRepo.save(cr);
             notifyRequester(cr, "rejected", comments);
@@ -609,6 +841,10 @@ public class UplChangeRequestService {
     private void apply(UplChangeRequest cr, tb_PurchaseOrderUPL uplLine) {
         if (cr.getChangeType() == UplActionType.DELETE) {
             uplLine.setStatus(DELETED);
+        } else if (cr.getChangeType() == UplActionType.CREATE) {
+            // The row already holds every field it was submitted with (see prepareCreate) - final
+            // approval just makes it real, exactly the mirror image of DELETE above.
+            uplLine.setStatus(ACTIVE);
         } else {
             Map<String, Map<String, Object>> diff = readDiff(cr.getFieldChanges());
             for (Map.Entry<String, Map<String, Object>> entry : diff.entrySet()) {
@@ -847,6 +1083,15 @@ public class UplChangeRequestService {
         List<String[]> rows = new ArrayList<>();
         if (cr.getChangeType() == UplActionType.DELETE) {
             rows.add(new String[]{"(whole UPL line)", "", "Deleted"});
+            return rows;
+        }
+        if (cr.getChangeType() == UplActionType.CREATE) {
+            tb_PurchaseOrderUPL newLine = uplRepo.findByRecordNo(cr.getUplRecordNo());
+            String summary = newLine != null
+                    ? newLine.getUplLineItemCode() + " x" + formatQty(newLine.getUplLineQuantity())
+                            + " @ " + formatQty(newLine.getUplLineUnitPrice())
+                    : "(new UPL line)";
+            rows.add(new String[]{"(new UPL line)", "", summary});
             return rows;
         }
         Map<String, Map<String, Object>> diff = readDiff(cr.getFieldChanges());
