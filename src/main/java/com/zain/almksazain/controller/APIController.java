@@ -57,6 +57,12 @@ import com.zain.almksazain.repo.tbPassiveInventoryRepo;
 import com.zain.almksazain.repo.tbSerialNumberRepo;
 import com.zain.almksazain.repo.UplChangeRequestRepo;
 import com.zain.almksazain.model.UplChangeRequestStatus;
+import com.zain.almksazain.model.UplActionType;
+import com.zain.almksazain.services.UplChangeRequestBatchResult;
+import com.zain.almksazain.services.UplChangeRequestFailure;
+import com.zain.almksazain.services.UplChangeRequestItem;
+import com.zain.almksazain.services.UplChangeRequestService;
+import com.zain.almksazain.services.UplValidationException;
 import com.zain.almksazain.utlities.Httpcall;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -131,6 +137,9 @@ public class APIController {
 
     @Autowired
     UplChangeRequestRepo uplChangeRequestRepo;
+
+    @Autowired
+    UplChangeRequestService uplChangeRequestService;
 
     @Autowired
     tbChargeAccountRepo chargeAccountRepo;
@@ -802,12 +811,21 @@ public class APIController {
 //            if (!validationErrorsUPLCreation.isEmpty()) {
 //                return response("Error", "The records having with lines: " + String.join("; ", validationErrorsUPLCreation) + " already exists. Please check and try again. ");
 //            }
+            // New rows (recordNo == 0) are collected here instead of being saved directly below -
+            // they now go through UplChangeRequestService's CREATE flow (change request + approval
+            // workflow, module "Unified Price List" / action type CREATE) instead of an immediate
+            // insert, so a brand new line only becomes real (and visible on the grid, which already
+            // only ever shows status = 'ACTIVE') once approved. Existing-row updates (recordNo != 0)
+            // are unaffected - out of scope here, and already have their own approval path via the
+            // grid's inline edit (POST /upl/change-requests).
+            List<UplChangeRequestItem> newLineItems = new ArrayList<>();
+            Integer newLineCreatedBy = null;
             for (int i = 0; i < jsonArray.length(); i++) {
                 JSONObject jsonObject = jsonArray.getJSONObject(i);
                 recordNo = Integer.parseInt(jsonObject.getString("recordNo"));
                 List<tbPurchaseOrder> validatePoList = PurchaseOrderRepo.findByPoNumber(jsonObject.getString("poNumber"));
                 // if (!validatePoList.isEmpty()) {
-                tb_PurchaseOrderUPL spldt = purchaseOrderUPLRepo.findByRecordNo(recordNo);
+                tb_PurchaseOrderUPL spldt = recordNo != 0 ? purchaseOrderUPLRepo.findByRecordNo(recordNo) : null;
                 if (spldt != null) {
                     java.util.Date parsedDate = dateFormat.parse(now.toString());
                     java.sql.Date newDate = new java.sql.Date(parsedDate.getTime());
@@ -854,47 +872,64 @@ public class APIController {
                         responseinfo = excc.toString();
                     }
                 } else {
-                    tb_PurchaseOrderUPL nwspldt = new tb_PurchaseOrderUPL();
-                    java.util.Date parsedDate = dateFormat.parse(now.toString());
-                    java.sql.Date newDate = new java.sql.Date(parsedDate.getTime());
-                    nwspldt.setRecordDatetime(newDate);
-                    nwspldt.setVendor(jsonObject.getString("vendor").trim());
-                    nwspldt.setManufacturer(jsonObject.getString("manufacturer").trim());
-                    nwspldt.setCountryOfOrigin(jsonObject.getString("countryOfOrigin").trim());
-                    nwspldt.setProjectName(jsonObject.getString("projectName").trim());
-                    nwspldt.setPoType(jsonObject.getString("poType").trim());
-                    nwspldt.setReleaseNumber(jsonObject.getString("releaseNumber").trim());
-                    nwspldt.setPoNumber(jsonObject.getString("poNumber").trim());
-                    nwspldt.setPoLineNumber(jsonObject.getString("poLineNumber").trim());
-                    nwspldt.setUplLine(jsonObject.getString("uplLine").trim());
-                    nwspldt.setPoLineItemType(jsonObject.getString("poLineItemType").trim());
-                    nwspldt.setPoLineItemCode(jsonObject.getString("poLineItemCode").trim());
-                    nwspldt.setPoLineDescription(jsonObject.getString("poLineDescription").trim());
-                    nwspldt.setUplLineItemType(jsonObject.getString("uplLineItemType").trim());
-                    nwspldt.setUplLineItemCode(jsonObject.getString("uplLineItemCode").trim());
-                    nwspldt.setUplLineDescription(jsonObject.getString("uplLineDescription").trim());
-                    nwspldt.setZainItemCategoryCode(jsonObject.getString("zainItemCategoryCode").trim());
-                    nwspldt.setZainItemCategoryDescription(jsonObject.getString("zainItemCategoryDescription").trim());
-                    nwspldt.setUplItemSerialized(jsonObject.getString("uplItemSerialized").trim());
-                    nwspldt.setActiveOrPassive(jsonObject.getString("activeOrPassive").trim());
-                    nwspldt.setUom(jsonObject.getString("uom").trim());
-                    nwspldt.setCurrency(jsonObject.getString("currency").trim());
-                    nwspldt.setPoLineQuantity(jsonObject.getDouble("poLineQuantity"));
-                    nwspldt.setPoLineUnitPrice(jsonObject.getDouble("poLineUnitPrice"));
-                    nwspldt.setUplLineQuantity(jsonObject.getDouble("uplLineQuantity"));
-                    nwspldt.setUplLineUnitPrice(jsonObject.getDouble("uplLineUnitPrice"));
-                    nwspldt.setSubstituteItemCode(jsonObject.getString("substituteItemCode").trim());
-                    nwspldt.setRemarks(jsonObject.getString("remarks").trim());
+                    // New line - deferred to a single UplChangeRequestService.createChangeRequests(...)
+                    // call after this loop instead of an immediate save; see comment above the loop.
+                    Map<String, Object> fields = new HashMap<>();
+                    fields.put("vendor", jsonObject.getString("vendor").trim());
+                    fields.put("manufacturer", jsonObject.getString("manufacturer").trim());
+                    fields.put("countryOfOrigin", jsonObject.getString("countryOfOrigin").trim());
+                    fields.put("projectName", jsonObject.getString("projectName").trim());
+                    fields.put("poType", jsonObject.getString("poType").trim());
+                    fields.put("releaseNumber", jsonObject.getString("releaseNumber").trim());
+                    fields.put("poNumber", jsonObject.getString("poNumber").trim());
+                    fields.put("poLineNumber", jsonObject.getString("poLineNumber").trim());
+                    fields.put("uplLine", jsonObject.getString("uplLine").trim());
+                    fields.put("poLineItemType", jsonObject.getString("poLineItemType").trim());
+                    fields.put("poLineItemCode", jsonObject.getString("poLineItemCode").trim());
+                    fields.put("poLineDescription", jsonObject.getString("poLineDescription").trim());
+                    fields.put("uplLineItemType", jsonObject.getString("uplLineItemType").trim());
+                    fields.put("uplLineItemCode", jsonObject.getString("uplLineItemCode").trim());
+                    fields.put("uplLineDescription", jsonObject.getString("uplLineDescription").trim());
+                    fields.put("zainItemCategoryCode", jsonObject.getString("zainItemCategoryCode").trim());
+                    fields.put("zainItemCategoryDescription", jsonObject.getString("zainItemCategoryDescription").trim());
+                    fields.put("uplItemSerialized", jsonObject.getString("uplItemSerialized").trim());
+                    fields.put("activeOrPassive", jsonObject.getString("activeOrPassive").trim());
+                    fields.put("uom", jsonObject.getString("uom").trim());
+                    fields.put("currency", jsonObject.getString("currency").trim());
+                    fields.put("poLineQuantity", jsonObject.getDouble("poLineQuantity"));
+                    fields.put("poLineUnitPrice", jsonObject.getDouble("poLineUnitPrice"));
+                    fields.put("uplLineQuantity", jsonObject.getDouble("uplLineQuantity"));
+                    fields.put("uplLineUnitPrice", jsonObject.getDouble("uplLineUnitPrice"));
+                    fields.put("substituteItemCode", jsonObject.getString("substituteItemCode").trim());
+                    fields.put("remarks", jsonObject.getString("remarks").trim());
 
-                    nwspldt.setCreatedBy(jsonObject.getInt("createdById"));
-                    nwspldt.setCreatedByName(jsonObject.getString("createdByName").trim());
-                    try {
-                        purchaseOrderUPLRepo.save(nwspldt);
-                        responseinfo = "Record Created Success";
-                    } catch (JSONException excc) {
-                        logger.info("Exception |  " + excc.toString());
-                        responseinfo = excc.toString();
+                    UplChangeRequestItem newLineItem = new UplChangeRequestItem();
+                    newLineItem.setChangeType(UplActionType.CREATE);
+                    newLineItem.setFields(fields);
+                    newLineItems.add(newLineItem);
+                    if (newLineCreatedBy == null) {
+                        newLineCreatedBy = jsonObject.getInt("createdById");
                     }
+                }
+            }
+
+            if (!newLineItems.isEmpty()) {
+                String batchId = newLineItems.size() > 1 ? java.util.UUID.randomUUID().toString() : null;
+                try {
+                    UplChangeRequestBatchResult createResult = uplChangeRequestService.createChangeRequests(newLineItems, newLineCreatedBy, batchId);
+                    if (!createResult.getFailures().isEmpty()) {
+                        List<String> reasons = new ArrayList<>();
+                        for (UplChangeRequestFailure f : createResult.getFailures()) {
+                            reasons.add(f.getReason());
+                        }
+                        responseinfo = "New UPL line(s) submitted for approval failed: " + String.join("; ", reasons);
+                    } else {
+                        responseinfo = responseinfo.contains("Success") || "Failed to save or data".equals(responseinfo)
+                                ? "Record Created Success"
+                                : responseinfo;
+                    }
+                } catch (UplValidationException uplExc) {
+                    responseinfo = "New UPL line(s) submitted for approval failed: " + uplExc.getMessage();
                 }
             }
             logger.info("UPL CREATE RESPONSE |  " + responseinfo);
