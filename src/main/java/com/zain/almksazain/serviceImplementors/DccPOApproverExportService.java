@@ -534,9 +534,13 @@ public class DccPOApproverExportService {
         dto.setVendorName(purchaseOrder.getVendorName());
 
         if (upl == null) {
+            // No UPL row (non-UPL PO line): fall back to the PO's own item code/description.
+            // No PO-side equivalent exists for UOM, so unitOfMeasure intentionally stays blank.
             double poOrderQty = parsePoOrderQuantity(purchaseOrder);
             dto.setPoLineQuantity(poOrderQty);
             dto.setPoOrderQuantity(poOrderQty);
+            dto.setItemPartNumber(purchaseOrder.getItemPartNumber());
+            dto.setPoLineDescription(purchaseOrder.getPoLineDescription());
             return;
         }
 
