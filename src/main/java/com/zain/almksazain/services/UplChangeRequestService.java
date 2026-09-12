@@ -82,6 +82,21 @@ public class UplChangeRequestService {
     private static final String ACTIVE = "ACTIVE";
     private static final String DELETED = "DELETED";
 
+    // Shared with APIController's bulk-create response summarizer, so it can identify and
+    // collapse these collateral entries without a fragile duplicate string literal.
+    public static final String NOT_SUBMITTED_COLLATERAL_REASON =
+            "Not submitted — this line passed validation, but the whole batch was rejected "
+                    + "because other line(s) in the same submission failed.";
+
+    // Tolerance for the PO-line-total-vs-ceiling comparison in validateLineTotal/
+    // validateNewLineAgainstCeiling. Summing many qty*price doubles is order-dependent and can
+    // land a hair above a ceiling that's mathematically supposed to be exactly equal (e.g. total
+    // 2,138,427.053141004 vs ceiling 2,138,427.053141 - a ~3.7e-9 gap, pure double-precision
+    // rounding noise at 16 significant digits, not a real overage) - without this, a batch that's
+    // genuinely fine gets rejected purely because of summation order. A millionth of a currency
+    // unit is far below anything a real business overage would look like.
+    private static final double LINE_TOTAL_EPSILON = 1e-6;
+
     private static final Set<String> EDITABLE_FIELDS = new LinkedHashSet<>(Arrays.asList(
             "activeOrPassive", "uplItemSerialized", "uplLineUnitPrice", "uplLineQuantity",
             "uplLineDescription", "projectName", "uplLineItemCode"));
@@ -278,9 +293,7 @@ public class UplChangeRequestService {
             // clean up here.
             List<UplChangeRequestFailure> allFailures = new ArrayList<>(failures);
             for (UplChangeRequest cr : prepared) {
-                allFailures.add(new UplChangeRequestFailure(cr.getUplRecordNo(),
-                        "Not submitted — this line passed validation, but the whole batch was rejected "
-                                + "because other line(s) in the same submission failed."));
+                allFailures.add(new UplChangeRequestFailure(cr.getUplRecordNo(), NOT_SUBMITTED_COLLATERAL_REASON));
             }
             return new UplChangeRequestBatchResult(Collections.emptyList(), allFailures);
         }
@@ -365,10 +378,30 @@ public class UplChangeRequestService {
         String poNumber = stringField(fields, "poNumber");
         String poLineNumber = stringField(fields, "poLineNumber");
         String uplLineNo = stringField(fields, "uplLine");
+        String poType = stringField(fields, "poType");
+        String releaseNumber = stringField(fields, "releaseNumber");
         if (isBlank(poNumber) || isBlank(poLineNumber) || isBlank(uplLineNo)) {
             throw new UplValidationException("New UPL line needs poNumber, poLineNumber and uplLine");
         }
-        if (uplRepo.findFirstByPoNumberAndPoLineNumberAndUplLine(poNumber, poLineNumber, uplLineNo) != null) {
+        // tb_PurchaseOrderUPL.poType and .releaseNumber are NOT NULL with no DB default (unlike
+        // every other column prepareCreate populates, which allow NULL) - a blank cell here isn't
+        // caught by JPA/Hibernate at all, it only fails when the INSERT actually runs, surfacing
+        // as an opaque ConstraintViolationException with no indication of which field or row.
+        //
+        // poType is unconditionally required - the upload page's own MANDATORY_FIELDS agrees, so
+        // rejecting a blank one here is correct. releaseNumber is different: the upload page's
+        // CONDITIONALLY_MANDATORY_FIELDS only requires it when PO Type is "BLANKET" - a STANDARD
+        // PO legitimately has no release number. Rejecting every blank releaseNumber here would
+        // be stricter than the app's own business rule and wrongly block valid STANDARD-PO rows,
+        // so it's coerced to "" (satisfies the NOT NULL column) instead of validated as required.
+        if (isBlank(poType)) {
+            throw new UplValidationException("New UPL line " + uplLineNo + " under PO " + poNumber + " line "
+                    + poLineNumber + " needs poType");
+        }
+        if (isBlank(releaseNumber)) {
+            releaseNumber = "";
+        }
+        if (uplRepo.findFirstByPoNumberAndPoLineNumberAndUplLineAndStatusNot(poNumber, poLineNumber, uplLineNo, DELETED) != null) {
             throw new UplValidationException(
                     "UPL line " + uplLineNo + " already exists under PO " + poNumber + " line " + poLineNumber);
         }
@@ -378,6 +411,12 @@ public class UplChangeRequestService {
         }
 
         tb_PurchaseOrderUPL newLine = new tb_PurchaseOrderUPL();
+        // recordDatetime is NOT NULL DEFAULT CURRENT_TIMESTAMP at the DB level, but that default
+        // only applies when the column is omitted from the INSERT entirely - Hibernate always
+        // includes every mapped column, so leaving this field unset here sends an explicit NULL,
+        // which still violates NOT NULL. Every other tb_PurchaseOrderUPL insert/update path in
+        // this codebase (APIController) sets it explicitly for the same reason.
+        newLine.setRecordDatetime(new java.sql.Date(System.currentTimeMillis()));
         newLine.setPoNumber(poNumber);
         newLine.setPoLineNumber(poLineNumber);
         newLine.setUplLine(uplLineNo);
@@ -385,8 +424,8 @@ public class UplChangeRequestService {
         newLine.setManufacturer(stringField(fields, "manufacturer"));
         newLine.setCountryOfOrigin(stringField(fields, "countryOfOrigin"));
         newLine.setProjectName(stringField(fields, "projectName"));
-        newLine.setPoType(stringField(fields, "poType"));
-        newLine.setReleaseNumber(stringField(fields, "releaseNumber"));
+        newLine.setPoType(poType);
+        newLine.setReleaseNumber(releaseNumber);
         newLine.setPoLineItemType(stringField(fields, "poLineItemType"));
         newLine.setPoLineItemCode(stringField(fields, "poLineItemCode"));
         newLine.setPoLineDescription(stringField(fields, "poLineDescription"));
@@ -454,7 +493,7 @@ public class UplChangeRequestService {
         total += (newLineBatchTotals != null && newLineBatchTotals.containsKey(key))
                 ? newLineBatchTotals.get(key)
                 : newLine.getUplLineQuantity() * newLine.getUplLineUnitPrice();
-        if (ceiling > 0 && total > ceiling) {
+        if (ceiling > 0 && total > ceiling + LINE_TOTAL_EPSILON) {
             double difference = total - ceiling;
             throw new UplValidationException("UPL Line total cannot exceed PO Line Total Price. The combined total "
                     + "of all UPL line(s) under PO " + newLine.getPoNumber() + " line " + newLine.getPoLineNumber()
@@ -597,7 +636,7 @@ public class UplChangeRequestService {
                 total += sibling.getUplLineQuantity() * sibling.getUplLineUnitPrice();
             }
         }
-        if (ceiling > 0 && total > ceiling) {
+        if (ceiling > 0 && total > ceiling + LINE_TOTAL_EPSILON) {
             double difference = total - ceiling;
             throw new UplValidationException("UPL Line total cannot exceed PO Line Total Price. The combined total "
                     + "of all UPL line(s) under PO " + uplLine.getPoNumber() + " line " + uplLine.getPoLineNumber()

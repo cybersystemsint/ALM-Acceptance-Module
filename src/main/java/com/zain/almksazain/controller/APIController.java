@@ -732,8 +732,13 @@ public class APIController {
                 logger.info("poNumber | " + poNum);
 
                 if (recordNovalidation == 0) {
-                    List<tb_PurchaseOrderUPL> validateUPLCreation = purchaseOrderUPLRepo.findByPoNumberAndPoLineNumberAndUplLine(jsonObject.getString("poNumber"), jsonObject.getString("poLineNumber"), jsonObject.getString("uplLine"));
-                    if (!validateUPLCreation.isEmpty()) {
+                    // Excludes DELETED rows (a soft-deleted line, or the placeholder row left
+                    // behind by a rejected CREATE approval request) - otherwise re-submitting the
+                    // same PO+line+UPL-line combo after a rejection/deletion is permanently
+                    // blocked as a "duplicate" even though nothing live actually occupies it.
+                    tb_PurchaseOrderUPL existingUplLine = purchaseOrderUPLRepo.findFirstByPoNumberAndPoLineNumberAndUplLineAndStatusNot(
+                            jsonObject.getString("poNumber"), jsonObject.getString("poLineNumber"), jsonObject.getString("uplLine"), "DELETED");
+                    if (existingUplLine != null) {
                         duplicateLines.add(jsonObject.getString("uplLine") + " ");
                     }
                 } else {
@@ -907,11 +912,27 @@ public class APIController {
                 try {
                     UplChangeRequestBatchResult createResult = uplChangeRequestService.createChangeRequests(newLineItems, newLineCreatedBy, batchId);
                     if (!createResult.getFailures().isEmpty()) {
-                        List<String> reasons = new ArrayList<>();
+                        // Every line under the same failing PO+line gets the identical "combined
+                        // total..." reason, and every OTHER line in the batch gets the identical
+                        // generic "not submitted, collateral" reason - joining all of them
+                        // unfiltered produced a wall of dozens/hundreds of near-duplicate
+                        // sentences. Collapse to the distinct real reasons, plus one summary line
+                        // for how many lines were only skipped as collateral damage.
+                        Set<String> distinctReasons = new LinkedHashSet<>();
+                        int collateralCount = 0;
                         for (UplChangeRequestFailure f : createResult.getFailures()) {
-                            reasons.add(f.getReason());
+                            if (UplChangeRequestService.NOT_SUBMITTED_COLLATERAL_REASON.equals(f.getReason())) {
+                                collateralCount++;
+                            } else {
+                                distinctReasons.add(f.getReason());
+                            }
                         }
-                        responseinfo = "New UPL line(s) submitted for approval failed: " + String.join("; ", reasons);
+                        List<String> summary = new ArrayList<>(distinctReasons);
+                        if (collateralCount > 0) {
+                            summary.add(collateralCount + " other line(s) passed validation but weren't submitted "
+                                    + "because the batch was rejected.");
+                        }
+                        responseinfo = "New UPL line(s) submitted for approval failed: " + String.join("; ", summary);
                     } else {
                         responseinfo = responseinfo.contains("Success") || "Failed to save or data".equals(responseinfo)
                                 ? "Record Created Success"
@@ -919,6 +940,19 @@ public class APIController {
                     }
                 } catch (UplValidationException uplExc) {
                     responseinfo = "New UPL line(s) submitted for approval failed: " + uplExc.getMessage();
+                } catch (Exception unexpected) {
+                    // createChangeRequests() can throw more than UplValidationException (e.g. a
+                    // DB constraint violation) - letting anything else escape this try meant it
+                    // fell through to the outer catch below, which only handles
+                    // NumberFormatException/JSONException, so it propagated fully uncaught out of
+                    // the controller. The browser then sees that as a bare "Network Error"/
+                    // "Failed to fetch" (no readable response, however CORS on the error dispatch
+                    // is currently configured) instead of a proper error message, and nothing gets
+                    // logged with a stack trace to diagnose it from. Catch broadly here so this
+                    // endpoint always returns a clean response either way.
+                    logger.error("UPL CREATE unexpected failure", unexpected);
+                    responseinfo = "New UPL line(s) submitted for approval failed: Unexpected error - "
+                            + unexpected.getMessage();
                 }
             }
             logger.info("UPL CREATE RESPONSE |  " + responseinfo);
@@ -932,6 +966,9 @@ public class APIController {
 
         } catch (NumberFormatException | JSONException exc) {
             return response("Error", exc.getMessage());
+        } catch (Exception unexpected) {
+            logger.error("UPL CREATE unexpected failure outside the main processing block", unexpected);
+            return response("Error", "Unexpected error: " + unexpected.getMessage());
         }
     }
 
