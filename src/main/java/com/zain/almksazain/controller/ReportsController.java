@@ -42,6 +42,7 @@ import com.zain.almksazain.repo.dccpoviewrepo;
 import com.zain.almksazain.repo.poviewrepo;
 import com.zain.almksazain.repo.tbChargeAccountRepo;
 import com.zain.almksazain.repo.uplrepo;
+import com.zain.almksazain.services.UplChangeRequestService;
 import com.zain.almksazain.specs.PoFilterBuilder;
 import com.zain.almksazain.specs.QueryFilterBuilder;
 import com.zain.almksazain.specs.UplFilterBuilder;
@@ -76,6 +77,9 @@ public class ReportsController {
 
     @Autowired
     tbChargeAccountRepo chargeAccountRepo;
+
+    @Autowired
+    UplChangeRequestService uplChangeRequestService;
 
     @Autowired
     public ReportsController(JdbcTemplate jdbcTemplate) {
@@ -3345,6 +3349,36 @@ private String convertToSqlDate(String input) {
                     + "LEFT JOIN tb_PurchaseOrderUPL upl ON upl.recordNo = cr.uplRecordNo "
                     + "LEFT JOIN tb_UPL_Change_Request_Decision d ON d.changeRequestId = cr.recordId ";
 
+    /**
+     * CREATE rows here have no fieldChanges diff (nothing to diff a brand new line against), same
+     * as on the UPL Approval page - attaches the same "newLineDetails" snapshot
+     * enrichWithUplLineDetails gives the Approval grid/export, via
+     * UplChangeRequestService#buildNewLineDetailsForUplRecord, so this page's own detail dialog and
+     * export can show approvers the whole new line instead of nothing. Static (not an instance
+     * method) so ExportsController's own audit-trail export job - which shares
+     * UPL_AUDIT_TRAIL_SELECT/FROM with this controller already - can call it too, on rows it fetched
+     * itself. One lookup per distinct uplRecordNo per call: the LEFT JOIN on
+     * tb_UPL_Change_Request_Decision means a single request can appear as several rows (one per
+     * decided level), and the cache avoids repeating that request's lookup for each one.
+     */
+    static void attachNewLineDetailsToUplAuditRows(List<Map<String, Object>> rows,
+            UplChangeRequestService uplChangeRequestService) {
+        Map<Long, Map<String, Object>> newLineDetailsCache = new HashMap<>();
+        for (Map<String, Object> row : rows) {
+            if (!"CREATE".equals(String.valueOf(row.get("changeType")))) {
+                continue;
+            }
+            Object uplRecordNoObj = row.get("uplRecordNo");
+            if (uplRecordNoObj == null) {
+                continue;
+            }
+            Long uplRecordNo = ((Number) uplRecordNoObj).longValue();
+            Map<String, Object> newLineDetails = newLineDetailsCache.computeIfAbsent(
+                    uplRecordNo, uplChangeRequestService::buildNewLineDetailsForUplRecord);
+            row.put("newLineDetails", newLineDetails);
+        }
+    }
+
     @PostMapping(value = "/reports/getUplAuditTrail", produces = "application/json")
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
     public ResponseEntity<Map<String, Object>> getUplAuditTrail(@RequestBody String req) {
@@ -3374,6 +3408,7 @@ private String convertToSqlDate(String input) {
             sqlParams.add(size);
             sqlParams.add(offset);
             List<Map<String, Object>> result = jdbcTemplate.queryForList(sql, sqlParams.toArray());
+            attachNewLineDetailsToUplAuditRows(result, uplChangeRequestService);
 
             Map<String, Object> response = new HashMap<>();
             response.put("responseCode", "0");
@@ -3422,6 +3457,7 @@ private String convertToSqlDate(String input) {
             sqlParams.add(size);
             sqlParams.add(offset);
             List<Map<String, Object>> result = jdbcTemplate.queryForList(sql, sqlParams.toArray());
+            attachNewLineDetailsToUplAuditRows(result, uplChangeRequestService);
 
             Map<String, Object> response = new HashMap<>();
             response.put("reports", result);
