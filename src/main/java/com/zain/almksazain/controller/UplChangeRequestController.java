@@ -126,6 +126,11 @@ public class UplChangeRequestController {
                 failures.add(failure);
             }
         }
+        // One "UPL request(s) approved/rejected" email per distinct requester covering everything
+        // of theirs decided in THIS call, instead of decide() emailing per id - see
+        // notifyRequestersOfBatchDecision's own doc for why (and why in-app bell notifications,
+        // sent inside decide() itself via notifyRequesterInApp, stay per-record).
+        service.notifyRequestersOfBatchDecision(decided, payload.getDecision(), payload.getComments());
         Map<String, Object> body = success(decided);
         body.put("failures", failures);
         return ResponseEntity.ok(body);

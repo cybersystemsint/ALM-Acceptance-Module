@@ -1831,6 +1831,54 @@ public class ExportsController {
         UPL_CHANGE_FIELD_LABELS.put("uplLineItemCode", "UPL Line-Item Code");
     }
 
+    // Labels for the fuller field set enrichWithUplLineDetails attaches for CREATE requests under
+    // "newLineDetails" (UplChangeRequestService#buildNewLineDetails) - a superset of
+    // UPL_CHANGE_FIELD_LABELS above since a brand new line has no "changed field" to restrict to.
+    private static final Map<String, String> UPL_CREATE_FIELD_LABELS = new LinkedHashMap<>();
+    static {
+        UPL_CREATE_FIELD_LABELS.put("poLineItemType", "PO Line Item Type");
+        UPL_CREATE_FIELD_LABELS.put("poLineItemCode", "PO Line Item Code");
+        UPL_CREATE_FIELD_LABELS.put("poLineDescription", "PO Line Description");
+        UPL_CREATE_FIELD_LABELS.put("poLineQuantity", "PO Line Quantity");
+        UPL_CREATE_FIELD_LABELS.put("poLineUnitPrice", "PO Line Unit Price");
+        UPL_CREATE_FIELD_LABELS.put("uplLineItemType", "UPL Item Type");
+        UPL_CREATE_FIELD_LABELS.put("uplLineItemCode", "UPL Line-Item Code");
+        UPL_CREATE_FIELD_LABELS.put("uplLineDescription", "UPL Line Description");
+        UPL_CREATE_FIELD_LABELS.put("uplLineQuantity", "UPL Line Qty");
+        UPL_CREATE_FIELD_LABELS.put("uplLineUnitPrice", "UPL Unit Price");
+        UPL_CREATE_FIELD_LABELS.put("uom", "UOM");
+        UPL_CREATE_FIELD_LABELS.put("currency", "Currency");
+        UPL_CREATE_FIELD_LABELS.put("activeOrPassive", "Active/Passive");
+        UPL_CREATE_FIELD_LABELS.put("uplItemSerialized", "Serialized");
+        UPL_CREATE_FIELD_LABELS.put("projectName", "Project Name");
+        UPL_CREATE_FIELD_LABELS.put("poType", "PO Type");
+        UPL_CREATE_FIELD_LABELS.put("releaseNumber", "Release Number");
+        UPL_CREATE_FIELD_LABELS.put("substituteItemCode", "Substitute Item Code");
+        UPL_CREATE_FIELD_LABELS.put("remarks", "Remarks");
+        UPL_CREATE_FIELD_LABELS.put("vendor", "Vendor");
+        UPL_CREATE_FIELD_LABELS.put("manufacturer", "Manufacturer");
+        UPL_CREATE_FIELD_LABELS.put("countryOfOrigin", "Country of Origin");
+        UPL_CREATE_FIELD_LABELS.put("zainItemCategoryCode", "Zain Item Category Code");
+        UPL_CREATE_FIELD_LABELS.put("zainItemCategoryDescription", "Zain Item Category Description");
+    }
+
+    /** One {label, "", value} row per field of a CREATE request's new line - EVERY field the bulk
+     *  upload template can carry, including ones left blank/null in the upload (shown as "(empty)",
+     *  matching jsonValueToDisplayString's convention for UPDATE rows below) - not just the
+     *  populated ones, so the export always reflects the whole record actually committed to
+     *  tb_PurchaseOrderUPL. The "old value" column is always blank since there's nothing to diff a
+     *  brand new line against. Kept separate from parseFieldChangeRows (which the Audit Trail
+     *  export also shares and has no newLineDetails data of its own) rather than folding this in there. */
+    private List<String[]> createLineDetailRows(Map<String, Object> newLineDetails) {
+        List<String[]> rows = new ArrayList<>();
+        for (Map.Entry<String, String> labelEntry : UPL_CREATE_FIELD_LABELS.entrySet()) {
+            Object value = newLineDetails.get(labelEntry.getKey());
+            String valueStr = cellToString(value);
+            rows.add(new String[]{labelEntry.getValue(), "", valueStr.isBlank() ? "(empty)" : valueStr});
+        }
+        return rows;
+    }
+
     @PostMapping(value = "/upl/change-requests/export", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<Map<String, String>> startUplChangeRequestExport(@RequestBody Map<String, Object> body) {
         Integer userId = body != null && body.get("userId") != null
@@ -1979,10 +2027,18 @@ public class ExportsController {
                         : cellToString(requestedAtObj);
                 Object fieldChanges = cr.get("fieldChanges");
 
-                // One row per changed field (matching the grid's own "Change" detail dialog table)
-                // - every other column repeats the same request-level values on each of those rows.
-                for (String[] fieldChange : parseFieldChangeRows(
-                        changeTypeStr, fieldChanges != null ? fieldChanges.toString() : null, cr.get("recordId"))) {
+                // One row per changed field (matching the grid's own "Change" detail dialog table).
+                // CREATE has no fieldChanges diff (nothing to diff a brand new line against), but
+                // enrichWithUplLineDetails attaches the new line's own fields under "newLineDetails" -
+                // use those instead so a CREATE request gets one populated row per field here too,
+                // rather than parseFieldChangeRows's usual single blank row for an empty diff.
+                // Every other column repeats the same request-level values on each of those rows.
+                @SuppressWarnings("unchecked")
+                Map<String, Object> newLineDetails = (Map<String, Object>) cr.get("newLineDetails");
+                List<String[]> fieldRows = "CREATE".equals(changeTypeStr) && newLineDetails != null
+                        ? createLineDetailRows(newLineDetails)
+                        : parseFieldChangeRows(changeTypeStr, fieldChanges != null ? fieldChanges.toString() : null, cr.get("recordId"));
+                for (String[] fieldChange : fieldRows) {
                     Row row = sheet.createRow(rowNum++);
                     row.createCell(0).setCellValue(cellToString(cr.get("recordId")));
                     row.createCell(1).setCellValue(changeTypeStr != null ? changeTypeStr : "");
@@ -2164,6 +2220,7 @@ public class ExportsController {
             String sql = ReportsController.UPL_AUDIT_TRAIL_SELECT + ReportsController.UPL_AUDIT_TRAIL_FROM
                     + whereClause + " ORDER BY cr.recordId DESC, d.levelNo ASC";
             List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql, params.toArray());
+            ReportsController.attachNewLineDetailsToUplAuditRows(rows, uplChangeRequestService);
 
             if (rows.isEmpty()) {
                 job.setStatus(ExportJob.STATUS_FAILED);
@@ -2231,10 +2288,17 @@ public class ExportsController {
                 Object totalLevels = auditRow.get("totalLevels");
                 String levelText = cellToString(currentLevelNo) + " of " + cellToString(totalLevels);
 
-                for (String[] fieldChange : parseFieldChangeRows(
-                        changeType != null ? changeType.toString() : null,
-                        fieldChanges != null ? fieldChanges.toString() : null,
-                        auditRow.get("recordId"))) {
+                // CREATE has no fieldChanges diff (nothing to diff a brand new line against), but
+                // attachNewLineDetailsToUplAuditRows attaches the new line's own fields under
+                // "newLineDetails" (mirrors buildUplChangeRequestExcelToFile's own CREATE branch
+                // above) - use those instead of parseFieldChangeRows's usual single blank row.
+                @SuppressWarnings("unchecked")
+                Map<String, Object> newLineDetails = (Map<String, Object>) auditRow.get("newLineDetails");
+                String changeTypeStr = changeType != null ? changeType.toString() : null;
+                List<String[]> fieldRows = "CREATE".equals(changeTypeStr) && newLineDetails != null
+                        ? createLineDetailRows(newLineDetails)
+                        : parseFieldChangeRows(changeTypeStr, fieldChanges != null ? fieldChanges.toString() : null, auditRow.get("recordId"));
+                for (String[] fieldChange : fieldRows) {
                     Row row = sheet.createRow(rowNum++);
                     row.createCell(0).setCellValue(cellToString(auditRow.get("recordId")));
                     row.createCell(1).setCellValue(cellToString(auditRow.get("uplRecordNo")));
