@@ -30,6 +30,18 @@ public class tbCategoryApprovals implements Serializable {
 
     private int approvalLevelId;
 
+    // Snapshot of the referenced approval level's own number/department at
+    // the moment this row was created - approvalLevelId above is still kept
+    // (useful for diagnostics), but nothing should resolve a level's number
+    // or department by following that FK, since a later edit to that
+    // tb_Scope_Approval_Levels row (or the hierarchy-adjustment feature
+    // renumbering it) must not retroactively change what an already-created
+    // approval record shows. approverName below already followed this same
+    // copy-don't-reference pattern.
+    private Integer levelNumber;
+
+    private Integer departmentId;
+
     private int approverId;
 
     private String approverName;
@@ -75,6 +87,22 @@ public class tbCategoryApprovals implements Serializable {
 
     public void setApprovalLevelId(int approvalLevelId) {
         this.approvalLevelId = approvalLevelId;
+    }
+
+    public Integer getLevelNumber() {
+        return levelNumber;
+    }
+
+    public void setLevelNumber(Integer levelNumber) {
+        this.levelNumber = levelNumber;
+    }
+
+    public Integer getDepartmentId() {
+        return departmentId;
+    }
+
+    public void setDepartmentId(Integer departmentId) {
+        this.departmentId = departmentId;
     }
 
     public int getApproverId() {

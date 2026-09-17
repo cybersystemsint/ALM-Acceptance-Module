@@ -12,4 +12,5 @@ public interface TbCategoryApprovalRequestsRepository extends JpaRepository<tbCa
     List<tbCategoryApprovalRequests> findByAcceptanceRequestRecordNoOrderByRecordDateTimeDesc(int acceptanceRequestRecordNo);
     Optional<tbCategoryApprovalRequests> findFirstByAcceptanceRequestRecordNoOrderByRecordDateTimeDesc(int acceptanceRequestRecordNo);
     List<tbCategoryApprovalRequests> findByAcceptanceRequestRecordNoInOrderByRecordDateTimeDesc(List<Integer> recordNos);
+    Optional<tbCategoryApprovalRequests> findByAcceptanceRequestRecordNoAndStatus(int acceptanceRequestRecordNo, String status);
 }
