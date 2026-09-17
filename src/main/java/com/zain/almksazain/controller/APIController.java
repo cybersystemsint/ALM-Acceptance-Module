@@ -1574,7 +1574,10 @@ public class APIController {
                                         logger.info("dccRecord: " + dccRecord);
                                         String dccStatus = dccRecord != null ? String.valueOf(dccRecord.getStatus()) : "";
                                         logger.info("Request Status: " + dccStatus);
-                                        if (dccStatus.equalsIgnoreCase("approved-received") || dccStatus.equalsIgnoreCase("inprocess") || dccStatus.equalsIgnoreCase("approved") || dccStatus.equalsIgnoreCase("returned") || dccStatus.equalsIgnoreCase("request-info")) {
+                                        // "returned" (and "rejected") requests are corrected and resubmitted, so their
+                                        // serial numbers/items must be free to reuse in a new request - same exclusion
+                                        // combinedPurchaseOrderView and the tag-number conflict check already use.
+                                        if (dccStatus.equalsIgnoreCase("approved-received") || dccStatus.equalsIgnoreCase("inprocess") || dccStatus.equalsIgnoreCase("approved") || dccStatus.equalsIgnoreCase("request-info")) {
                                             alreadyRaisedDCC.add(serialNumber);
                                             itemCodesList.add(itemCode);
                                         }
@@ -1599,7 +1602,10 @@ public class APIController {
                                         String dccStatus = dccRecord != null ? String.valueOf(dccRecord.getStatus()) : "";
                                         logger.info("ActualdccRecord: " + dccRecord);
                                         logger.info("Actual Request Status: " + dccStatus);
-                                        if (dccStatus.equalsIgnoreCase("approved-received") || dccStatus.equalsIgnoreCase("inprocess") || dccStatus.equalsIgnoreCase("approved") || dccStatus.equalsIgnoreCase("returned") || dccStatus.equalsIgnoreCase("request-info")) {
+                                        // "returned" (and "rejected") requests are corrected and resubmitted, so their
+                                        // serial numbers/items must be free to reuse in a new request - same exclusion
+                                        // combinedPurchaseOrderView and the tag-number conflict check already use.
+                                        if (dccStatus.equalsIgnoreCase("approved-received") || dccStatus.equalsIgnoreCase("inprocess") || dccStatus.equalsIgnoreCase("approved") || dccStatus.equalsIgnoreCase("request-info")) {
                                             alreadyCreatedDCCwithactualItemCode.add(serialNumber);
                                             updateditemCodesList.add(actualItemCode);
                                         }
@@ -1972,7 +1978,7 @@ public class APIController {
             }
 
             if (!alreadyRaisedDCC.isEmpty()) {
-                errorMessages.add("Acceptance request for serial numbers " + String.join(", ", alreadyCreatedDCC) + "  with item code has already been raised. Kindly raise an acceptance request for a different serial Number ");
+                errorMessages.add("Acceptance request for serial numbers " + String.join(", ", alreadyRaisedDCC) + "  with item code " + String.join(", ", itemCodesList) + " has already been raised. Kindly raise an acceptance request for a different serial Number ");
             }
 
             if (!alreadyCreatedDCCwithactualItemCode.isEmpty()) {
