@@ -1284,11 +1284,20 @@ public class APIController {
                     JSONArray dcclineRequest = validatejsonObject.getJSONArray("lineItems");
 
                     //lets do something here for upl based first loop through all the line items
+                    // Keyed by "poLine|uplLine" so an excess can be attributed to the specific UPL
+                    // line, not just the PO line it sits under.
                     Map<String, Double> uplTotalsPerLine = new HashMap<>();
                     Map<String, Double> raisedUpldetails = new HashMap<>();
+                    // Non-UPL rows are keyed by PO line only (there is no UPL sub-line) - every row
+                    // in this submission that shares a PO line is summed together here so the
+                    // quantity check below runs once per PO line against the combined total, instead
+                    // of once per row against the same "already raised" figure.
+                    Map<String, Double> nonUplTotalsPerLine = new HashMap<>();
                     // Prior DCC value per (PO line, UPL) must be added once; repeating the same PO/UPL on
                     // multiple serialized rows would otherwise multiply Totalraised by the row count.
                     Set<String> priorRaisedCountedForPoLineUpl = new HashSet<>();
+                    // Ensures the non-UPL quantity check below runs once per PO line, not once per row.
+                    Set<String> checkedNonUplLines = new HashSet<>();
 
                     //INTERNAL UAT
                     for (int h = 0; h < dcclineRequest.length(); h++) {
@@ -1298,18 +1307,18 @@ public class APIController {
                         String deliveredQtyStr = validateObject.getString("deliveredQty");
                         double deliveredQty = Double.parseDouble(deliveredQtyStr);
                         if (validateuplline.length() != 0) {
+                            String poUplKey = validatelineNumber + "|" + validateuplline;
                             tb_PurchaseOrderUPL topRecord = purchaseOrderUPLRepo.findTopByPoNumberAndPoLineNumberAndUplLine(poNum, validatelineNumber, validateuplline);
                             double uplLineUnitPrice = topRecord.getUplLineUnitPrice();
                             double lineTotal = uplLineUnitPrice * deliveredQty;
                             double deliveredlineTotal = 0;
-                            uplTotalsPerLine.put(validatelineNumber, uplTotalsPerLine.getOrDefault(validatelineNumber, 0.0) + lineTotal);
+                            uplTotalsPerLine.put(poUplKey, uplTotalsPerLine.getOrDefault(poUplKey, 0.0) + lineTotal);
 
-                            List<String> allowedStatuses = Arrays.asList("approved-received", "inprocess", "approved", "returned", "request-info");
+                            List<String> allowedStatuses = Arrays.asList("approved-received", "inprocess", "approved", "request-info");
                             List<Integer> validRecordNos = dccrepo.findByPoNumberAndStatus(poNumber, allowedStatuses);
                             logger.info("Matching RecordNos UPLBASED: " + validRecordNos);
                             if (!validRecordNos.isEmpty()) {
-                                String priorKey = validatelineNumber + "|" + validateuplline;
-                                if (priorRaisedCountedForPoLineUpl.add(priorKey)) {
+                                if (priorRaisedCountedForPoLineUpl.add(poUplKey)) {
                                     List<String> dccIdStrings = validRecordNos.stream()
                                             .map(String::valueOf)
                                             .collect(Collectors.toList());
@@ -1319,9 +1328,11 @@ public class APIController {
 
                                     deliveredlineTotal = totalDeliveredQty * uplLineUnitPrice;
 
-                                    raisedUpldetails.put(validatelineNumber, raisedUpldetails.getOrDefault(validatelineNumber, 0.0) + deliveredlineTotal);
+                                    raisedUpldetails.put(poUplKey, raisedUpldetails.getOrDefault(poUplKey, 0.0) + deliveredlineTotal);
                                 }
                             }
+                        } else {
+                            nonUplTotalsPerLine.put(validatelineNumber, nonUplTotalsPerLine.getOrDefault(validatelineNumber, 0.0) + deliveredQty);
                         }
                     }
 
@@ -1462,36 +1473,30 @@ public class APIController {
 //                                }
 //                            }
                             //ADD A NEW VALIDATION HERE TO VALIDATE THE QUANTITY
-                            List<String> allowedStatuses = Arrays.asList("approved-received", "inprocess", "approved", "returned", "request-info");
+                            List<String> allowedStatuses = Arrays.asList("approved-received", "inprocess", "approved", "request-info");
                             List<Integer> validRecordNos = dccrepo.findByPoNumberAndStatus(poNumber, allowedStatuses);
                             logger.info("Matching RecordNos UPLBASED: " + validRecordNos);
                             //COMMMENTING THIS OUT FOR INTERNAL UAT
                             for (Map.Entry<String, Double> entry : uplTotalsPerLine.entrySet()) {
-                                String poLineNumber = entry.getKey();
+                                String poUplKey = entry.getKey();
+                                String[] poUplParts = poUplKey.split("\\|", 2);
+                                String poLineNumber = poUplParts[0];
+                                String uplLineNo = poUplParts.length > 1 ? poUplParts[1] : "";
                                 double uplTotal = entry.getValue();
-                                double poTotalprice = 0;
-                                double totalraisedacceptance = 0;
-                                double totalPending = 0;
 
                                 tbPurchaseOrder podetails = PurchaseOrderRepo.findTopByPoNumberAndLineNumber(poNumber, poLineNumber);
-                                Double poqtyNew = podetails != null ? podetails.getPoQtyNew() : 0;
-                                Double quantityDueNew = podetails != null ? podetails.getQuantityDueNew() : 0;
                                 Double poOrderQty = podetails != null ? podetails.getPoOrderQuantity() : 0;
                                 Double unitPrice = podetails != null ? podetails.getUnitPriceInPoCurrency() : 0;
-                                Double quantityDueOld = podetails != null ? podetails.getQuantityDueOld() : 0;
 
-                                for (Map.Entry<String, Double> raisedentry : raisedUpldetails.entrySet()) {
-                                    String raisedpoLineNumber = raisedentry.getKey();
-                                    double Totalraised = raisedentry.getValue();
-                                    if (raisedpoLineNumber.equalsIgnoreCase(poLineNumber)) {
-                                        totalraisedacceptance = Totalraised + uplTotal;
-                                        poTotalprice = poOrderQty * unitPrice;
-                                        totalPending = totalraisedacceptance / poTotalprice;
-                                        System.out.println("PO Total (poUnitPrice * poLinePrice): " + poTotalprice);
-                                        if (totalPending > poOrderQty) {
-                                            acceptanceQuantity.add(String.valueOf(totalraisedacceptance));
-                                        }
-                                    }
+                                double Totalraised = raisedUpldetails.getOrDefault(poUplKey, 0.0);
+                                double totalraisedacceptance = Totalraised + uplTotal;
+                                double poTotalprice = poOrderQty * unitPrice;
+                                double totalPending = poTotalprice > 0 ? totalraisedacceptance / poTotalprice : 0;
+                                System.out.println("PO Total (poUnitPrice * poLinePrice): " + poTotalprice);
+                                if (totalPending > poOrderQty) {
+                                    acceptanceQuantity.add("PO Line " + poLineNumber + " / UPL Line " + uplLineNo
+                                            + " (requested value " + formatQty(totalraisedacceptance)
+                                            + " exceeds the allowed value for " + formatQty(poOrderQty) + " ordered units)");
                                 }
                             }
 
@@ -1541,29 +1546,31 @@ public class APIController {
                             }
                             //HERE WE ARE ADDING A VALIDATION TO CHECK THERE IS A RAISED REQUEST
                             //AND DO THE SUM OF THE DELIVERED QUANTITIES
-                            //  COMMMENTING THIS OUT FOR INTERNAL UAT
-                            List<String> allowedStatuses = Arrays.asList("approved-received", "inprocess", "approved", "returned", "request-info");
-                            List<Integer> validRecordNos = dccrepo.findByPoNumberAndStatus(poNumber, allowedStatuses);
-                            logger.info("Matching RecordNos: " + validRecordNos);
+                            // Runs once per PO line (not once per row) - multiple non-UPL rows in this
+                            // submission sharing a PO line have already been summed into
+                            // nonUplTotalsPerLine, so the combined submitted quantity is checked
+                            // against the combined already-raised quantity a single time.
+                            if (checkedNonUplLines.add(polineitem)) {
+                                List<String> allowedStatuses = Arrays.asList("approved-received", "inprocess", "approved", "request-info");
+                                List<Integer> validRecordNos = dccrepo.findByPoNumberAndStatus(poNumber, allowedStatuses);
+                                logger.info("Matching RecordNos: " + validRecordNos);
 
-                            if (!validRecordNos.isEmpty()) {
+                                if (!validRecordNos.isEmpty()) {
 
-                                List<String> dccIdStrings = validRecordNos.stream()
-                                        .map(String::valueOf)
-                                        .collect(Collectors.toList());
-                                logger.info("Matching dccIdStrings: " + dccIdStrings);
-                                Double totalDeliveredQty = dcclnrepo.sumDeliveredQtyByDccIdsAndPoLineInfo(
-                                        dccIdStrings, poNumber, polineitem, "");
+                                    List<String> dccIdStrings = validRecordNos.stream()
+                                            .map(String::valueOf)
+                                            .collect(Collectors.toList());
+                                    logger.info("Matching dccIdStrings: " + dccIdStrings);
+                                    Double totalDeliveredQty = dcclnrepo.sumDeliveredQtyByDccIdsAndPoLineInfo(
+                                            dccIdStrings, poNumber, polineitem, "");
 
-                                logger.info("Total Delivered Qty for given PoNumber/Line/ " + totalDeliveredQty);
+                                    logger.info("Total Delivered Qty for given PoNumber/Line/ " + totalDeliveredQty);
 
-                                if (poqtyNew > 0) {
-                                    if ((passedQty + totalDeliveredQty) > quantityDueNew) {
-                                        acceptanceQuantity.add(String.valueOf(totalDeliveredQty));
-                                    }
-                                } else {
-                                    if ((passedQty + totalDeliveredQty) > quantityDueOld) {
-                                        acceptanceQuantity.add(String.valueOf(totalDeliveredQty));
+                                    double submittedForLine = nonUplTotalsPerLine.getOrDefault(polineitem, passedQty);
+                                    double threshold = (poqtyNew != null && poqtyNew > 0) ? quantityDueNew : quantityDueOld;
+                                    if ((submittedForLine + totalDeliveredQty) > threshold) {
+                                        acceptanceQuantity.add("PO Line " + polineitem + " (requesting " + formatQty(submittedForLine)
+                                                + ", already raised " + formatQty(totalDeliveredQty) + ", but only " + formatQty(threshold) + " due)");
                                     }
                                 }
                             }
@@ -1650,6 +1657,20 @@ public class APIController {
                     String newItem = "";
 
                     JSONArray dcclineRequestItems = validatejsonObject.getJSONArray("lineItems");
+
+                    // Sum this submission's non-UPL rows per PO line up front, so the quantity check
+                    // below runs once per PO line against the combined submitted total instead of
+                    // once per row against the same "already raised" figure.
+                    Map<String, Double> nonUplTotalsPerLineUpdate = new HashMap<>();
+                    for (int p = 0; p < dcclineRequestItems.length(); p++) {
+                        JSONObject lineForTotals = dcclineRequestItems.getJSONObject(p);
+                        if (lineForTotals.getString("uplLineNumber").isEmpty()) {
+                            String poLineForTotals = lineForTotals.getString("poLineNumber");
+                            double qtyForTotals = Double.parseDouble(lineForTotals.getString("deliveredQty"));
+                            nonUplTotalsPerLineUpdate.put(poLineForTotals, nonUplTotalsPerLineUpdate.getOrDefault(poLineForTotals, 0.0) + qtyForTotals);
+                        }
+                    }
+                    Set<String> checkedNonUplLinesUpdate = new HashSet<>();
 
                     for (int k = 0; k < dcclineRequestItems.length(); k++) {
 
@@ -1831,28 +1852,31 @@ public class APIController {
                             Double quantityDueNew = podetails != null ? podetails.getQuantityDueNew() : 0;
                             Double quantityDueOld = podetails != null ? podetails.getQuantityDueOld() : 0;
 
-                            //COMMMENTING THIS OUT FOR INTERNAL UAT
-                            List<String> allowedStatuses = Arrays.asList("approved-received", "inprocess", "approved", "returned", "request-info");
-                            List<Integer> validRecordNos = dccrepo.findByPoNumberAndStatus(poNumber, allowedStatuses);
-                            logger.info("Matching RecordNos: " + validRecordNos);
-                            if (!validRecordNos.isEmpty()) {
+                            // Runs once per PO line (not once per row), and excludes this same request's
+                            // own prior line items from "already raised" - otherwise resubmitting a
+                            // request would count its own pre-existing quantity twice: once as
+                            // "already raised" and once as the new submission.
+                            if (checkedNonUplLinesUpdate.add(polineitem)) {
+                                List<String> allowedStatuses = Arrays.asList("approved-received", "inprocess", "approved", "request-info");
+                                List<Integer> validRecordNos = dccrepo.findByPoNumberAndStatus(poNumber, allowedStatuses);
+                                logger.info("Matching RecordNos: " + validRecordNos);
+                                final long currentRecordNoForFilter = recordNoValidate;
                                 List<String> dccIdStrings = validRecordNos.stream()
+                                        .filter(id -> id != currentRecordNoForFilter)
                                         .map(String::valueOf)
                                         .collect(Collectors.toList());
-                                logger.info("Matching dccIdStrings: " + dccIdStrings);
-                                Double totalDeliveredQty = dcclnrepo.sumDeliveredQtyByDccIdsAndPoLineInfo(
-                                        dccIdStrings, poNumber, polineitem, "");
+                                if (!dccIdStrings.isEmpty()) {
+                                    logger.info("Matching dccIdStrings: " + dccIdStrings);
+                                    Double totalDeliveredQty = dcclnrepo.sumDeliveredQtyByDccIdsAndPoLineInfo(
+                                            dccIdStrings, poNumber, polineitem, "");
 
-                                logger.info("Total Delivered Qty for given PoNumber/Line/ " + totalDeliveredQty);
+                                    logger.info("Total Delivered Qty for given PoNumber/Line/ " + totalDeliveredQty);
 
-                                if (poqtyNew > 0) {
-                                    if ((passedQty + totalDeliveredQty) > quantityDueNew) {
-                                        acceptanceQuantity.add(String.valueOf(totalDeliveredQty));
-                                        // acceptanceQuantity.add(totalDeliveredQty);
-                                    }
-                                } else {
-                                    if ((passedQty + totalDeliveredQty) > quantityDueOld) {
-                                        acceptanceQuantity.add(String.valueOf(totalDeliveredQty));
+                                    double submittedForLine = nonUplTotalsPerLineUpdate.getOrDefault(polineitem, passedQty);
+                                    double threshold = (poqtyNew != null && poqtyNew > 0) ? quantityDueNew : quantityDueOld;
+                                    if ((submittedForLine + totalDeliveredQty) > threshold) {
+                                        acceptanceQuantity.add("PO Line " + polineitem + " (requesting " + formatQty(submittedForLine)
+                                                + ", already raised " + formatQty(totalDeliveredQty) + ", but only " + formatQty(threshold) + " due)");
                                     }
                                 }
                             }
@@ -2056,7 +2080,8 @@ public class APIController {
 
             //commenting for UAT
             if (!acceptanceQuantity.isEmpty()) {
-                errorMessages.add("The delivery quantity entered for this acceptance request will exceed the po Pending quantity. The total po delivered quantity is  " + acceptanceQuantity + " . ");
+                errorMessages.add("The delivery quantity entered for this acceptance request will exceed the po pending quantity for: "
+                        + String.join("; ", acceptanceQuantity) + ".");
             }
 
             if (!duplicateTagsInRequest.isEmpty()) {
