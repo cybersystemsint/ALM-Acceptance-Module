@@ -1859,16 +1859,24 @@ public class APIController {
                         }
                         if (serialNumber.length() > 1 && UpdateItemCode.length() > 1 && UpdateActualItemCode.length() < 1) {
                             validateDCCLineList = dcclnrepo.findBySerialNumberAndItemCode(serialNumber, UpdateItemCode);
-                            if (!validateDCCLineList.isEmpty()) {
-                                DCCLineItem topRecordNo = dcclnrepo.findTopBySerialNumberAndItemCode(serialNumber, UpdateItemCode);
-                                String dccid = topRecordNo != null ? String.valueOf(topRecordNo.getDccId()) : "";
-                                if (dccid.length() != 0) {
-                                    DCC dccRecord = dccrepo.findByRecordNo(Integer.parseInt(dccid));
-                                    String dccStatus = dccRecord != null ? String.valueOf(dccRecord.getStatus()) : "";
-                                    if (dccStatus.equalsIgnoreCase("approved-received") || dccStatus.equalsIgnoreCase("inprocess") || dccStatus.equalsIgnoreCase("approved") || dccStatus.equalsIgnoreCase("returned") || dccStatus.equalsIgnoreCase("request-info")) {
-                                        alreadyCreatedDCC.add(serialNumber);
-                                        itemCodesList.add(UpdateItemCode);
-                                    }
+                            // Check every request that already carries this serial+item combination, not just the
+                            // most recent one - a resubmission's own prior (now-being-updated) line item is very
+                            // often the highest recordNo match, which would otherwise mask a genuinely conflicting
+                            // OTHER request underneath it. Skip the record being edited; "returned"/"rejected" are
+                            // excluded from the blocking statuses since those requests are meant to be correctable
+                            // and resubmitted - same exclusion combinedPurchaseOrderView and the tag-number
+                            // conflict check already use.
+                            for (DCCLineItem conflictingLine : validateDCCLineList) {
+                                String dccid = conflictingLine.getDccId();
+                                if (dccid == null || dccid.isBlank() || Long.parseLong(dccid) == recordNoValidate) {
+                                    continue;
+                                }
+                                DCC dccRecord = dccrepo.findByRecordNo(Integer.parseInt(dccid));
+                                String dccStatus = dccRecord != null ? String.valueOf(dccRecord.getStatus()) : "";
+                                if (dccStatus.equalsIgnoreCase("approved-received") || dccStatus.equalsIgnoreCase("inprocess") || dccStatus.equalsIgnoreCase("approved") || dccStatus.equalsIgnoreCase("request-info")) {
+                                    alreadyCreatedDCC.add(serialNumber);
+                                    itemCodesList.add(UpdateItemCode);
+                                    break;
                                 }
                             }
                         }
@@ -1991,6 +1999,10 @@ public class APIController {
 
             if (!alreadyRaisedDCC.isEmpty()) {
                 errorMessages.add("Acceptance request for serial numbers " + String.join(", ", alreadyRaisedDCC) + "  with item code " + String.join(", ", itemCodesList) + " has already been raised. Kindly raise an acceptance request for a different serial Number ");
+            }
+
+            if (!alreadyCreatedDCC.isEmpty()) {
+                errorMessages.add("Acceptance request for serial numbers " + String.join(", ", alreadyCreatedDCC) + "  with item code " + String.join(", ", itemCodesList) + " has already been raised. Kindly raise an acceptance request for a different serial Number ");
             }
 
             if (!alreadyCreatedDCCwithactualItemCode.isEmpty()) {
