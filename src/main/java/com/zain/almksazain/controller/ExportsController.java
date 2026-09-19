@@ -93,6 +93,29 @@ public class ExportsController {
     private static final int MAX_PO_EXPORT_RECORDS = 250_000;
     private static final int MAX_UPL_AUDIT_TRAIL_EXPORT_RECORDS = 250_000;
 
+    // Each running export job holds a live SXSSFWorkbook plus an open streaming JDBC ResultSet
+    // for its full duration - individually bounded, but with no limit here several large exports
+    // (any mix of the 6 job types below) running at once could still exhaust the shared heap.
+    // Caps how many run concurrently; extra jobs simply wait (status stays PENDING) until a slot
+    // frees up rather than all starting immediately.
+    private static final int MAX_CONCURRENT_EXPORTS = 3;
+    private final java.util.concurrent.Semaphore exportSemaphore =
+            new java.util.concurrent.Semaphore(MAX_CONCURRENT_EXPORTS);
+
+    private void runWithExportGuard(Runnable job) {
+        try {
+            exportSemaphore.acquire();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return;
+        }
+        try {
+            job.run();
+        } finally {
+            exportSemaphore.release();
+        }
+    }
+
     @Autowired
     private JdbcTemplate jdbcTemplate;
     @Autowired
@@ -132,7 +155,7 @@ public class ExportsController {
         job.setCreatedAt(LocalDateTime.now());
         exportJobRepository.save(job);
 
-        CompletableFuture.runAsync(() -> runAcceptanceReportExportJob(jobId, req));
+        CompletableFuture.runAsync(() -> runWithExportGuard(() -> runAcceptanceReportExportJob(jobId, req)));
 
         Map<String, String> resp = new HashMap<>();
         resp.put("jobId", jobId);
@@ -294,7 +317,8 @@ public class ExportsController {
                     for (Object p : finalParams) ps.setObject(idx++, p);
 
                     CellStyle headerStyle = buildHeaderStyle(workbook);
-                    CellStyle numberStyle = buildNumberStyle(workbook);
+                    CellStyle wholeNumberStyle = buildWholeNumberStyle(workbook);
+                    CellStyle preciseNumberStyle = buildPreciseNumberStyle(workbook);
 
                     Sheet[] sheetRef = {workbook.createSheet(sheetName(1))};
                     sheetCount[0] = 1;
@@ -319,7 +343,7 @@ public class ExportsController {
                                         cell.setBlank();
                                     } else {
                                         cell.setCellValue(d);
-                                        cell.setCellStyle(numberStyle);
+                                        cell.setCellStyle(pickNumberStyle(d, wholeNumberStyle, preciseNumberStyle));
                                     }
                                 } else {
                                     String val = rs.getString(field);
@@ -479,7 +503,7 @@ public class ExportsController {
         job.setCreatedAt(LocalDateTime.now());
         exportJobRepository.save(job);
 
-        CompletableFuture.runAsync(() -> runAgingLikeReportExportJob(reportType, jobId, req));
+        CompletableFuture.runAsync(() -> runWithExportGuard(() -> runAgingLikeReportExportJob(reportType, jobId, req)));
 
         Map<String, String> resp = new HashMap<>();
         resp.put("jobId", jobId);
@@ -560,7 +584,8 @@ public class ExportsController {
 
         try {
             CellStyle headerStyle = buildHeaderStyle(workbook);
-            CellStyle numberStyle = buildNumberStyle(workbook);
+            CellStyle wholeNumberStyle = buildWholeNumberStyle(workbook);
+            CellStyle preciseNumberStyle = buildPreciseNumberStyle(workbook);
 
             Sheet[] sheetRef = {workbook.createSheet(sheetLabel)};
             sheetCount[0] = 1;
@@ -581,8 +606,9 @@ public class ExportsController {
                     if (value == null) {
                         cell.setBlank();
                     } else if (value instanceof Number) {
-                        cell.setCellValue(((Number) value).doubleValue());
-                        cell.setCellStyle(numberStyle);
+                        double d = ((Number) value).doubleValue();
+                        cell.setCellValue(d);
+                        cell.setCellStyle(pickNumberStyle(d, wholeNumberStyle, preciseNumberStyle));
                     } else {
                         cell.setCellValue(value.toString());
                     }
@@ -632,8 +658,74 @@ public class ExportsController {
     // ============================================================================
 
     @PostMapping(value = "/reports/v2/capitalizationReport/export")
-    public void exportCapitalizationReport(@RequestBody String req,
-                                           HttpServletResponse response) throws IOException {
+    public ResponseEntity<Map<String, String>> startCapitalizationReportExport(@RequestBody String req) {
+        logger.info("Capitalization report export requested : " + req);
+
+        String jobId = UUID.randomUUID().toString();
+        ExportJob job = new ExportJob();
+        job.setJobId(jobId);
+        job.setReportType("capitalizationReport");
+        job.setStatus(ExportJob.STATUS_PENDING);
+        job.setRowsWritten(0);
+        job.setSheetCount(0);
+        job.setCreatedAt(LocalDateTime.now());
+        exportJobRepository.save(job);
+
+        CompletableFuture.runAsync(() -> runWithExportGuard(() -> runCapitalizationReportExportJob(jobId, req)));
+
+        Map<String, String> resp = new HashMap<>();
+        resp.put("jobId", jobId);
+        return ResponseEntity.accepted().body(resp);
+    }
+
+    @GetMapping(value = "/reports/v2/capitalizationReport/export/{jobId}/status")
+    public ResponseEntity<?> getCapitalizationReportExportStatus(@PathVariable String jobId) {
+        Optional<ExportJob> jobOpt = exportJobRepository.findById(jobId);
+        if (jobOpt.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        ExportJob job = jobOpt.get();
+        Map<String, Object> resp = new HashMap<>();
+        resp.put("jobId", job.getJobId());
+        resp.put("status", job.getStatus());
+        resp.put("rowsWritten", job.getRowsWritten());
+        resp.put("sheetCount", job.getSheetCount());
+        resp.put("fileName", job.getFileName());
+        resp.put("errorMessage", job.getErrorMessage());
+        return ResponseEntity.ok(resp);
+    }
+
+    @GetMapping(value = "/reports/v2/capitalizationReport/export/{jobId}/download")
+    public ResponseEntity<?> downloadCapitalizationReportExport(@PathVariable String jobId) {
+        Optional<ExportJob> jobOpt = exportJobRepository.findById(jobId);
+        if (jobOpt.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        ExportJob job = jobOpt.get();
+        if (!ExportJob.STATUS_DONE.equals(job.getStatus())) {
+            return ResponseEntity.status(HttpStatus.CONFLICT)
+                    .body("Export not ready yet, status=" + job.getStatus());
+        }
+        File file = new File(job.getFilePath());
+        if (!file.exists()) {
+            return ResponseEntity.status(HttpStatus.GONE).body("Export file no longer available");
+        }
+
+        HttpHeaders responseHeaders = new HttpHeaders();
+        responseHeaders.setContentType(MediaType.parseMediaType(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"));
+        responseHeaders.add("Content-Disposition", "attachment; filename=" + job.getFileName());
+        return ResponseEntity.ok().headers(responseHeaders).body(new FileSystemResource(file));
+    }
+
+    private void runCapitalizationReportExportJob(String jobId, String req) {
+        ExportJob job = exportJobRepository.findById(jobId).orElse(null);
+        if (job == null) {
+            logger.error("Export job {} disappeared before it could start", jobId);
+            return;
+        }
+        job.setStatus(ExportJob.STATUS_RUNNING);
+        exportJobRepository.save(job);
 
         JsonObject obj = JsonParser.parseString(req).getAsJsonObject();
 
@@ -815,7 +907,8 @@ public class ExportsController {
                 + "LN2.tagNumber AS tagNumber, "
                 + "rec.approvedDate AS receiveddate "
                 + baseSql
-                + " GROUP BY LN2.recordNo";
+                + " GROUP BY LN2.recordNo"
+                + " ORDER BY DCC.recordNo DESC, LN2.recordNo DESC";
 
         List<String> columns = Arrays.asList(
                 "sequenceNo", "requestNo", "poNumber", "poLineNumber", "uplLineNumber",
@@ -833,53 +926,63 @@ public class ExportsController {
                 "PO Currency", "TAG Number", "Received Date"
         );
 
-        response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-        response.setHeader("Content-Disposition", "attachment; filename=capitalization_report.xlsx");
+        File dir = new File(exportDir);
+        if (!dir.exists()) {
+            dir.mkdirs();
+        }
+        String storedFileName = "capitalization_report_"
+                + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
+                + "_" + jobId.substring(0, 8) + ".xlsx";
+        File outFile = new File(dir, storedFileName);
 
         try {
             jdbcTemplate.execute("SET SESSION sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''))");
         } catch (Exception ignore) {}
 
         SXSSFWorkbook workbook = new SXSSFWorkbook(500);
+        long[] totalRows = {0};
+        int[] sheetCount = {0};
+        boolean success = false;
+        String errorMessage = null;
+
         try (Connection conn = dataSource.getConnection()) {
             try { conn.setAutoCommit(false); } catch (Exception ignore) {}
 
             try (PreparedStatement ps = conn.prepareStatement(sql,
                     ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY)) {
-                try { ps.setFetchSize(DEFAULT_FETCH_SIZE); } catch (Exception ignore) {}
+                try { ps.setFetchSize(Integer.MIN_VALUE); } catch (Exception ignore) {}
 
                 int idx = 1;
                 for (Object p : params) ps.setObject(idx++, p);
 
-                Sheet sheet = workbook.createSheet("Capitalization Report");
-                Row header = sheet.createRow(0);
-                for (int i = 0; i < headerNames.size(); i++) {
-                    header.createCell(i).setCellValue(headerNames.get(i));
-                }
-
+                CellStyle headerStyle = buildHeaderStyle(workbook);
                 CellStyle dateCellStyle = workbook.createCellStyle();
                 CreationHelper createHelper = workbook.getCreationHelper();
                 dateCellStyle.setDataFormat(createHelper.createDataFormat().getFormat("dd-mmm-yyyy"));
                 dateCellStyle.setAlignment(HorizontalAlignment.CENTER);
+                CellStyle wholeNumberStyle = buildWholeNumberStyle(workbook);
+                CellStyle preciseNumberStyle = buildPreciseNumberStyle(workbook);
 
-                AtomicInteger rowIdx     = new AtomicInteger(1);
-                AtomicInteger sequenceNo = new AtomicInteger(1);
+                Sheet[] sheetRef = {workbook.createSheet("Capitalization Report")};
+                sheetCount[0] = 1;
+                writeHeaderRow(sheetRef[0], headerNames, headerStyle);
+                int[] rowIdx = {1};
+                int[] sequenceNo = {1};
 
                 try (ResultSet rs = ps.executeQuery()) {
-                    ResultSetMetaData rsMd = rs.getMetaData();
-                    Set<String> rsColsLower = new HashSet<>();
-                    for (int i = 1; i <= rsMd.getColumnCount(); i++) {
-                        String label = rsMd.getColumnLabel(i);
-                        if (label != null) rsColsLower.add(label.toLowerCase(Locale.ROOT));
-                    }
-
                     while (rs.next()) {
-                        Row row = sheet.createRow(rowIdx.getAndIncrement());
+                        if (rowIdx[0] > MAX_ROWS_PER_SHEET) {
+                            sheetCount[0]++;
+                            sheetRef[0] = workbook.createSheet("Capitalization Report (" + sheetCount[0] + ")");
+                            writeHeaderRow(sheetRef[0], headerNames, headerStyle);
+                            rowIdx[0] = 1;
+                        }
+                        Row row = sheetRef[0].createRow(rowIdx[0]++);
                         for (int i = 0; i < columns.size(); i++) {
                             String colName = columns.get(i);
                             Cell cell = row.createCell(i);
                             if ("sequenceNo".equals(colName)) {
-                                cell.setCellValue(sequenceNo.getAndIncrement());
+                                cell.setCellValue(sequenceNo[0]++);
                             } else if ("receiveddate".equals(colName) || "isd".equals(colName)) {
                                 Timestamp ts = null;
                                 try { ts = rs.getTimestamp(colName); } catch (SQLException ignored) {}
@@ -891,33 +994,63 @@ public class ExportsController {
                                     cell.setBlank();
                                 }
                             } else {
-                                String val = null;
-                                try { val = rs.getString(colName); } catch (SQLException ex) {}
-                                cell.setCellValue(val == null ? "" : val);
+                                // Read as the ResultSet's native type so genuinely numeric columns
+                                // (quantity, faBookingAmount, poLineNumber, ...) land as real Excel
+                                // numbers with accurate, unrounded precision instead of text pulled
+                                // via getString() - same "0" / "0.####################" pairing used
+                                // by every other report export; see pickNumberStyle.
+                                Object raw = null;
+                                try { raw = rs.getObject(colName); } catch (SQLException ex) {}
+                                if (raw == null) {
+                                    cell.setBlank();
+                                } else if (raw instanceof Number) {
+                                    double d = ((Number) raw).doubleValue();
+                                    cell.setCellValue(d);
+                                    cell.setCellStyle(pickNumberStyle(d, wholeNumberStyle, preciseNumberStyle));
+                                } else {
+                                    cell.setCellValue(raw.toString());
+                                }
                             }
+                        }
+                        totalRows[0]++;
+                        if (totalRows[0] % PROGRESS_UPDATE_EVERY_N_ROWS == 0) {
+                            job.setRowsWritten(totalRows[0]);
+                            job.setSheetCount(sheetCount[0]);
+                            exportJobRepository.save(job);
                         }
                     }
                 }
-
-                try (BufferedOutputStream bos = new BufferedOutputStream(
-                        response.getOutputStream(), 128 * 1024)) {
-                    workbook.write(bos);
-                    bos.flush();
-                }
-                response.flushBuffer();
             }
+
+            try (FileOutputStream fos = new FileOutputStream(outFile)) {
+                workbook.write(fos);
+            }
+            success = true;
 
         } catch (Exception e) {
-            if (!response.isCommitted()) {
-                response.reset();
-                response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
-                response.setContentType("text/plain");
-                response.getWriter().write("Excel export failed: " + e.getMessage());
-                response.getWriter().flush();
-            }
+            logger.error("Capitalization report export job {} failed", jobId, e);
+            errorMessage = e.getMessage();
         } finally {
             workbook.dispose();
         }
+
+        LocalDateTime completedAt = LocalDateTime.now();
+        job.setRowsWritten(totalRows[0]);
+        job.setSheetCount(sheetCount[0]);
+        job.setCompletedAt(completedAt);
+        if (success) {
+            job.setStatus(ExportJob.STATUS_DONE);
+            job.setFileName("CAPITALIZATION_REPORT_"
+                    + completedAt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")) + ".xlsx");
+            job.setFilePath(outFile.getAbsolutePath());
+        } else {
+            job.setStatus(ExportJob.STATUS_FAILED);
+            job.setErrorMessage(errorMessage);
+            if (outFile.exists()) {
+                outFile.delete();
+            }
+        }
+        exportJobRepository.save(job);
     }
     // ============================================================================
     // Item Code Substitutes Export
@@ -1084,7 +1217,7 @@ public class ExportsController {
         job.setCreatedAt(LocalDateTime.now());
         exportJobRepository.save(job);
 
-        CompletableFuture.runAsync(() -> runPurchaseOrdersNestedExportJob(jobId, req));
+        CompletableFuture.runAsync(() -> runWithExportGuard(() -> runPurchaseOrdersNestedExportJob(jobId, req)));
 
         Map<String, String> resp = new HashMap<>();
         resp.put("jobId", jobId);
@@ -1561,10 +1694,37 @@ public class ExportsController {
         return style;
     }
 
-    private CellStyle buildNumberStyle(SXSSFWorkbook workbook) {
+    /** Whole-number cell style: plain "0", no decimal point at all. Excel's format engine
+     *  renders a literal "." unconditionally whenever a format section contains one, even if
+     *  every placeholder after it is an empty "#" - so a fractional-capable format alone would
+     *  print whole numbers like 3 as "3." with a trailing dot. Verified directly against
+     *  SheetJS's ssf (the reference implementation of Excel's number-format spec): "0.##" and
+     *  "#,##0.##" both render 3 as "3.". Use this style whenever the value has no fractional
+     *  part; see pickNumberStyle. */
+    private CellStyle buildWholeNumberStyle(SXSSFWorkbook workbook) {
         CellStyle style = workbook.createCellStyle();
-        style.setDataFormat(workbook.createDataFormat().getFormat("#,##0.##"));
+        style.setDataFormat(workbook.createDataFormat().getFormat("0"));
         return style;
+    }
+
+    /** Fractional-value cell style: full precision, no rounding. The previous single style used
+     *  here ("#,##0.##") only allowed 2 digits after the decimal point, silently rounding a
+     *  value like 282.449 to 282.45 on display - this format allows up to 20 significant
+     *  fractional digits (more than a double can meaningfully hold) so the displayed value
+     *  always matches what's stored, unrounded. Use this style only for genuinely fractional
+     *  values; see pickNumberStyle. */
+    private CellStyle buildPreciseNumberStyle(SXSSFWorkbook workbook) {
+        CellStyle style = workbook.createCellStyle();
+        style.setDataFormat(workbook.createDataFormat().getFormat("0.####################"));
+        return style;
+    }
+
+    /** Picks between the whole-number and full-precision styles based on whether this specific
+     *  value actually has a fractional part, so the cell always displays exactly what's stored:
+     *  an integer shows with no decimal point, and a fractional value shows in full. */
+    private CellStyle pickNumberStyle(double value, CellStyle wholeStyle, CellStyle preciseStyle) {
+        boolean isWhole = !Double.isNaN(value) && !Double.isInfinite(value) && value == Math.rint(value);
+        return isWhole ? wholeStyle : preciseStyle;
     }
 
     // ============================================================================
@@ -1621,7 +1781,7 @@ public class ExportsController {
         exportJobRepository.save(job);
 
         Map<String, String> effectiveFilters = filters != null ? filters : new HashMap<>();
-        CompletableFuture.runAsync(() -> runUplExportJob(jobId, effectiveFilters));
+        CompletableFuture.runAsync(() -> runWithExportGuard(() -> runUplExportJob(jobId, effectiveFilters)));
 
         Map<String, String> resp = new HashMap<>();
         resp.put("jobId", jobId);
@@ -1899,7 +2059,7 @@ public class ExportsController {
         job.setCreatedAt(LocalDateTime.now());
         exportJobRepository.save(job);
 
-        CompletableFuture.runAsync(() -> runUplChangeRequestExportJob(jobId, userId));
+        CompletableFuture.runAsync(() -> runWithExportGuard(() -> runUplChangeRequestExportJob(jobId, userId)));
 
         Map<String, String> resp = new HashMap<>();
         resp.put("jobId", jobId);
@@ -2136,7 +2296,7 @@ public class ExportsController {
         exportJobRepository.save(job);
 
         Map<String, String> effectiveFilters = filters != null ? filters : new HashMap<>();
-        CompletableFuture.runAsync(() -> runUplAuditTrailExportJob(jobId, effectiveFilters));
+        CompletableFuture.runAsync(() -> runWithExportGuard(() -> runUplAuditTrailExportJob(jobId, effectiveFilters)));
 
         Map<String, String> resp = new HashMap<>();
         resp.put("jobId", jobId);

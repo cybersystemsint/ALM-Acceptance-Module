@@ -1005,7 +1005,9 @@ private String calculateTotalAgingCustom(DCC dcc, tbCategoryApprovalRequests lat
      * FULL matching row set, unpaginated, regardless of whether filters is empty.
      */
     public List<Map<String, Object>> getFullAgingReportForExport(String supplierId, Map<String, String> filters) {
-        return loadAndFilterAgingRows(supplierId, filters, "incomplete", false);
+        List<Map<String, Object>> rows = loadAndFilterAgingRows(supplierId, filters, "incomplete", false);
+        rows.sort((a, b) -> Long.compare((Long) b.get("recordNo"), (Long) a.get("recordNo")));
+        return rows;
     }
 
     //  debug method for troubleshooting
