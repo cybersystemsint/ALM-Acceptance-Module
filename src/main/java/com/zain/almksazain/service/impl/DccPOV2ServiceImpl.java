@@ -4,6 +4,7 @@ import com.zain.almksazain.DTO.DccPOCombinedViewDTO;
 import com.zain.almksazain.DTO.DccPOLineItemDTO;
 import com.zain.almksazain.DTO.DccPOParentDTO;
 import com.zain.almksazain.DTO.DccPOResponseDTO;
+import com.zain.almksazain.DTO.ExportPageResult;
 import com.zain.almksazain.DTO.request.DccPORequest;
 import com.zain.almksazain.exception.DccPOProcessingException;
 import com.zain.almksazain.model.*;
@@ -52,7 +53,7 @@ public CompletableFuture<DccPOResponseDTO> getCombinedView(DccPORequest request)
     int page = Math.max(request.getPage(), 1);
     int size = Math.max(request.getSize(), 1);
 
-    FetchContext ctx = buildFetchContext(request, page, size, false);
+    FetchContext ctx = buildFetchContext(request, page, size, false, false);
     List<DccPOCombinedViewDTO> rows = fetchRows(ctx);
     rows = applyInMemoryFilters(rows, request);
 
@@ -75,17 +76,33 @@ public CompletableFuture<DccPOResponseDTO> getCombinedView(DccPORequest request)
 
 @Override
 @Async("taskExecutor")
-public CompletableFuture<List<DccPOCombinedViewDTO>> getExportData(DccPORequest request) {
-    FetchContext ctx = buildFetchContext(request, 1, Integer.MAX_VALUE, true);
+public CompletableFuture<ExportPageResult> getExportDataPage(DccPORequest request, int page, int size) {
+    // unboundedFetch=false keeps this page's DCC fetch bounded to `size`, so peak
+    // memory for an export stays roughly constant regardless of total result-set
+    // size; forceFullDetails=true keeps the same full line-item/approval detail
+    // the export has always needed (the paginated grid view defaults to
+    // parent-only rows, which would be missing columns the export requires).
+    FetchContext ctx = buildFetchContext(request, page, size, false, true);
     List<DccPOCombinedViewDTO> rows = fetchRows(ctx);
     rows = applyInMemoryFilters(rows, request);
-    logger.info("getExportData — {} rows", rows.size());
-    return CompletableFuture.completedFuture(rows);
+    boolean hasMore = !ctx.isEmpty && ctx.dccList.size() == size;
+    logger.info("getExportDataPage — page={} size={} — {} rows ({} DCC records), hasMore={}",
+            page, size, rows.size(), ctx.dccList.size(), hasMore);
+    return CompletableFuture.completedFuture(new ExportPageResult(rows, hasMore));
 }
 
     // ─── FETCH CONTEXT ────────────────────────────────────────────────────────
 
- private FetchContext buildFetchContext(DccPORequest req, int page, int size, boolean exporting) {
+ /**
+  * @param unboundedFetch true fetches every matching DCC in one go (no LIMIT) - only ever
+  *                        safe for small, hard-filtered result sets; exports must always
+  *                        pass false and page through {@code size}-sized chunks instead.
+  * @param forceFullDetails true always hydrates line items/UPL/approval detail regardless
+  *                          of the recordNo-search special case; exports need this since
+  *                          every detail column can appear in the output file.
+  */
+ private FetchContext buildFetchContext(DccPORequest req, int page, int size,
+         boolean unboundedFetch, boolean forceFullDetails) {
 
     // ── Approver pre-filter ────────────────────────────────────────────────
     Set<Long> allowedIds = null;
@@ -129,7 +146,7 @@ public CompletableFuture<List<DccPOCombinedViewDTO>> getExportData(DccPORequest 
 
     // ── Fetch DCCs ────────────────────────────────────────────────────────
     Page<DCC> dccPage;
-    if (exporting) {
+    if (unboundedFetch) {
         List<DCC> all = tbDccRepository.findAll(spec, Sort.by(Sort.Direction.DESC, "recordNo"));
         dccPage = new org.springframework.data.domain.PageImpl<>(all);
     } else {
@@ -142,14 +159,14 @@ public CompletableFuture<List<DccPOCombinedViewDTO>> getExportData(DccPORequest 
     // Otherwise use the DB count.
     long totalFiltered = (approverFilteredTotal >= 0)
             ? approverFilteredTotal
-            : (exporting ? dccList.size() : dccPage.getTotalElements());
+            : (unboundedFetch ? dccList.size() : dccPage.getTotalElements());
 
     logger.info("DB returned {} DCC records (totalFiltered={})", dccList.size(), totalFiltered);
 
     if (dccList.isEmpty()) return FetchContext.empty();
     validatePoNumbers(dccList);
 
-    boolean fetchParentOnly = !exporting
+    boolean fetchParentOnly = !forceFullDetails
             && !(hasValue(req.getColumnName())
                     && req.getColumnName().equalsIgnoreCase("recordNo")
                     && hasValue(req.getSearchQuery()));

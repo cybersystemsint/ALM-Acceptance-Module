@@ -2,6 +2,7 @@ package com.zain.almksazain.controller;
 
 import com.zain.almksazain.DTO.DccPOCombinedViewDTO;
 import com.zain.almksazain.DTO.DccPOResponseDTO;
+import com.zain.almksazain.DTO.ExportPageResult;
 import com.zain.almksazain.DTO.request.DccPORequest;
 import com.zain.almksazain.model.ExportJob;
 import com.zain.almksazain.repo.ExportJobRepository;
@@ -78,11 +79,14 @@ public class DccPOV2Controller {
     private static final Logger logger = LogManager.getLogger(DccPOV2Controller.class);
 
     private static final long TIMEOUT_MS         = 120_000L;
+    // Per-page fetch timeout - the export loop calls getExportDataPage once per chunk now
+    // rather than once for the whole result set, so this bounds a single chunk's fetch time,
+    // not the overall job (a large export naturally takes longer in wall-clock time, but each
+    // individual page fetch is expected to complete well within this).
     private static final long EXPORT_TIMEOUT_MS  = 300_000L;
     private static final int  MAX_CONCURRENT_EXPORTS = 3;
     private static final int  EXCEL_WINDOW_SIZE  = 100;
     private static final int  MAX_ROWS_PER_SHEET = 1_000_000;
-    private static final long PROGRESS_UPDATE_EVERY_N_ROWS = 5_000;
 
     // Column headers shared by Excel and CSV builders
     private static final String[] HEADERS = {
@@ -203,6 +207,12 @@ public class DccPOV2Controller {
         return ResponseEntity.ok().headers(headers).body(new FileSystemResource(file));
     }
 
+    // Chunk size for the export's DCC fetch - the whole point of paging here is
+    // to bound how many DCCs (and their related PO/UPL/line-item/approval data)
+    // are in memory at once, so this must stay well below "the whole dataset"
+    // regardless of how large the underlying table grows.
+    private static final int EXPORT_CHUNK_SIZE = 500;
+
     private void runCombinedViewExportJob(String jobId, DccPORequest request) {
         ExportJob job = exportJobRepository.findById(jobId).orElse(null);
         if (job == null) {
@@ -213,11 +223,35 @@ public class DccPOV2Controller {
         job.setStatus(ExportJob.STATUS_RUNNING);
         exportJobRepository.save(job);
 
+        WorkbookState state = null;
         try {
-            List<DccPOCombinedViewDTO> rows =
-                    service.getExportData(request).get(EXPORT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            state = openWorkbookState();
 
-            if (rows.isEmpty()) {
+            long totalWritten = 0;
+            boolean anyRows = false;
+            int page = 1;
+            while (true) {
+                ExportPageResult pageResult = service.getExportDataPage(request, page, EXPORT_CHUNK_SIZE)
+                        .get(EXPORT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+
+                List<DccPOCombinedViewDTO> chunkRows = pageResult.getRows();
+                if (!chunkRows.isEmpty()) {
+                    anyRows = true;
+                    totalWritten += writeChunkToWorkbook(state, chunkRows);
+                    job.setRowsWritten(totalWritten);
+                    job.setSheetCount(state.sheetCount);
+                    exportJobRepository.save(job);
+                    logger.info("Export job {} — page {} written, {} rows so far", jobId, page, totalWritten);
+                }
+
+                if (!pageResult.hasMore()) {
+                    break;
+                }
+                page++;
+            }
+
+            if (!anyRows) {
+                state.workbook.dispose();
                 job.setStatus(ExportJob.STATUS_FAILED);
                 job.setErrorMessage("No data found for the given filters.");
                 job.setCompletedAt(LocalDateTime.now());
@@ -234,7 +268,7 @@ public class DccPOV2Controller {
                     + "_" + jobId.substring(0, 8) + ".xlsx";
             File outFile = new File(dir, storedFileName);
 
-            int sheetCount = buildExcelToFile(rows, outFile, job);
+            finalizeWorkbook(state, outFile);
 
             LocalDateTime completedAt = LocalDateTime.now();
             job.setStatus(ExportJob.STATUS_DONE);
@@ -242,14 +276,21 @@ public class DccPOV2Controller {
             job.setFileName("ACCEPTANCE_REQUESTS" + filterTag + "_"
                     + completedAt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")) + ".xlsx");
             job.setFilePath(outFile.getAbsolutePath());
-            job.setRowsWritten(rows.size());
-            job.setSheetCount(sheetCount);
+            job.setRowsWritten(totalWritten);
+            job.setSheetCount(state.sheetCount);
             job.setCompletedAt(completedAt);
             exportJobRepository.save(job);
-            logger.info("Export job {} complete — {} rows, {} sheet(s)", jobId, rows.size(), sheetCount);
+            logger.info("Export job {} complete — {} rows, {} sheet(s)", jobId, totalWritten, state.sheetCount);
 
         } catch (Exception ex) {
             logger.error("Export job {} failed", jobId, ex);
+            if (state != null) {
+                try {
+                    state.workbook.dispose();
+                } catch (Exception disposeEx) {
+                    logger.warn("Failed to dispose workbook for failed export job {}", jobId, disposeEx);
+                }
+            }
             job.setStatus(ExportJob.STATUS_FAILED);
             job.setErrorMessage(ex.getMessage());
             job.setCompletedAt(LocalDateTime.now());
@@ -279,10 +320,81 @@ public class DccPOV2Controller {
         return sheetNumber == 1 ? "DCC PO Data" : "DCC PO Data (" + sheetNumber + ")";
     }
 
-    /** Writes the workbook straight to disk and reports progress on the given job as it goes,
-     *  rolling over to a new sheet every MAX_ROWS_PER_SHEET rows. Returns the final sheet count. */
-    private int buildExcelToFile(List<DccPOCombinedViewDTO> rows, File outFile, ExportJob job) throws Exception {
-        List<DccPOCombinedViewDTO> sorted = rows.stream()
+    /** Holds an open, in-progress workbook plus the running position within it, so a large
+     *  export can be written page-by-page (see {@link #writeChunkToWorkbook}) without ever
+     *  holding more than one page's worth of row data in memory at a time - only the
+     *  SXSSFWorkbook's own small on-disk-backed row window lives for the life of the job. */
+    private static final class WorkbookState {
+        final SXSSFWorkbook workbook;
+        final CellStyle hdrStyle;
+        final CellStyle dateStyle;
+        final CellStyle preciseQtyStyle;
+        final CellStyle wholeQtyStyle;
+        final SimpleDateFormat dateFmt;
+        Sheet sheet;
+        int sheetCount;
+        int rowNum;
+
+        WorkbookState(SXSSFWorkbook workbook, CellStyle hdrStyle, CellStyle dateStyle,
+                CellStyle preciseQtyStyle, CellStyle wholeQtyStyle, SimpleDateFormat dateFmt, Sheet sheet) {
+            this.workbook = workbook;
+            this.hdrStyle = hdrStyle;
+            this.dateStyle = dateStyle;
+            this.preciseQtyStyle = preciseQtyStyle;
+            this.wholeQtyStyle = wholeQtyStyle;
+            this.dateFmt = dateFmt;
+            this.sheet = sheet;
+            this.sheetCount = 1;
+            this.rowNum = 1;
+        }
+    }
+
+    private WorkbookState openWorkbookState() {
+        SXSSFWorkbook wb = new SXSSFWorkbook(EXCEL_WINDOW_SIZE);
+        CreationHelper ch = wb.getCreationHelper();
+
+        CellStyle hdrStyle = wb.createCellStyle();
+        Font hdrFont = wb.createFont();
+        hdrFont.setBold(true);
+        hdrStyle.setFont(hdrFont);
+
+        CellStyle dateStyle = wb.createCellStyle();
+        dateStyle.setDataFormat(ch.createDataFormat().getFormat("dd-MM-yyyy"));
+
+        // Excel's default "General" format only displays ~11 significant digits, silently
+        // rounding near-whole values (e.g. a corrupted 4.000000000000003 delivered qty) to a
+        // clean "4" on screen even though the stored cell value is unchanged. "#" placeholders
+        // (vs "0") don't force trailing zeros, so genuine whole numbers still show cleanly
+        // (80 not 80.0000...) while values with real fractional precision show it in full.
+        // Excel format strings can't conditionally hide a literal character - the "." here
+        // always renders even when every "#" after it is empty - so this format alone would
+        // print whole numbers as "80." with a trailing dot. wholeQtyStyle (plain "0", no
+        // decimal point at all) is used instead whenever a value has no fractional part;
+        // see setQtyCell.
+        CellStyle preciseQtyStyle = wb.createCellStyle();
+        preciseQtyStyle.setDataFormat(ch.createDataFormat().getFormat("0.####################"));
+
+        CellStyle wholeQtyStyle = wb.createCellStyle();
+        wholeQtyStyle.setDataFormat(ch.createDataFormat().getFormat("0"));
+
+        SimpleDateFormat dateFmt = new SimpleDateFormat("d-MMM-yyyy", Locale.ENGLISH);
+
+        Sheet sheet = wb.createSheet(sheetName(1));
+        WorkbookState state = new WorkbookState(wb, hdrStyle, dateStyle, preciseQtyStyle, wholeQtyStyle, dateFmt, sheet);
+        writeHeaderRow(state.sheet, state.hdrStyle);
+        return state;
+    }
+
+    /** Writes one page's worth of rows into the already-open workbook, rolling over to a new
+     *  sheet every MAX_ROWS_PER_SHEET rows. Only this one page's DTOs are ever in memory at
+     *  once - the caller discards {@code chunkRows} after this returns and fetches the next
+     *  page, so peak memory no longer grows with the total export size. Returns the number of
+     *  rows written from this chunk. */
+    private long writeChunkToWorkbook(WorkbookState state, List<DccPOCombinedViewDTO> chunkRows) {
+        // Each page is already fetched in descending-recordNo order, so sorting/grouping here
+        // only needs to hold this page's rows, not the whole export - it keeps each DCC's line
+        // items written together contiguously, exactly as the pre-chunking version did.
+        List<DccPOCombinedViewDTO> sorted = chunkRows.stream()
                 .sorted(Comparator.comparing(DccPOCombinedViewDTO::getDccRecordNo,
                         Comparator.nullsLast(Comparator.reverseOrder())))
                 .collect(Collectors.toList());
@@ -291,97 +403,68 @@ public class DccPOV2Controller {
                 .collect(Collectors.groupingBy(DccPOCombinedViewDTO::getDccRecordNo,
                         LinkedHashMap::new, Collectors.toList()));
 
-        SimpleDateFormat dateFmt = new SimpleDateFormat("d-MMM-yyyy", Locale.ENGLISH);
-
-        try (SXSSFWorkbook wb = new SXSSFWorkbook(EXCEL_WINDOW_SIZE)) {
-            CreationHelper ch = wb.getCreationHelper();
-
-            CellStyle hdrStyle = wb.createCellStyle();
-            Font hdrFont = wb.createFont();
-            hdrFont.setBold(true);
-            hdrStyle.setFont(hdrFont);
-
-            CellStyle dateStyle = wb.createCellStyle();
-            dateStyle.setDataFormat(ch.createDataFormat().getFormat("dd-MM-yyyy"));
-
-            // Excel's default "General" format only displays ~11 significant digits, silently
-            // rounding near-whole values (e.g. a corrupted 4.000000000000003 delivered qty) to a
-            // clean "4" on screen even though the stored cell value is unchanged. "#" placeholders
-            // (vs "0") don't force trailing zeros, so genuine whole numbers still show cleanly
-            // (80 not 80.0000...) while values with real fractional precision show it in full.
-            CellStyle preciseQtyStyle = wb.createCellStyle();
-            preciseQtyStyle.setDataFormat(ch.createDataFormat().getFormat("0.####################"));
-
-            int sheetCount = 1;
-            Sheet sheet = wb.createSheet(sheetName(sheetCount));
-            writeHeaderRow(sheet, hdrStyle);
-
-            int rowNum = 1;
-            long written = 0;
-            for (Map.Entry<Long, List<DccPOCombinedViewDTO>> entry : grouped.entrySet()) {
-                DccPOCombinedViewDTO first = entry.getValue().get(0);
-                for (DccPOCombinedViewDTO dto : entry.getValue()) {
-                    if (rowNum > MAX_ROWS_PER_SHEET) {
-                        sheetCount++;
-                        sheet = wb.createSheet(sheetName(sheetCount));
-                        writeHeaderRow(sheet, hdrStyle);
-                        rowNum = 1;
-                    }
-
-                    Row row = sheet.createRow(rowNum++);
-                    int col = 0;
-
-                    // Parent-level
-                    setCell(row, col++, first.getDccRecordNo());
-                    setCell(row, col++, first.getDccPoNumber());
-                    setCell(row, col++, first.getProjectName());
-                    setCell(row, col++, first.getDccAcceptanceType());
-                    setCell(row, col++, first.getDccStatus());
-                    col = setDateCell(row, col, first.getDccCreatedDate(), dateStyle, dateFmt);
-                    col = setDateCell(row, col, first.getDateApproved(),   dateStyle, dateFmt);
-                    setCell(row, col++, first.getVendorName());
-                    setCell(row, col++, first.getCreatedBy());
-                    setCell(row, col++, first.getApprovalCount() != null ? first.getApprovalCount() : 0);
-                    setCell(row, col++, first.getPendingApprovers());
-                    setCell(row, col++, first.getUserAging());
-                    setCell(row, col++, first.getTotalAging());
-                    setCell(row, col++, first.getVendorComment());
-                    setCell(row, col++, first.getApproverComment());
-
-                    // Line-level
-                    setCell(row, col++, dto.getLineNumber());
-                    setCell(row, col++, dto.getUplLineNumber());
-                    setCell(row, col++, dto.getLnProductSerialNo());
-                    setCell(row, col++, dto.getItemPartNumber());
-                    setCell(row, col++, dto.getActualItemCode());
-                    setCell(row, col++, dto.getUplLineItemCode());
-                    setCell(row, col++, dto.getpoAcceptanceQty() != null ? dto.getpoAcceptanceQty() : 0, preciseQtyStyle);
-                    setCell(row, col++, dto.getPoLineDescription());
-                    setCell(row, col++, dto.getUplLineDescription());
-                    setCell(row, col++, dto.getPoPendingQuantity(), preciseQtyStyle);
-                    setCell(row, col++, dto.getLnDeliveredQty(), preciseQtyStyle);
-                    setCell(row, col++, dto.getLnLocationName());
-                    setCell(row, col++, dto.getLnScopeOfWork());
-                    col = setDateCell(row, col, dto.getLnInserviceDate(), dateStyle, dateFmt);
-                    setCell(row, col++, dto.getLinkId());
-                    setCell(row, col++, dto.getTagNumber());
-                    setCell(row, col++, dto.getLnRemarks());
-
-                    written++;
-                    if (written % PROGRESS_UPDATE_EVERY_N_ROWS == 0) {
-                        job.setRowsWritten(written);
-                        job.setSheetCount(sheetCount);
-                        exportJobRepository.save(job);
-                    }
+        long written = 0;
+        for (Map.Entry<Long, List<DccPOCombinedViewDTO>> entry : grouped.entrySet()) {
+            DccPOCombinedViewDTO first = entry.getValue().get(0);
+            for (DccPOCombinedViewDTO dto : entry.getValue()) {
+                if (state.rowNum > MAX_ROWS_PER_SHEET) {
+                    state.sheetCount++;
+                    state.sheet = state.workbook.createSheet(sheetName(state.sheetCount));
+                    writeHeaderRow(state.sheet, state.hdrStyle);
+                    state.rowNum = 1;
                 }
-            }
 
-            try (FileOutputStream fos = new FileOutputStream(outFile)) {
-                wb.write(fos);
+                Row row = state.sheet.createRow(state.rowNum++);
+                int col = 0;
+
+                // Parent-level
+                setCell(row, col++, first.getDccRecordNo());
+                setCell(row, col++, first.getDccPoNumber());
+                setCell(row, col++, first.getProjectName());
+                setCell(row, col++, first.getDccAcceptanceType());
+                setCell(row, col++, first.getDccStatus());
+                col = setDateCell(row, col, first.getDccCreatedDate(), state.dateStyle, state.dateFmt);
+                col = setDateCell(row, col, first.getDateApproved(),   state.dateStyle, state.dateFmt);
+                setCell(row, col++, first.getVendorName());
+                setCell(row, col++, first.getCreatedBy());
+                setCell(row, col++, first.getApprovalCount() != null ? first.getApprovalCount() : 0);
+                setCell(row, col++, first.getPendingApprovers());
+                setCell(row, col++, first.getUserAging());
+                setCell(row, col++, first.getTotalAging());
+                setCell(row, col++, first.getVendorComment());
+                setCell(row, col++, first.getApproverComment());
+
+                // Line-level
+                setCell(row, col++, dto.getLineNumber());
+                setCell(row, col++, dto.getUplLineNumber());
+                setCell(row, col++, dto.getLnProductSerialNo());
+                setCell(row, col++, dto.getItemPartNumber());
+                setCell(row, col++, dto.getActualItemCode());
+                setCell(row, col++, dto.getUplLineItemCode());
+                setQtyCell(row, col++, dto.getpoAcceptanceQty() != null ? dto.getpoAcceptanceQty() : 0.0, state);
+                setCell(row, col++, dto.getPoLineDescription());
+                setCell(row, col++, dto.getUplLineDescription());
+                setQtyCell(row, col++, dto.getPoPendingQuantity(), state);
+                setQtyCell(row, col++, dto.getLnDeliveredQty(), state);
+                setCell(row, col++, dto.getLnLocationName());
+                setCell(row, col++, dto.getLnScopeOfWork());
+                col = setDateCell(row, col, dto.getLnInserviceDate(), state.dateStyle, state.dateFmt);
+                setCell(row, col++, dto.getLinkId());
+                setCell(row, col++, dto.getTagNumber());
+                setCell(row, col++, dto.getLnRemarks());
+
+                written++;
             }
-            wb.dispose();
-            return sheetCount;
         }
+        return written;
+    }
+
+    /** Flushes the finished workbook to disk and releases its temp resources. */
+    private void finalizeWorkbook(WorkbookState state, File outFile) throws Exception {
+        try (FileOutputStream fos = new FileOutputStream(outFile)) {
+            state.workbook.write(fos);
+        }
+        state.workbook.dispose();
     }
 
     private void writeHeaderRow(Sheet sheet, CellStyle hdrStyle) {
@@ -405,6 +488,23 @@ public class DccPOV2Controller {
     private void setCell(Row row, int col, Object value, CellStyle style) {
         setCell(row, col, value);
         row.getCell(col).setCellStyle(style);
+    }
+
+    /** Writes a quantity value at full precision without ever showing a trailing decimal
+     *  point on whole numbers. Excel format strings render literal characters unconditionally,
+     *  so a single format like "0.####################" always prints the "." even when every
+     *  "#" after it is empty (e.g. 1.0 -&gt; "1." instead of "1") - there is no format-string-only
+     *  way to hide it. Deciding the style per value in code sidesteps that: whole numbers get a
+     *  plain "0" format (no decimal point at all), and genuinely fractional values get the
+     *  full-precision format, so the displayed value always matches what's stored - an integer
+     *  shows as an integer, and something like 2.000000000043 shows in full, unrounded. */
+    private void setQtyCell(Row row, int col, Double value, WorkbookState state) {
+        if (value == null) {
+            setCell(row, col, null);
+            return;
+        }
+        boolean isWhole = !value.isNaN() && !value.isInfinite() && value == Math.rint(value);
+        setCell(row, col, value, isWhole ? state.wholeQtyStyle : state.preciseQtyStyle);
     }
 
     private int setDateCell(Row row, int col, String dateStr,

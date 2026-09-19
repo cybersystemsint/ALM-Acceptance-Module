@@ -1,10 +1,9 @@
 package com.zain.almksazain.service;
 
-import com.zain.almksazain.DTO.DccPOCombinedViewDTO;
 import com.zain.almksazain.DTO.DccPOResponseDTO;
+import com.zain.almksazain.DTO.ExportPageResult;
 import com.zain.almksazain.DTO.request.DccPORequest;
 
-import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
 public interface DccPOV2Service {
@@ -17,5 +16,15 @@ public interface DccPOV2Service {
      */
     CompletableFuture<DccPOResponseDTO> getCombinedView(DccPORequest request);
 
-    CompletableFuture<List<DccPOCombinedViewDTO>> getExportData(DccPORequest request);
+    /**
+     * Fetches one bounded page of export rows (full detail, same shape as the
+     * old unbounded getExportData), so a caller can stream the export to disk
+     * page by page instead of holding the entire filtered result set - which
+     * can be the whole system's acceptance-request history - in memory at once.
+     *
+     * @param page 1-based page number
+     * @param size max DCC records to fetch for this page (a DCC can still
+     *             expand into multiple rows via its line items)
+     */
+    CompletableFuture<ExportPageResult> getExportDataPage(DccPORequest request, int page, int size);
 }

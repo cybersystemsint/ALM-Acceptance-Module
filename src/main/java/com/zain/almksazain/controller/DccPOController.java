@@ -1909,6 +1909,17 @@ public class DccPOController {
         return sheetNumber == 1 ? "DCC PO Approver Data" : "DCC PO Approver Data (" + sheetNumber + ")";
     }
 
+    /** Picks the whole-number vs full-precision style for a quantity cell so the display
+     *  always matches the stored value exactly: an integer-valued double shows with no decimal
+     *  point at all (wholeQtyStyle, format "0"), while a genuinely fractional value shows in
+     *  full, unrounded precision (preciseQtyStyle, format "0.####################"). Needed
+     *  because preciseQtyStyle alone renders whole numbers with a trailing "." (Excel format
+     *  strings can't conditionally hide a literal character). */
+    private void applyQtyStyle(Cell cell, double value, CellStyle preciseQtyStyle, CellStyle wholeQtyStyle) {
+        boolean isWhole = !Double.isNaN(value) && !Double.isInfinite(value) && value == Math.rint(value);
+        cell.setCellStyle(isWhole ? wholeQtyStyle : preciseQtyStyle);
+    }
+
     private void writeApproverHeaderRow(Sheet sheet, CellStyle headerStyle) {
         Row headerRow = sheet.createRow(0);
         for (int i = 0; i < APPROVER_EXPORT_HEADERS.length; i++) {
@@ -1938,8 +1949,15 @@ public class DccPOController {
             // a clean "4" on screen even though the stored cell value is unchanged. "#"
             // placeholders (vs "0") don't force trailing zeros, so genuine whole numbers still
             // show cleanly (80 not 80.0000...) while real fractional precision shows in full.
+            // Excel format strings render literal characters unconditionally though, so this
+            // format alone always prints the "." even when every "#" after it is empty (e.g.
+            // 1.0 -> "1." instead of "1"). wholeQtyStyle (plain "0", no decimal point at all) is
+            // applied instead whenever a value has no fractional part - see applyQtyStyle.
             CellStyle preciseQtyStyle = workbook.createCellStyle();
             preciseQtyStyle.setDataFormat(createHelper.createDataFormat().getFormat("0.####################"));
+
+            CellStyle wholeQtyStyle = workbook.createCellStyle();
+            wholeQtyStyle.setDataFormat(createHelper.createDataFormat().getFormat("0"));
 
             CellStyle headerStyle = workbook.createCellStyle();
             Font headerFont = workbook.createFont();
@@ -2030,23 +2048,26 @@ public class DccPOController {
                     row.createCell(col++).setCellValue(dto.getActualItemCode() != null ? dto.getActualItemCode() : "");
                     row.createCell(col++).setCellValue(dto.getUplLineItemCode() != null ? dto.getUplLineItemCode() : "");
                     Cell poAcceptanceQtyCell = row.createCell(col++);
-                    poAcceptanceQtyCell.setCellValue(dto.getpoAcceptanceQty() != null ? dto.getpoAcceptanceQty() : 0);
-                    poAcceptanceQtyCell.setCellStyle(preciseQtyStyle);
+                    double poAcceptanceQtyVal = dto.getpoAcceptanceQty() != null ? dto.getpoAcceptanceQty() : 0;
+                    poAcceptanceQtyCell.setCellValue(poAcceptanceQtyVal);
+                    applyQtyStyle(poAcceptanceQtyCell, poAcceptanceQtyVal, preciseQtyStyle, wholeQtyStyle);
 
                     row.createCell(col++).setCellValue(dto.getPoLineDescription() != null ? dto.getPoLineDescription() : "");
                     row.createCell(col++).setCellValue(dto.getUplLineDescription() != null ? dto.getUplLineDescription() : "");
 
                     Cell poPendingQtyCell = row.createCell(col++);
-                    poPendingQtyCell.setCellValue(dto.getPoPendingQuantity() != null ? dto.getPoPendingQuantity() : 0.0);
-                    poPendingQtyCell.setCellStyle(preciseQtyStyle);
+                    double poPendingQtyVal = dto.getPoPendingQuantity() != null ? dto.getPoPendingQuantity() : 0.0;
+                    poPendingQtyCell.setCellValue(poPendingQtyVal);
+                    applyQtyStyle(poPendingQtyCell, poPendingQtyVal, preciseQtyStyle, wholeQtyStyle);
 
                     // "Acceptance Qty" is the per-line delivered quantity (getLnDeliveredQty), matching
                     // the correct Requests-tab exporter (DccPOV2Controller.buildExcelToFile) — not the
                     // PO/UPL line's ordered quantity, which is constant across every line item sharing
                     // that PO Line + UPL Line.
                     Cell acceptanceQtyCell = row.createCell(col++);
-                    acceptanceQtyCell.setCellValue(dto.getLnDeliveredQty() != null ? dto.getLnDeliveredQty() : 0.0);
-                    acceptanceQtyCell.setCellStyle(preciseQtyStyle);
+                    double acceptanceQtyVal = dto.getLnDeliveredQty() != null ? dto.getLnDeliveredQty() : 0.0;
+                    acceptanceQtyCell.setCellValue(acceptanceQtyVal);
+                    applyQtyStyle(acceptanceQtyCell, acceptanceQtyVal, preciseQtyStyle, wholeQtyStyle);
                     row.createCell(col++).setCellValue(dto.getLnLocationName() != null ? dto.getLnLocationName() : "");
                     row.createCell(col++).setCellValue(dto.getLnScopeOfWork() != null ? dto.getLnScopeOfWork() : "");
 
