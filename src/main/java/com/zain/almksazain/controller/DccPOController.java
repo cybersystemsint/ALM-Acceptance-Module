@@ -1200,7 +1200,17 @@ public class DccPOController {
         job.setCreatedAt(LocalDateTime.now());
         exportJobRepository.save(job);
 
-        CompletableFuture.runAsync(() -> runCombinedViewExportJob(jobId, request));
+        // Fire-and-forget: nothing calls .get()/.join() on this future, so without this handler
+        // any exception escaping runCombinedViewExportJob's own try/catch (e.g. one thrown by the
+        // job lookup/status update that used to sit *before* that try block) would be silently
+        // swallowed by the JVM with zero log output anywhere - exactly what made this failure mode
+        // invisible in application.log.
+        CompletableFuture.runAsync(() -> runCombinedViewExportJob(jobId, request))
+                .exceptionally(ex -> {
+                    logger.error("Unhandled exception escaped export job {} - this indicates a gap in " +
+                            "runCombinedViewExportJob's own error handling", jobId, ex);
+                    return null;
+                });
 
         Map<String, String> resp = new HashMap<>();
         resp.put("jobId", jobId);
@@ -1247,16 +1257,16 @@ public class DccPOController {
     }
 
     private void runCombinedViewExportJob(String jobId, Map<String, Object> request) {
-        ExportJob job = exportJobRepository.findById(jobId).orElse(null);
-        if (job == null) {
-            logger.error("Export job {} disappeared before it could start", jobId);
-            exportSemaphore.release();
-            return;
-        }
-        job.setStatus(ExportJob.STATUS_RUNNING);
-        exportJobRepository.save(job);
-
+        ExportJob job = null;
         try {
+            job = exportJobRepository.findById(jobId).orElse(null);
+            if (job == null) {
+                logger.error("Export job {} disappeared before it could start", jobId);
+                return;
+            }
+            job.setStatus(ExportJob.STATUS_RUNNING);
+            exportJobRepository.save(job);
+
             ExportParameters params = extractParameters(request);
             logger.info("Starting export job {} with filters: {}", jobId, params.fieldFilters.keySet());
 
@@ -1330,10 +1340,12 @@ public class DccPOController {
 
         } catch (Exception ex) {
             logger.error("Export job {} failed", jobId, ex);
-            job.setStatus(ExportJob.STATUS_FAILED);
-            job.setErrorMessage(ex.getMessage());
-            job.setCompletedAt(LocalDateTime.now());
-            exportJobRepository.save(job);
+            if (job != null) {
+                job.setStatus(ExportJob.STATUS_FAILED);
+                job.setErrorMessage(ex.getMessage());
+                job.setCompletedAt(LocalDateTime.now());
+                exportJobRepository.save(job);
+            }
         } finally {
             exportSemaphore.release();
         }

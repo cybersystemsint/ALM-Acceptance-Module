@@ -195,9 +195,16 @@ public class DccPOExportService {
                 .collect(Collectors.groupingBy(tbPurchaseOrder::getPoNumber));
 
         // UPLs
+        // tb_PurchaseOrderUPL keeps every revision as its own row (DELETED = superseded, PENDING =
+        // an in-flight change request not yet approved) instead of updating in place, so a PO
+        // line/UPL line that's been revised has multiple rows sharing the same (poNumber,
+        // poLineNumber, uplLine). Only ACTIVE is the current, approved record - keeping just that
+        // one is what makes the key unique again; without it, buildDccPOCombinedViewDTOs'
+        // Collectors.toMap on that same key throws IllegalStateException: Duplicate key.
         Map<String, List<tb_PurchaseOrderUPL>> uplMap = tbPurchaseOrderUplRepository
                 .findByPoNumberIn(poNumbers)
                 .stream()
+                .filter(u -> "ACTIVE".equalsIgnoreCase(u.getStatus()))
                 .collect(Collectors.groupingBy(tb_PurchaseOrderUPL::getPoNumber));
 
         // CRITICAL: Only fetch line items for THIS BATCH (prevents loading millions of rows)
@@ -347,8 +354,19 @@ public class DccPOExportService {
         List<DccPOCombinedViewDTO> dtos = new ArrayList<>();
 
         // Optimize matching with maps
+        // uplList is already filtered to non-DELETED rows (see processDccBatch), which is what
+        // makes this key unique in practice - the merge function is a safety net so a future,
+        // unexpected duplicate degrades to a logged warning instead of crashing the whole export.
         Map<String, tb_PurchaseOrderUPL> uplByKey = uplList.stream()
-                .collect(Collectors.toMap(u -> (u.getUplLine() != null ? u.getUplLine() : "") + "-" + u.getPoLineNumber() + "-" + u.getPoNumber(), u -> u));
+                .collect(Collectors.toMap(
+                        u -> (u.getUplLine() != null ? u.getUplLine() : "") + "-" + u.getPoLineNumber() + "-" + u.getPoNumber(),
+                        u -> u,
+                        (a, b) -> {
+                            logger.warn("Duplicate UPL key for poNumber={}, poLineNumber={}, uplLine={} " +
+                                            "(recordNo {} and {}); keeping the first and ignoring the second",
+                                    a.getPoNumber(), a.getPoLineNumber(), a.getUplLine(), a.getRecordNo(), b.getRecordNo());
+                            return a;
+                        }));
 
         for (DCCLineItem dccLn : dccLnList) {
             String key = (dccLn.getUplLineNumber() != null ? dccLn.getUplLineNumber() : "") + "-" + dccLn.getLineNumber() + "-" + dcc.getPoNumber();
