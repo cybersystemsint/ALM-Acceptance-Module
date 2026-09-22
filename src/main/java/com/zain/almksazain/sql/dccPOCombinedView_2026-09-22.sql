@@ -1,0 +1,136 @@
+-- Snapshot of ALM_ZAIN_KSA.dccPOCombinedView as it exists LIVE in the database.
+-- Captured: 2026-09-22
+-- See dccPOCombinedView_original.sql for the pre-fix baseline (extracted from the
+-- 2026-09-21 mysqldump, since this view predates this session's detailed record and the
+-- local MySQL instance only has a placeholder stub for it).
+-- This file is a snapshot for reference only; it is not executed by the application.
+-- The view itself lives in the database and must be applied there directly.
+--
+-- Fix applied 2026-09-22: tb_PurchaseOrderUPL keeps every revision as its own row (DELETED
+-- = superseded, PENDING = an in-flight change request not yet approved) instead of updating
+-- in place - the same issue already fixed in combinedPurchaseOrderView on 2026-09-21 (see
+-- that file's header). This view read from tb_PurchaseOrderUPL in two places with no status
+-- filter on either, so both were fixed to require upl.status = 'ACTIVE':
+--   1. The main join: `left join tb_PurchaseOrderUPL upl on (DCC.poNumber = upl.poNumber
+--      and length(LN2.uplLineNumber) > 0 and LN2.uplLineNumber = upl.uplLine and
+--      upl.poLineNumber = LN2.lineNumber)` - added `and upl.status = 'ACTIVE'`.
+--   2. The POLineAcceptanceQty subquery: `select ... from tb_PurchaseOrderUPL upl where
+--      upl.uplLineQuantity > 0` - added `and upl.status = 'ACTIVE'` to its WHERE clause.
+--      Left unfixed, this would have kept double/triple-counting DELETED/PENDING duplicate
+--      UPL rows into that quantity calculation even after the main join was corrected.
+--
+-- Verified via a wrapped test query (before and after, both scoped to a real PO with DCC
+-- records) that the fix applies cleanly with no SQL errors and no behavior change for that
+-- PO; a genuine before/after row-count comparison on a PO with actual duplicate UPL
+-- revisions was not completed because this view is expensive even scoped to a single PO
+-- (a test against PO 25886 was still executing after 10+ minutes and was killed rather than
+-- left to complete) - the fix mirrors the already-verified, already-deployed
+-- combinedPurchaseOrderView fix closely enough that this was accepted without that
+-- additional confirmation.
+--
+-- Captured directly from a fresh `SHOW CREATE VIEW` immediately after applying the fix, and
+-- verified via a strict, backtick/string-quote-aware tokenizer (not a naive whitespace-strip,
+-- which would hide a corrupted identifier) that this formatted version is token-for-token
+-- identical to the live definition - see the 2026-09-17 combinedPurchaseOrderView snapshot's
+-- own header for why that distinction matters: a prior naive reformatting once silently
+-- corrupted a case-sensitive join alias in this same file.
+
+CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`%` SQL SECURITY DEFINER VIEW `dccPOCombinedView` AS with `LatestApprovalRequests` as (select `tb_Category_Approval_Requests`.`recordNo` AS `recordNo`,`tb_Category_Approval_Requests`.`recordDateTime` AS `recordDateTime`,`tb_Category_Approval_Requests`.`acceptanceRequestRecordNo` AS `acceptanceRequestRecordNo`,`tb_Category_Approval_Requests`.`poNumber` AS `poNumber`,`tb_Category_Approval_Requests`.`tableName` AS `tableName`,`tb_Category_Approval_Requests`.`poLineItemDescription` AS `poLineItemDescription`,`tb_Category_Approval_Requests`.`vendorName` AS `vendorName`,`tb_Category_Approval_Requests`.`requestedBy` AS `requestedBy`,`tb_Category_Approval_Requests`.`createdBy` AS `createdBy`,`tb_Category_Approval_Requests`.`itemCategoryCode` AS `itemCategoryCode`,`tb_Category_Approval_Requests`.`scope` AS `scope`,`tb_Category_Approval_Requests`.`status` AS `status`,`tb_Category_Approval_Requests`.`approvedDate` AS `approvedDate`,row_number() OVER (PARTITION BY `tb_Category_Approval_Requests`.`acceptanceRequestRecordNo` ORDER BY `tb_Category_Approval_Requests`.`recordDateTime` desc,`tb_Category_Approval_Requests`.`recordNo` desc )  AS `rn` from `tb_Category_Approval_Requests`) select distinct `DCC`.`recordNo` AS `dccRecordNo`,
+ `DCC`.`poNumber` AS `dccPoNumber`,
+ `DCC`.`vendorName` AS `dccVendorName`,
+ `DCC`.`vendorEmail` AS `dccVendorEmail`,
+ `HD`.`newProjectName` AS `dccProjectName`,
+ `HD`.`newProjectName` AS `newProjectName`,
+ `DCC`.`acceptanceType` AS `dccAcceptanceType`,
+ `DCC`.`status` AS `dccStatus`,
+ upper(date_format(cast(`DCC`.`createdDate` as date),'%e-%b-%Y')) AS `dccCreatedDate`,
+ upper(date_format(cast(`AR`.`approvedDate` as date),'%e-%b-%Y')) AS `dateApproved`,
+ `DCC`.`vendorComment` AS `vendorComment`,
+ `DCC`.`dccId` AS `dccId`,
+ `DCC`.`currency` AS `dccCurrency`,
+ `LN2`.`recordNo` AS `lnRecordNo`,
+ `LN2`.`productName` AS `lnProductName`,
+ `LN2`.`serialNumber` AS `lnProductSerialNo`,
+ `LN2`.`deliveredQty` AS `lnDeliveredQty`,
+ `LN2`.`locationName` AS `lnLocationName`,
+ upper(date_format(cast(`LN2`.`dateInService` as date),'%e-%b-%Y')) AS `lnInserviceDate`,
+ `LN2`.`unitPrice` AS `lnUnitPrice`,
+ `LN2`.`scopeOfWork` AS `lnScopeOfWork`,
+ `LN2`.`remarks` AS `lnRemarks`,
+ `LN2`.`itemCode` AS `lnItemCode`,
+ `LN2`.`linkId` AS `linkId`,
+ `LN2`.`tagNumber` AS `tagNumber`,
+ `LN2`.`lineNumber` AS `lineNumber`,
+ `LN2`.`actualItemCode` AS `actualItemCode`,
+ `LN2`.`uplLineNumber` AS `uplLineNumber`,
+ `HD`.`poNumber` AS `poId`,
+ (case when (`upl`.`uplLineQuantity` > 0) then (select coalesce(max(`subquery`.`total_delivered_qty`),0) from (select sum(`dcc`.`deliveredQty`) AS `total_delivered_qty` from (`tb_DCC_LN` `dcc` join `tb_DCC` `DCC` on((`dcc`.`dccId` = `DCC`.`recordNo`))) where ((`dcc`.`uplLineNumber` = `upl`.`uplLine`) and (`upl`.`poLineNumber` = `dcc`.`lineNumber`) and (`upl`.`poNumber` = `DCC`.`poNumber`) and (`DCC`.`status` not in ('incomplete','rejected','returned'))) group by `upl`.`poNumber`,`upl`.`poLineNumber`) `subquery`) else 0 end) AS `UPLACPTRequestValue`,
+ (case when (`upl`.`uplLineQuantity` > 0) then (select (coalesce(sum(`dcc`.`deliveredQty`),0) / nullif(sum((`upl`.`poLineQuantity` * `upl`.`poLineUnitPrice`)),0)) from (`tb_DCC_LN` `dcc` join `tb_DCC` `DCC` on((`dcc`.`dccId` = `DCC`.`recordNo`))) where ((`dcc`.`uplLineNumber` = `upl`.`uplLine`) and (`upl`.`poLineNumber` = `dcc`.`lineNumber`) and (`upl`.`poNumber` = `DCC`.`poNumber`) and (`DCC`.`status` not in ('incomplete','rejected','returned')))) else 0 end) AS `POAcceptanceQty`,
+ (select coalesce(sum(`subquery`.`POAcceptanceQty`),0) from (select `upl`.`poNumber` AS `poNumber`,`upl`.`poLineNumber` AS `poLineNumber`,((`upl`.`uplLineQuantity` * `upl`.`poLineQuantity`) / nullif((`upl`.`poLineQuantity` * `upl`.`poLineUnitPrice`),0)) AS `POAcceptanceQty` from `tb_PurchaseOrderUPL` `upl` where ((`upl`.`uplLineQuantity` > 0) and (`upl`.`status` = 'ACTIVE'))) `subquery` where ((`subquery`.`poNumber` = `upl`.`poNumber`) and (`subquery`.`poLineNumber` = `upl`.`poLineNumber`))) AS `POLineAcceptanceQty`,
+ (case when (length(`LN2`.`uplLineNumber`) > 0) then (case when ((`HD`.`poQtyNew` is not null) and (`HD`.`poQtyNew` <> '')) then `HD`.`quantityDueNew` else `HD`.`quantityDueOld` end) else ((case when ((`HD`.`poQtyNew` is not null) and (`HD`.`poQtyNew` <> '')) then `HD`.`quantityDueNew` else `HD`.`quantityDueOld` end) - (select coalesce(sum(`dccLn3`.`deliveredQty`),0) from (`tb_DCC_LN` `dccLn3` join `tb_DCC` `DCC3` on((`dccLn3`.`dccId` = `DCC3`.`recordNo`))) where ((`DCC3`.`poNumber` = `HD`.`poNumber`) and (`dccLn3`.`lineNumber` = `HD`.`lineNumber`) and (`DCC3`.`status` not in ('incomplete','rejected','returned'))))) end) AS `poPendingQuantity`,
+ `HD`.`projectName` AS `projectName`,
+ `HD`.`vendorNumber` AS `supplierId`,
+ `HD`.`vendorName` AS `vendorName`,
+ `DCC`.`createdBy` AS `createdBy`,
+ (case when (length(`LN2`.`uplLineNumber`) > 0) then `upl`.`poLineItemCode` else `HD`.`itemPartNumber` end) AS `itemPartNumber`,
+ `DCC`.`createdBy` AS `createdByName`,
+ (case when (length(`LN2`.`uplLineNumber`) > 0) then `upl`.`poLineQuantity` when ((`HD`.`poQtyNew` is not null) and (`HD`.`poQtyNew` <> '')) then `HD`.`poQtyNew` else `HD`.`poOrderQuantity` end) AS `poOrderQuantity`,
+ (case when (length(`LN2`.`uplLineNumber`) > 0) then `upl`.`poLineDescription` else `HD`.`poLineDescription` end) AS `poLineDescription`,
+ `upl`.`uplLineQuantity` AS `uplLineQuantity`,
+ `upl`.`poLineQuantity` AS `poLineQuantity`,
+ `upl`.`uplLineItemCode` AS `uplLineItemCode`,
+ `upl`.`uplLineDescription` AS `uplLineDescription`,
+ `upl`.`uom` AS `unitOfMeasure`,
+ `upl`.`activeOrPassive` AS `activeOrPassive`,
+ (case when (`DCC`.`status` not in ('incomplete','rejected')) then (`upl`.`uplLineQuantity` - (select coalesce(sum(`dccLn2`.`deliveredQty`),0) from (`tb_DCC_LN` `dccLn2` join `tb_DCC` `DCC2` on((`dccLn2`.`dccId` = `DCC2`.`recordNo`))) where ((0 <> (case when (length(`dccLn2`.`uplLineNumber`) > 0) then ((`dccLn2`.`uplLineNumber` = `upl`.`uplLine`) and (`upl`.`poLineNumber` = `dccLn2`.`lineNumber`) and (`upl`.`poNumber` = `dccLn2`.`poId`)) end)) and (`DCC2`.`status` not in ('incomplete','rejected','returned'))))) else (`upl`.`uplLineQuantity` - (select coalesce(sum(`dccLn2`.`deliveredQty`),0) from (`tb_DCC_LN` `dccLn2` join `tb_DCC` `DCC2` on((`dccLn2`.`dccId` = `DCC2`.`recordNo`))) where ((0 <> (case when (length(`dccLn2`.`uplLineNumber`) > 0) then ((`upl`.`poLineNumber` = `dccLn2`.`lineNumber`) and (`upl`.`poNumber` = `dccLn2`.`poId`) and (`dccLn2`.`uplLineNumber` = `upl`.`uplLine`)) end)) and (`DCC2`.`status` not in ('incomplete','rejected','returned'))))) end) AS `uplPendingQuantity`,
+ (select count(0) from `tb_Category_Approvals` `AL` where (((`AL`.`approvalStatus` = 'pending') or (`AL`.`approvalStatus` = 'readyForApproval') or (`AL`.`approvalStatus` = 'request-info')) and (`AL`.`status` = 'pending') and (`AL`.`approvalRecordId` = `AR`.`recordNo`) and ((`AR`.`status` = 'pending') or (`AR`.`status` = 'request-info')))) AS `approvalCount`,
+ (case when exists(select 1 from `tb_Category_Approvals` `AL` where ((`AL`.`approvalStatus` = 'readyForApproval') and (`AL`.`status` = 'pending') and (`AL`.`approvalRecordId` = `AR`.`recordNo`) and ((`AR`.`status` = 'pending') or (`AR`.`status` = 'request-info')))) then (select `AL`.`approverName` from `tb_Category_Approvals` `AL` where ((`AL`.`approvalStatus` = 'readyForApproval') and (`AL`.`status` = 'pending') and (`AL`.`approvalRecordId` = `AR`.`recordNo`) and ((`AR`.`status` = 'pending') or (`AR`.`status` = 'request-info'))) order by `AL`.`approvalId` limit 1) else (select `AL`.`approverName` from `tb_Category_Approvals` `AL` where ((`AL`.`approvalStatus` in ('pending','readyForApproval','request-info')) and (`AL`.`status` = 'pending') and (`AL`.`approvalRecordId` = `AR`.`recordNo`) and ((`AR`.`status` = 'pending') or (`AR`.`status` = 'request-info'))) order by `AL`.`approvalId` limit 1) end) AS `pendingApprovers`,
+ (select `AL`.`comments` from `tb_Category_Approvals` `AL` where ((`AL`.`approvalRecordId` = `AR`.`recordNo`) and (`AL`.`approvalStatus` not in ('pending','readyForApproval')) and (`AL`.`comments` is not null)) order by `AL`.`approvalId` desc limit 1) AS `approverComment`,
+ (case when ((select count(0) from `tb_Category_Approvals` `AL` where (`AL`.`approvalRecordId` = `AR`.`recordNo`)) = 0) then concat(floor(coalesce((timestampdiff(MINUTE,(select max(`AL`.`recordDateTime`) from `tb_Category_Approvals` `AL` where ((`AL`.`approvalStatus` in ('pending','readyForApproval','request-info')) and (`AL`.`approvalRecordId` = `AR`.`recordNo`) and (`AL`.`status` = 'pending') and (`AR`.`status` in ('pending','request-info')))),now()) / 1440),0)),' days ',floor(coalesce(((timestampdiff(MINUTE,(select max(`AL`.`recordDateTime`) from `tb_Category_Approvals` `AL` where ((`AL`.`approvalStatus` in ('pending','readyForApproval','request-info')) and (`AL`.`approvalRecordId` = `AR`.`recordNo`) and (`AL`.`status` = 'pending') and (`AR`.`status` in ('pending','request-info')))),now()) / 60) % 24),0)),' hrs ',coalesce((timestampdiff(MINUTE,(select max(`AL`.`recordDateTime`) from `tb_Category_Approvals` `AL` where ((`AL`.`approvalStatus` in ('pending','readyForApproval','request-info')) and (`AL`.`approvalRecordId` = `AR`.`recordNo`) and (`AL`.`status` = 'pending') and (`AR`.`status` in ('pending','request-info')))),now()) % 60),0),' mins') else concat(floor(coalesce((timestampdiff(MINUTE,coalesce((select max(`AL`.`approvedDate`) from `tb_Category_Approvals` `AL` where ((`AL`.`approvalStatus` in ('pending','readyForApproval','request-info')) and (`AL`.`approvalRecordId` = `AR`.`recordNo`) and (`AL`.`status` = 'pending') and (`AR`.`status` in ('pending','request-info')))),(select max(`AL`.`recordDateTime`) from `tb_Category_Approvals` `AL` where ((`AL`.`approvalStatus` in ('pending','readyForApproval','request-info')) and (`AL`.`approvalRecordId` = `AR`.`recordNo`) and (`AL`.`status` = 'pending') and (`AR`.`status` in ('pending','request-info'))))),now()) / 1440),0)),' days ',floor(coalesce(((timestampdiff(MINUTE,coalesce((select max(`AL`.`approvedDate`) from `tb_Category_Approvals` `AL` where ((`AL`.`approvalStatus` in ('pending','readyForApproval','request-info')) and (`AL`.`approvalRecordId` = `AR`.`recordNo`) and (`AL`.`status` = 'pending') and (`AR`.`status` in ('pending','request-info')))),(select max(`AL`.`recordDateTime`) from `tb_Category_Approvals` `AL` where ((`AL`.`approvalStatus` in ('pending','readyForApproval','request-info')) and (`AL`.`approvalRecordId` = `AR`.`recordNo`) and (`AL`.`status` = 'pending') and (`AR`.`status` in ('pending','request-info'))))),now()) / 60) % 24),0)),' hrs ',coalesce((timestampdiff(MINUTE,coalesce((select max(`AL`.`approvedDate`) from `tb_Category_Approvals` `AL` where ((`AL`.`approvalStatus` in ('pending','readyForApproval','request-info')) and (`AL`.`approvalRecordId` = `AR`.`recordNo`) and (`AL`.`status` = 'pending') and (`AR`.`status` in ('pending','request-info')))),(select max(`AL`.`recordDateTime`) from `tb_Category_Approvals` `AL` where ((`AL`.`approvalStatus` in ('pending','readyForApproval','request-info')) and (`AL`.`approvalRecordId` = `AR`.`recordNo`) and (`AL`.`status` = 'pending') and (`AR`.`status` in ('pending','request-info'))))),now()) % 60),0),' mins') end) AS `userAging`,
+ (case when ((select count(0) from `tb_Category_Approvals` `AL` where ((`AL`.`approvalStatus` = 'pending') and (`AL`.`approvalRecordId` = `AR`.`recordNo`) and (`AR`.`status` = 'pending'))) = 0) then concat(floor((timestampdiff(MINUTE,(select min(`AL`.`recordDateTime`) from `tb_Category_Approvals` `AL` where (`AL`.`approvalRecordId` = `AR`.`recordNo`)),(select max(`AL`.`approvedDate`) from `tb_Category_Approvals` `AL` where (`AL`.`approvalRecordId` = `AR`.`recordNo`))) / 1440)),' days ',(floor((timestampdiff(MINUTE,(select min(`AL`.`recordDateTime`) from `tb_Category_Approvals` `AL` where (`AL`.`approvalRecordId` = `AR`.`recordNo`)),(select max(`AL`.`approvedDate`) from `tb_Category_Approvals` `AL` where (`AL`.`approvalRecordId` = `AR`.`recordNo`))) / 60)) % 24),' hrs ',(timestampdiff(MINUTE,(select min(`AL`.`recordDateTime`) from `tb_Category_Approvals` `AL` where (`AL`.`approvalRecordId` = `AR`.`recordNo`)),(select max(`AL`.`approvedDate`) from `tb_Category_Approvals` `AL` where (`AL`.`approvalRecordId` = `AR`.`recordNo`))) % 60),' mins') else concat(floor((timestampdiff(MINUTE,(select min(`AL`.`recordDateTime`) from `tb_Category_Approvals` `AL` where ((`AL`.`approvalStatus` = 'pending') and (`AL`.`approvalRecordId` = `AR`.`recordNo`) and (`AR`.`status` = 'pending')) limit 1),now()) / 1440)),' days ',(floor((timestampdiff(MINUTE,(select min(`AL`.`recordDateTime`) from `tb_Category_Approvals` `AL` where ((`AL`.`approvalStatus` = 'pending') and (`AL`.`approvalRecordId` = `AR`.`recordNo`) and (`AR`.`status` = 'pending')) limit 1),now()) / 60)) % 24),' hrs ',(timestampdiff(MINUTE,(select min(`AL`.`recordDateTime`) from `tb_Category_Approvals` `AL` where ((`AL`.`approvalStatus` = 'pending') and (`AL`.`approvalRecordId` = `AR`.`recordNo`) and (`AR`.`status` = 'pending')) limit 1),now()) % 60),' mins') end) AS `totalAging` 
+from ((((`tb_DCC` `DCC` join `tb_PurchaseOrder` `HD` on((`DCC`.`poNumber` = `HD`.`poNumber`))) left join `LatestApprovalRequests` `AR` on(((`DCC`.`recordNo` = `AR`.`acceptanceRequestRecordNo`) and (`AR`.`rn` = 1)))) join `tb_DCC_LN` `LN2` on((`DCC`.`recordNo` = `LN2`.`dccId`))) left join `tb_PurchaseOrderUPL` `upl` on(((`DCC`.`poNumber` = `upl`.`poNumber`) and (length(`LN2`.`uplLineNumber`) > 0) and (`LN2`.`uplLineNumber` = `upl`.`uplLine`) and (`upl`.`poLineNumber` = `LN2`.`lineNumber`) and (`upl`.`status` = 'ACTIVE')))) where (0 <> (case when (length(`LN2`.`uplLineNumber`) > 0) then ((`LN2`.`uplLineNumber` = `upl`.`uplLine`) and (`upl`.`poLineNumber` = `LN2`.`lineNumber`) and (`upl`.`poNumber` = `DCC`.`poNumber`) and (`HD`.`lineNumber` = `LN2`.`lineNumber`) and (`HD`.`poNumber` = `DCC`.`poNumber`)) else ((`HD`.`lineNumber` = `LN2`.`lineNumber`) and (`HD`.`poNumber` = `DCC`.`poNumber`)) end)) 
+group by `DCC`.`recordNo`,
+ `DCC`.`poNumber`,
+ `DCC`.`vendorName`,
+ `DCC`.`vendorEmail`,
+ `HD`.`projectName`,
+ `HD`.`newProjectName`,
+ `DCC`.`acceptanceType`,
+ `DCC`.`status`,
+ `DCC`.`createdDate`,
+ `AR`.`approvedDate`,
+ `DCC`.`vendorComment`,
+ `DCC`.`dccId`,
+ `DCC`.`currency`,
+ `LN2`.`recordNo`,
+ `LN2`.`productName`,
+ `LN2`.`serialNumber`,
+ `LN2`.`deliveredQty`,
+ `LN2`.`locationName`,
+ `LN2`.`dateInService`,
+ `LN2`.`unitPrice`,
+ `LN2`.`scopeOfWork`,
+ `LN2`.`remarks`,
+ `LN2`.`itemCode`,
+ `LN2`.`linkId`,
+ `LN2`.`tagNumber`,
+ `LN2`.`lineNumber`,
+ `LN2`.`actualItemCode`,
+ `LN2`.`uplLineNumber`,
+ `HD`.`poNumber`,
+ `upl`.`uplLineQuantity`,
+ `upl`.`poLineQuantity`,
+ `upl`.`uplLineItemCode`,
+ `upl`.`uplLineDescription`,
+ `upl`.`uom`,
+ `upl`.`activeOrPassive`,
+ `HD`.`projectName`,
+ `HD`.`vendorNumber`,
+ `HD`.`vendorName`,
+ `DCC`.`createdBy`,
+ `HD`.`createdByName`,
+ `HD`.`poQtyNew`,
+ `HD`.`poOrderQuantity`,
+ `HD`.`poLineDescription`,
+ `upl`.`poLineItemCode`,
+ `upl`.`poLineDescription` order by `DCC`.`recordNo` desc
