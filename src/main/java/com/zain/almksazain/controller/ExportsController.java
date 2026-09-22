@@ -1989,6 +1989,25 @@ public class ExportsController {
         UPL_CHANGE_FIELD_LABELS.put("uplLineDescription", "UPL Line Description");
         UPL_CHANGE_FIELD_LABELS.put("projectName", "Project Name");
         UPL_CHANGE_FIELD_LABELS.put("uplLineItemCode", "UPL Line-Item Code");
+        // Wording below matches UPL_CREATE_FIELD_LABELS below exactly, so a field reads
+        // identically whether shown as part of a new line or an edited field on an existing one.
+        UPL_CHANGE_FIELD_LABELS.put("vendor", "Vendor");
+        UPL_CHANGE_FIELD_LABELS.put("manufacturer", "Manufacturer");
+        UPL_CHANGE_FIELD_LABELS.put("countryOfOrigin", "Country of Origin");
+        UPL_CHANGE_FIELD_LABELS.put("poType", "PO Type");
+        UPL_CHANGE_FIELD_LABELS.put("releaseNumber", "Release Number");
+        UPL_CHANGE_FIELD_LABELS.put("poLineItemType", "PO Line Item Type");
+        UPL_CHANGE_FIELD_LABELS.put("poLineItemCode", "PO Line Item Code");
+        UPL_CHANGE_FIELD_LABELS.put("poLineDescription", "PO Line Description");
+        UPL_CHANGE_FIELD_LABELS.put("uplLineItemType", "UPL Item Type");
+        UPL_CHANGE_FIELD_LABELS.put("zainItemCategoryCode", "Zain Item Category Code");
+        UPL_CHANGE_FIELD_LABELS.put("zainItemCategoryDescription", "Zain Item Category Description");
+        UPL_CHANGE_FIELD_LABELS.put("uom", "UOM");
+        UPL_CHANGE_FIELD_LABELS.put("currency", "Currency");
+        UPL_CHANGE_FIELD_LABELS.put("poLineQuantity", "PO Line Quantity");
+        UPL_CHANGE_FIELD_LABELS.put("poLineUnitPrice", "PO Line Unit Price");
+        UPL_CHANGE_FIELD_LABELS.put("substituteItemCode", "Substitute Item Code");
+        UPL_CHANGE_FIELD_LABELS.put("remarks", "Remarks");
     }
 
     // Labels for the fuller field set enrichWithUplLineDetails attaches for CREATE requests under
