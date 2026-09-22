@@ -5,6 +5,7 @@ import java.text.DecimalFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -100,9 +101,17 @@ public class UplChangeRequestService {
     // unit is far below anything a real business overage would look like.
     private static final double LINE_TOTAL_EPSILON = 1e-6;
 
+    // Every tb_PurchaseOrderUPL field the bulk-creation path (prepareCreate/createpoupl) lets a
+    // user populate, except the 3 identity fields (poNumber, poLineNumber, uplLine) that define
+    // which row this is - opened up to match creation by explicit request, so a user can correct
+    // any field post-creation that they could originally set.
     private static final Set<String> EDITABLE_FIELDS = new LinkedHashSet<>(Arrays.asList(
             "activeOrPassive", "uplItemSerialized", "uplLineUnitPrice", "uplLineQuantity",
-            "uplLineDescription", "projectName", "uplLineItemCode"));
+            "uplLineDescription", "projectName", "uplLineItemCode",
+            "vendor", "manufacturer", "countryOfOrigin", "poType", "releaseNumber",
+            "poLineItemType", "poLineItemCode", "poLineDescription", "uplLineItemType",
+            "zainItemCategoryCode", "zainItemCategoryDescription", "uom", "currency",
+            "poLineQuantity", "poLineUnitPrice", "substituteItemCode", "remarks"));
 
     // Mirrors UPLApprovalGrid.js's FIELD_LABELS / ExportsController's UPL_CHANGE_FIELD_LABELS, so
     // the "approval needed" email's grid table reads the same way the page and export do.
@@ -115,6 +124,26 @@ public class UplChangeRequestService {
         EMAIL_FIELD_LABELS.put("uplLineDescription", "UPL Line Description");
         EMAIL_FIELD_LABELS.put("projectName", "Project Name");
         EMAIL_FIELD_LABELS.put("uplLineItemCode", "UPL Line-Item Code");
+        // Wording below matches ExportsController's UPL_CREATE_FIELD_LABELS exactly (the existing
+        // label set for these same fields on CREATE requests), so a field reads identically
+        // whether it's shown as part of a new line or as an edited field on an existing one.
+        EMAIL_FIELD_LABELS.put("vendor", "Vendor");
+        EMAIL_FIELD_LABELS.put("manufacturer", "Manufacturer");
+        EMAIL_FIELD_LABELS.put("countryOfOrigin", "Country of Origin");
+        EMAIL_FIELD_LABELS.put("poType", "PO Type");
+        EMAIL_FIELD_LABELS.put("releaseNumber", "Release Number");
+        EMAIL_FIELD_LABELS.put("poLineItemType", "PO Line Item Type");
+        EMAIL_FIELD_LABELS.put("poLineItemCode", "PO Line Item Code");
+        EMAIL_FIELD_LABELS.put("poLineDescription", "PO Line Description");
+        EMAIL_FIELD_LABELS.put("uplLineItemType", "UPL Item Type");
+        EMAIL_FIELD_LABELS.put("zainItemCategoryCode", "Zain Item Category Code");
+        EMAIL_FIELD_LABELS.put("zainItemCategoryDescription", "Zain Item Category Description");
+        EMAIL_FIELD_LABELS.put("uom", "UOM");
+        EMAIL_FIELD_LABELS.put("currency", "Currency");
+        EMAIL_FIELD_LABELS.put("poLineQuantity", "PO Line Quantity");
+        EMAIL_FIELD_LABELS.put("poLineUnitPrice", "PO Line Unit Price");
+        EMAIL_FIELD_LABELS.put("substituteItemCode", "Substitute Item Code");
+        EMAIL_FIELD_LABELS.put("remarks", "Remarks");
     }
 
     @Autowired private UplChangeRequestRepo changeRequestRepo;
@@ -595,13 +624,44 @@ public class UplChangeRequestService {
             case "uplLineDescription": return u.getUplLineDescription();
             case "projectName": return u.getProjectName();
             case "uplLineItemCode": return u.getUplLineItemCode();
+            case "vendor": return u.getVendor();
+            case "manufacturer": return u.getManufacturer();
+            case "countryOfOrigin": return u.getCountryOfOrigin();
+            case "poType": return u.getPoType();
+            case "releaseNumber": return u.getReleaseNumber();
+            case "poLineItemType": return u.getPoLineItemType();
+            case "poLineItemCode": return u.getPoLineItemCode();
+            case "poLineDescription": return u.getPoLineDescription();
+            case "uplLineItemType": return u.getUplLineItemType();
+            case "zainItemCategoryCode": return u.getZainItemCategoryCode();
+            case "zainItemCategoryDescription": return u.getZainItemCategoryDescription();
+            case "uom": return u.getUom();
+            case "currency": return u.getCurrency();
+            case "poLineQuantity": return u.getPoLineQuantity();
+            case "poLineUnitPrice": return u.getPoLineUnitPrice();
+            case "substituteItemCode": return u.getSubstituteItemCode();
+            case "remarks": return u.getRemarks();
             default: return null;
         }
     }
 
+    private static final Set<String> NUMERIC_FIELDS = new HashSet<>(Arrays.asList(
+            "uplLineUnitPrice", "uplLineQuantity", "poLineQuantity", "poLineUnitPrice"));
+
     private Object coerce(String field, Object value) {
+        // poType and releaseNumber are NOT NULL with no DB default (see prepareCreate's comment
+        // on the same two columns) - a blank/null edit here would sail through this whitelist and
+        // buildDiff, then fail at save time as an opaque ConstraintViolationException. Applying
+        // the same rule createpoupl/prepareCreate already enforce for new rows: poType can't be
+        // blank, releaseNumber coerces to "" instead of null.
+        if ("poType".equals(field) && (value == null || String.valueOf(value).trim().isEmpty())) {
+            throw new UplValidationException("poType cannot be blank");
+        }
+        if ("releaseNumber".equals(field) && (value == null || String.valueOf(value).trim().isEmpty())) {
+            return "";
+        }
         if (value == null) return null;
-        if ("uplLineUnitPrice".equals(field) || "uplLineQuantity".equals(field)) {
+        if (NUMERIC_FIELDS.contains(field)) {
             return value instanceof Number ? ((Number) value).doubleValue() : Double.parseDouble(String.valueOf(value));
         }
         return String.valueOf(value);
@@ -920,6 +980,23 @@ public class UplChangeRequestService {
                     case "uplLineDescription": uplLine.setUplLineDescription((String) newValue); break;
                     case "projectName": uplLine.setProjectName((String) newValue); break;
                     case "uplLineItemCode": uplLine.setUplLineItemCode((String) newValue); break;
+                    case "vendor": uplLine.setVendor((String) newValue); break;
+                    case "manufacturer": uplLine.setManufacturer((String) newValue); break;
+                    case "countryOfOrigin": uplLine.setCountryOfOrigin((String) newValue); break;
+                    case "poType": uplLine.setPoType((String) newValue); break;
+                    case "releaseNumber": uplLine.setReleaseNumber((String) newValue); break;
+                    case "poLineItemType": uplLine.setPoLineItemType((String) newValue); break;
+                    case "poLineItemCode": uplLine.setPoLineItemCode((String) newValue); break;
+                    case "poLineDescription": uplLine.setPoLineDescription((String) newValue); break;
+                    case "uplLineItemType": uplLine.setUplLineItemType((String) newValue); break;
+                    case "zainItemCategoryCode": uplLine.setZainItemCategoryCode((String) newValue); break;
+                    case "zainItemCategoryDescription": uplLine.setZainItemCategoryDescription((String) newValue); break;
+                    case "uom": uplLine.setUom((String) newValue); break;
+                    case "currency": uplLine.setCurrency((String) newValue); break;
+                    case "poLineQuantity": uplLine.setPoLineQuantity(((Number) newValue).doubleValue()); break;
+                    case "poLineUnitPrice": uplLine.setPoLineUnitPrice(((Number) newValue).doubleValue()); break;
+                    case "substituteItemCode": uplLine.setSubstituteItemCode((String) newValue); break;
+                    case "remarks": uplLine.setRemarks((String) newValue); break;
                     default: break;
                 }
             }
