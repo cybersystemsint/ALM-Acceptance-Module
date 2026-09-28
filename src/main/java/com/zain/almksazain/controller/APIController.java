@@ -1109,6 +1109,66 @@ public class APIController {
         return ResponseEntity.ok(response);
     }
 
+    /**
+     * Validates one line item's locationName (both UPL and non-UPL lines, since a location is
+     * required either way):
+     *   1. Must not be blank - rejected outright if so.
+     *   2. Must exist in tb_Site.siteId.
+     *   3. Only once existence is confirmed: the digit(s) after "R" in the request's submitted
+     *      region (e.g. "R4" -> "4") must match that site's own regionId. If they don't, this is
+     *      NOT an immediate failure - fall back to regionSecondary (e.g. "R2" -> "2") the same way,
+     *      when the payload actually supplies one. Only reject if neither region nor regionSecondary
+     *      matches the site's regionId.
+     * Without this, a locationName that doesn't exist in tb_Site (e.g. a typo like "JED03521111"
+     * instead of the real site "JED0352") was silently accepted on both create and resubmit.
+     * Shared by both postdcc validation loops (create: recordNoValidate == 0, and resubmit) since
+     * the check is identical either way - only the source JSON field names differ.
+     */
+    private void validateLocationAndRegion(String localName, String polineitem, String upllineitem,
+            String requestRegion, String requestRegionSecondary,
+            Set<String> blankLocationLines, Set<String> invalidLocationLines, Set<String> regionMismatchLines) {
+        String lineLabel = polineitem + (upllineitem != null && !upllineitem.isEmpty() ? "+" + upllineitem : "");
+
+        if (localName == null || localName.trim().isEmpty()) {
+            blankLocationLines.add(lineLabel);
+            return;
+        }
+        String trimmedLocation = localName.trim();
+
+        tb_Site siteRecord = siteRepo.findFirstBySiteId(trimmedLocation);
+        if (siteRecord == null) {
+            invalidLocationLines.add(lineLabel + " (site " + trimmedLocation + ")");
+            return;
+        }
+
+        Integer siteRegionId = siteRecord.getRegionId();
+        if (siteRegionId == null) {
+            return; // nothing on file to validate the submitted region(s) against
+        }
+
+        String primaryDigits = extractRegionDigits(requestRegion);
+        boolean primaryMatches = !primaryDigits.isEmpty() && primaryDigits.equals(String.valueOf(siteRegionId));
+        if (primaryMatches) {
+            return;
+        }
+
+        boolean secondaryProvided = requestRegionSecondary != null && !requestRegionSecondary.trim().isEmpty();
+        String secondaryDigits = extractRegionDigits(requestRegionSecondary);
+        boolean secondaryMatches = secondaryProvided && !secondaryDigits.isEmpty()
+                && secondaryDigits.equals(String.valueOf(siteRegionId));
+        if (secondaryMatches) {
+            return;
+        }
+
+        // Neither region nor (when supplied) regionSecondary matched this site's regionId.
+        regionMismatchLines.add(lineLabel + " (locationName " + trimmedLocation + " does not match the submitted region "
+                + requestRegion + (secondaryProvided ? " or regionSecondary " + requestRegionSecondary.trim() : "") + ")");
+    }
+
+    private String extractRegionDigits(String region) {
+        return region == null ? "" : region.trim().replaceAll("(?i)^R", "").trim();
+    }
+
     @PostMapping(value = "/postdcc")
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
     public Map<String, String> postdcc(@RequestPart(value = "file", required = false) List<MultipartFile> files, @RequestPart("data") String req) {
@@ -1246,6 +1306,11 @@ public class APIController {
             List<String> acceptanceQuantity = new ArrayList<>();
             Set<String> mismatchedScopeUplLines = new LinkedHashSet<>();
             Set<String> mismatchedScopeNonUplLines = new LinkedHashSet<>();
+            // locationName must not be blank, must exist in tb_Site, and (once it does) its regionId
+            // must match either the submitted region or regionSecondary - see validateLocationAndRegion().
+            Set<String> blankLocationLines = new LinkedHashSet<>();
+            Set<String> invalidLocationLines = new LinkedHashSet<>();
+            Set<String> regionMismatchLines = new LinkedHashSet<>();
             // UPL edit/delete approval workflow: a UPL line soft-deleted via that workflow, or one
             // with an update/delete change request still pending approval, must not be usable to
             // raise a new acceptance request.
@@ -1358,6 +1423,10 @@ public class APIController {
                         if (localName.length() > 1) {
                             locationList.add(localName);
                         }
+
+                        validateLocationAndRegion(localName, polineitem, upllineitem,
+                                validatejsonObject.optString("region", ""), validatejsonObject.optString("regionSecondary", ""),
+                                blankLocationLines, invalidLocationLines, regionMismatchLines);
 
                         logger.info("ReceivedItemCode:  " + itemCode);
                         logger.info("ReceivedSerialNumber: " + serialNumber);
@@ -1722,6 +1791,10 @@ public class APIController {
                         if (localName.length() > 1) {
                             locationList.add(localName);
                         }
+
+                        validateLocationAndRegion(localName, polineitem, upllineitem,
+                                validatejsonObject.optString("region", ""), validatejsonObject.optString("regionSecondary", ""),
+                                blankLocationLines, invalidLocationLines, regionMismatchLines);
                         tbScope scopeRecord = scopeRepo.findByScope(scopeofWork.trim());
                         String scopeId = scopeRecord != null ? String.valueOf(scopeRecord.getRecordNo()) : "";
 
@@ -2016,6 +2089,24 @@ public class APIController {
                 errorMessages.add("PO line (" + String.join(", ", mismatchedScopeNonUplLines)
                         + ") for PO " + poNumber
                         + " does not belong to the submitted scope " + submittedScope + ".");
+            }
+
+            if (!blankLocationLines.isEmpty()) {
+                errorMessages.add("PO line + UPL line (" + String.join(", ", blankLocationLines)
+                        + ") for PO " + poNumber
+                        + " is missing a locationName. Please provide a valid site.");
+            }
+
+            if (!invalidLocationLines.isEmpty()) {
+                errorMessages.add("PO line + UPL line (" + String.join(", ", invalidLocationLines)
+                        + ") for PO " + poNumber
+                        + " reference a site that does not exist. Please provide a valid Location");
+            }
+
+            if (!regionMismatchLines.isEmpty()) {
+                errorMessages.add("PO line + UPL line (" + String.join(", ", regionMismatchLines)
+                        + ") for PO " + poNumber
+                        + " reference a locationName that does not match the submitted region.");
             }
 
             if (!deletedUplLines.isEmpty()) {
