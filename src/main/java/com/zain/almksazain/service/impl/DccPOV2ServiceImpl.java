@@ -551,8 +551,14 @@ public CompletableFuture<ExportPageResult> getExportDataPage(DccPORequest reques
     }
 
     private Map<String, List<tb_PurchaseOrderUPL>> batchLoadUplMap(List<String> poNums) {
+        // Only ACTIVE revisions - a UPL line can have a DELETED row alongside its ACTIVE
+        // one sharing the same (poNumber, poLineNumber, uplLine) key, and buildLineRows()
+        // matches every DCC line item against every UPL row with that key, so an
+        // unfiltered fetch here duplicates every matching line item once per extra revision.
         return tbPurchaseOrderUplRepository.findByPoNumberIn(poNums)
-                .stream().collect(Collectors.groupingBy(tb_PurchaseOrderUPL::getPoNumber));
+                .stream()
+                .filter(u -> "ACTIVE".equalsIgnoreCase(u.getStatus()))
+                .collect(Collectors.groupingBy(tb_PurchaseOrderUPL::getPoNumber));
     }
 
     private Map<Long, List<DCCLineItem>> batchLoadDccLineItems(List<Long> ids) {
