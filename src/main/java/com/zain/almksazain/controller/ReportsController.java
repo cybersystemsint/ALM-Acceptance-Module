@@ -280,17 +280,17 @@ public class ReportsController {
         searchableColumns.put("actualPartNumber", "LN2.actualItemCode");
         searchableColumns.put("uplItemSerializedStatus", "upl.uplItemSerialized");
         searchableColumns.put("serialNumber", "LN2.serialNumber");
-        searchableColumns.put("uplItemCategoryCode", "upl.zainItemCategoryCode");
-        searchableColumns.put("uplItemCategoryCodeDescription", "upl.zainItemCategoryDescription");
-        searchableColumns.put("unitPrice", "upl.poLineUnitPrice");
-        searchableColumns.put("acceptanceUplQty", "LN2.deliveredQty");
+        searchableColumns.put("uplItemCategoryCode", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.zainItemCategoryCode ELSE HD.itemCategoryInventory END)");
+        searchableColumns.put("uplItemCategoryCodeDescription", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.zainItemCategoryDescription ELSE HD.inventoryCategoryDescription END)");
+        searchableColumns.put("unitPrice", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineUnitPrice ELSE HD.unitPriceInPoCurrency END)");
+        searchableColumns.put("acceptanceUplQty", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN LN2.deliveredQty ELSE NULL END)");
         searchableColumns.put("acceptancePoQty", "LN2.poAcceptanceQty");
-        searchableColumns.put("totalAcceptanceAmount", "(upl.uplLineUnitPrice * LN2.deliveredQty)");
+        searchableColumns.put("totalAcceptanceAmount", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (upl.uplLineUnitPrice * LN2.deliveredQty) ELSE (HD.unitPriceInPoCurrency * LN2.deliveredQty) END)");
         searchableColumns.put("vendorName", "HD.vendorName");
         searchableColumns.put("recordNo", "DCC.recordNo");
         searchableColumns.put("tagNumber", "LN2.tagNumber");
         searchableColumns.put("linkId", "LN2.linkId");
-        searchableColumns.put("activeOrPassive", "upl.activeOrPassive");
+        searchableColumns.put("activeOrPassive", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.activeOrPassive ELSE HD.activeOrPassive END)");
         searchableColumns.put("createdDate", "DATE_FORMAT(CAST(DCC.createdDate AS DATE),'%e-%b-%Y')");
         searchableColumns.put("approvalDate", "DATE_FORMAT(CAST(DCC.approvedDate AS DATE),'%e-%b-%Y')");
         searchableColumns.put("scopeOfWork", "LN2.scopeOfWork");
@@ -508,7 +508,7 @@ public class ReportsController {
                 "CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineDescription ELSE HD.poLineDescription END AS poLineDescription, " +
                 "CASE WHEN HD.serialControl = 'NO CONTROL' THEN 'NO' ELSE 'YES' END AS poItemSerializedStatus, " +
                 "'SAR' AS currency, " +
-                "upl.poLineUnitPrice AS unitPrice, " +
+                "CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineUnitPrice ELSE HD.unitPriceInPoCurrency END AS unitPrice, " +
                 "LN2.recordNo AS dccLnRecordNo, " +
                 "LN2.locationName AS siteId, " +
                 "siteType.siteTypeName AS siteTypeName, " +
@@ -524,16 +524,19 @@ public class ReportsController {
                 "LN2.actualItemCode AS actualPartNumber, " +
                 "upl.uplItemSerialized AS uplItemSerializedStatus, " +
                 "LN2.serialNumber AS serialNumber, " +
-                "upl.zainItemCategoryCode AS uplItemCategoryCode, " +
-                "upl.zainItemCategoryDescription AS uplItemCategoryCodeDescription, " +
+                // Non-UPL rows (blank uplLineNumber - the upl join finds nothing) take the price,
+                // active/passive and item category from the PO line itself; UPL rows are unchanged.
+                // Kept identical to ExportsController.runAcceptanceReportExportJob.
+                "CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.zainItemCategoryCode ELSE HD.itemCategoryInventory END AS uplItemCategoryCode, " +
+                "CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.zainItemCategoryDescription ELSE HD.inventoryCategoryDescription END AS uplItemCategoryCodeDescription, " +
                 "upl.uplLineUnitPrice AS uplLineUnitPrice, " +
-                "LN2.deliveredQty AS acceptanceUplQty, " +
+                "CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN LN2.deliveredQty ELSE NULL END AS acceptanceUplQty, " +
                 "LN2.poAcceptanceQty AS acceptancePoQty, " +
-                "(upl.uplLineUnitPrice * LN2.deliveredQty) AS totalAcceptanceAmount, " +
+                "CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (upl.uplLineUnitPrice * LN2.deliveredQty) ELSE (HD.unitPriceInPoCurrency * LN2.deliveredQty) END AS totalAcceptanceAmount, " +
                 "HD.vendorName AS vendorName, " +
                 "LN2.tagNumber AS tagNumber, " +
                 "LN2.linkId AS linkId, " +
-                "upl.activeOrPassive AS activeOrPassive, " +
+                "CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.activeOrPassive ELSE HD.activeOrPassive END AS activeOrPassive, " +
                 "DATE_FORMAT(CAST(DCC.createdDate AS DATE),'%e-%b-%Y') AS createdDate, " +
                 "DATE_FORMAT(CAST(DCC.approvedDate AS DATE),'%e-%b-%Y') AS approvalDate, " +
                 "LN2.scopeOfWork AS scopeOfWork " +
