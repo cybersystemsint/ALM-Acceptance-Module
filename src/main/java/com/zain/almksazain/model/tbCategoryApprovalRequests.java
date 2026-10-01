@@ -6,6 +6,7 @@ package com.zain.almksazain.model;
 
 import java.io.Serializable;
 import java.sql.Date;
+import java.sql.Timestamp;
 import javax.persistence.Entity;
 import javax.persistence.GeneratedValue;
 import javax.persistence.GenerationType;
@@ -24,7 +25,11 @@ public class tbCategoryApprovalRequests implements Serializable {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private int recordNo;
 
-    private Date recordDateTime;
+    // Timestamp, not java.sql.Date - java.sql.Date is bound as a SQL DATE, which drops the time
+    // (saved as 00:00:00). DccPOV2ServiceImpl picks a DCC's current approval request by the latest
+    // recordDateTime, so a midnight value made a same-day resubmission's new request rank below the
+    // older returned one (Approvals Required 0 / blank Pending Approver - e.g. request 8819).
+    private Timestamp recordDateTime;
 
     private int acceptanceRequestRecordNo;
 
@@ -58,11 +63,11 @@ public class tbCategoryApprovalRequests implements Serializable {
         this.recordNo = recordNo;
     }
 
-    public Date getRecordDateTime() {
+    public Timestamp getRecordDateTime() {
         return recordDateTime;
     }
 
-    public void setRecordDateTime(Date recordDateTime) {
+    public void setRecordDateTime(Timestamp recordDateTime) {
         this.recordDateTime = recordDateTime;
     }
 

@@ -92,7 +92,7 @@ public class CategoryApprovalInitializationService {
             String poLineItemDescription, String poNumber) {
 
         tbCategoryApprovalRequests approvalRequest = new tbCategoryApprovalRequests();
-        approvalRequest.setRecordDateTime(new java.sql.Date(System.currentTimeMillis()));
+        approvalRequest.setRecordDateTime(new java.sql.Timestamp(System.currentTimeMillis()));
         approvalRequest.setAcceptanceRequestRecordNo(acceptanceRequestRecordNo);
         approvalRequest.setPoNumber(poNumber);
         approvalRequest.setTableName(tableName);
@@ -138,7 +138,7 @@ public class CategoryApprovalInitializationService {
 
         parentRecord.setStatus("pending");
         parentRecord.setApprovedDate(null);
-        parentRecord.setRecordDateTime(new java.sql.Date(System.currentTimeMillis()));
+        parentRecord.setRecordDateTime(new java.sql.Timestamp(System.currentTimeMillis()));
 
         List<tbCategoryApprovals> children = categoryApprovalsRepo.findByApprovalRecordId(parentRecord.getRecordNo());
 
