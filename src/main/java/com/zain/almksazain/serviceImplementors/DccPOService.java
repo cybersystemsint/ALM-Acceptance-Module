@@ -181,8 +181,14 @@ public class DccPOService {
                 // Batch fetch all related data
                 Map<String, List<tbPurchaseOrder>> purchaseOrderMap = tbPurchaseOrderRepository.findByPoNumberIn(poNumbers)
                         .stream().collect(Collectors.groupingBy(tbPurchaseOrder::getPoNumber));
+                // Only ACTIVE UPL revisions (DELETED = superseded, PENDING = unapproved change
+                // request) - otherwise a revised PO line's UPLs are counted once per revision in
+                // the quantity calculations and a line can match a superseded row. Same filter as
+                // DccPOV2ServiceImpl / DccPOApproverService.
                 Map<String, List<tb_PurchaseOrderUPL>> uplMap = tbPurchaseOrderUplRepository.findByPoNumberIn(poNumbers)
-                        .stream().collect(Collectors.groupingBy(tb_PurchaseOrderUPL::getPoNumber));
+                        .stream()
+                        .filter(u -> "ACTIVE".equalsIgnoreCase(u.getStatus()))
+                        .collect(Collectors.groupingBy(tb_PurchaseOrderUPL::getPoNumber));
                 Map<Long, List<DCCLineItem>> dccLnMap = tbDccLnRepository.findByDccIdIn(dccIds.stream().map(String::valueOf).collect(Collectors.toList()))
                         .stream().collect(Collectors.groupingBy(dccLn -> Long.parseLong(dccLn.getDccId())));
                 Map<String, tb_Site> siteBySiteId = DccSiteRegionResolver.loadSiteBySiteIdMap(dccLnMap, tbSiteRepo);
@@ -383,6 +389,7 @@ public class DccPOService {
         List<tb_PurchaseOrderUPL> allUplForPoLine = tbPurchaseOrderUplRepository.findByPoNumberAndPoLineNumber(
                 upl.getPoNumber(), upl.getPoLineNumber());
         double poLineAcceptanceQty = allUplForPoLine.stream()
+                .filter(u -> "ACTIVE".equalsIgnoreCase(u.getStatus())) // same as uplMap - skip superseded/pending revisions
                 .filter(u -> u.getUplLineQuantity() != null && u.getUplLineQuantity() > 0)
                 .filter(u -> u.getPoLineQuantity() != null && u.getPoLineUnitPrice() != null)
                 .mapToDouble(u -> {
@@ -836,8 +843,14 @@ public class DccPOService {
 
                 Map<String, List<tbPurchaseOrder>> purchaseOrderMap = tbPurchaseOrderRepository.findByPoNumberIn(poNumbers)
                         .stream().collect(Collectors.groupingBy(tbPurchaseOrder::getPoNumber));
+                // Only ACTIVE UPL revisions (DELETED = superseded, PENDING = unapproved change
+                // request) - otherwise a revised PO line's UPLs are counted once per revision in
+                // the quantity calculations and a line can match a superseded row. Same filter as
+                // DccPOV2ServiceImpl / DccPOApproverService.
                 Map<String, List<tb_PurchaseOrderUPL>> uplMap = tbPurchaseOrderUplRepository.findByPoNumberIn(poNumbers)
-                        .stream().collect(Collectors.groupingBy(tb_PurchaseOrderUPL::getPoNumber));
+                        .stream()
+                        .filter(u -> "ACTIVE".equalsIgnoreCase(u.getStatus()))
+                        .collect(Collectors.groupingBy(tb_PurchaseOrderUPL::getPoNumber));
                 Map<Long, List<DCCLineItem>> dccLnMap = tbDccLnRepository.findByDccIdIn(dccIds.stream().map(String::valueOf).collect(Collectors.toList()))
                         .stream().collect(Collectors.groupingBy(dccLn -> Long.parseLong(dccLn.getDccId())));
                 Map<String, tb_Site> siteBySiteId = DccSiteRegionResolver.loadSiteBySiteIdMap(dccLnMap, tbSiteRepo);
