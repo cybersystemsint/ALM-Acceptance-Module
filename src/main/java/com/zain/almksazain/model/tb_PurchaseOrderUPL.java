@@ -125,6 +125,9 @@ public class tb_PurchaseOrderUPL {
     @Temporal(TemporalType.TIMESTAMP)
     private Date uplModifiedDate;
 
+    @Column(name = "status")
+    private String status;
+
     // Getters and Setters
     public Long getRecordNo() {
         return recordNo;
@@ -428,5 +431,13 @@ public class tb_PurchaseOrderUPL {
 
     public void setUplModifiedDate(Date uplModifiedDate) {
         this.uplModifiedDate = uplModifiedDate;
+    }
+
+    public String getStatus() {
+        return status;
+    }
+
+    public void setStatus(String status) {
+        this.status = status;
     }
 }
