@@ -1637,6 +1637,7 @@ public class ExportsController {
                 + "    ON DCC.poNumber = upl.poNumber "
                 + "    AND LN2.uplLineNumber = upl.uplLine "
                 + "    AND upl.poLineNumber = LN2.lineNumber "
+                + "    AND upl.status = 'ACTIVE' "
                 + "LEFT JOIN tb_Site site "
                 + "    ON LN2.locationName COLLATE utf8mb4_general_ci = site.siteId COLLATE utf8mb4_general_ci "
                 + "LEFT JOIN tb_Site_Type siteType "
