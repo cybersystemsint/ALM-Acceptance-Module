@@ -1169,6 +1169,22 @@ public class APIController {
         return region == null ? "" : region.trim().replaceAll("(?i)^R", "").trim();
     }
 
+    // Must match the size of tb_DCC_LN.remarks (VARCHAR(450)).
+    private static final int DCC_LINE_REMARKS_MAX_LENGTH = 450;
+
+    /**
+     * Flags a line item whose remarks won't fit in tb_DCC_LN.remarks. Without this, an over-long
+     * remark (e.g. a long PO line description copied into remarks) failed the insert with
+     * "Data too long for column 'remarks'" and the user got a 500 error page instead of a
+     * validation message. Shared by both postdcc validation loops (create and resubmit).
+     */
+    private void validateRemarksLength(String remarks, String polineitem, String upllineitem, Set<String> overLongRemarksLines) {
+        if (remarks != null && remarks.length() > DCC_LINE_REMARKS_MAX_LENGTH) {
+            String lineLabel = polineitem + (upllineitem != null && !upllineitem.isEmpty() ? "+" + upllineitem : "");
+            overLongRemarksLines.add(lineLabel + " (" + remarks.length() + " characters)");
+        }
+    }
+
     @PostMapping(value = "/postdcc")
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
     public Map<String, String> postdcc(@RequestPart(value = "file", required = false) List<MultipartFile> files, @RequestPart("data") String req) {
@@ -1311,6 +1327,8 @@ public class APIController {
             Set<String> blankLocationLines = new LinkedHashSet<>();
             Set<String> invalidLocationLines = new LinkedHashSet<>();
             Set<String> regionMismatchLines = new LinkedHashSet<>();
+            // remarks longer than tb_DCC_LN.remarks can hold - see validateRemarksLength().
+            Set<String> overLongRemarksLines = new LinkedHashSet<>();
             // UPL edit/delete approval workflow: a UPL line soft-deleted via that workflow, or one
             // with an update/delete change request still pending approval, must not be usable to
             // raise a new acceptance request.
@@ -1427,6 +1445,7 @@ public class APIController {
                         validateLocationAndRegion(localName, polineitem, upllineitem,
                                 validatejsonObject.optString("region", ""), validatejsonObject.optString("regionSecondary", ""),
                                 blankLocationLines, invalidLocationLines, regionMismatchLines);
+                        validateRemarksLength(dcclinejsonObject.optString("remarks", ""), polineitem, upllineitem, overLongRemarksLines);
 
                         logger.info("ReceivedItemCode:  " + itemCode);
                         logger.info("ReceivedSerialNumber: " + serialNumber);
@@ -1795,6 +1814,7 @@ public class APIController {
                         validateLocationAndRegion(localName, polineitem, upllineitem,
                                 validatejsonObject.optString("region", ""), validatejsonObject.optString("regionSecondary", ""),
                                 blankLocationLines, invalidLocationLines, regionMismatchLines);
+                        validateRemarksLength(dcclineUpdatejsonObject.optString("remarks", ""), polineitem, upllineitem, overLongRemarksLines);
                         tbScope scopeRecord = scopeRepo.findByScope(scopeofWork.trim());
                         String scopeId = scopeRecord != null ? String.valueOf(scopeRecord.getRecordNo()) : "";
 
@@ -2107,6 +2127,13 @@ public class APIController {
                 errorMessages.add("PO line + UPL line (" + String.join(", ", regionMismatchLines)
                         + ") for PO " + poNumber
                         + " reference a locationName that does not match the submitted region.");
+            }
+
+            if (!overLongRemarksLines.isEmpty()) {
+                errorMessages.add("PO line + UPL line (" + String.join(", ", overLongRemarksLines)
+                        + ") for PO " + poNumber
+                        + " has remarks longer than the maximum of " + DCC_LINE_REMARKS_MAX_LENGTH
+                        + " characters. Please shorten the remarks and resubmit.");
             }
 
             if (!deletedUplLines.isEmpty()) {
