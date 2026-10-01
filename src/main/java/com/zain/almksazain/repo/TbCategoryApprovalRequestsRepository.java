@@ -27,10 +27,13 @@ public interface TbCategoryApprovalRequestsRepository extends JpaRepository<TbCa
             "ORDER BY r.`recordDateTime` DESC", nativeQuery = true)
     List<TbCategoryApprovalRequests> findRequestsByApproverActioned(@Param("approverName") String approverName);
         // Batch fetch latest approval request per DCC ID
+    // recordNo DESC breaks ties so that, when two requests share a recordDateTime (e.g. older rows
+    // saved with a date-only value), the newer row still ranks as the latest - the combined view
+    // treats the first row per DCC as its current approval request.
     @Query("""
         SELECT r FROM TbCategoryApprovalRequests r
         WHERE r.acceptanceRequestRecordNo IN :dccIds
-        ORDER BY r.recordDateTime DESC
+        ORDER BY r.recordDateTime DESC, r.recordNo DESC
         """)
     List<TbCategoryApprovalRequests> findByAcceptanceRequestRecordNoInOrderByRecordDateTimeDesc(
         @Param("dccIds") List<Long> dccIds);
