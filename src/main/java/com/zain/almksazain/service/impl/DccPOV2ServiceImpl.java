@@ -188,7 +188,7 @@ public CompletableFuture<ExportPageResult> getExportDataPage(DccPORequest reques
         uplMap       = batchLoadUplMap(poNumbers);
         lnMap        = batchLoadDccLineItems(dccIds);
         siteBySiteId = DccSiteRegionResolver.loadSiteBySiteIdMap(lnMap, tbSiteRepo);
-        qtyCtx       = buildQuantityContext(poNumbers, dccList, uplMap, lnMap);
+        qtyCtx       = buildQuantityContext(poNumbers, dccList, uplMap, lnMap, poMap);
     }
 
     return new FetchContext(dccList, totalFiltered, approverFilteredTotal, fetchParentOnly,
@@ -207,7 +207,8 @@ public CompletableFuture<ExportPageResult> getExportDataPage(DccPORequest reques
             List<String> poNumbers,
             List<DCC> dccList,
             Map<String, List<tb_PurchaseOrderUPL>> uplMap,
-            Map<Long,   List<DCCLineItem>>          lnMap) {
+            Map<Long,   List<DCCLineItem>>          lnMap,
+            Map<String, List<tbPurchaseOrder>>      poMap) {
 
         // ── 1. Index DCC status by recordNo for O(1) lookup ───────────────────
         // (dccList already contains all DCCs for this page/export)
@@ -269,10 +270,46 @@ public CompletableFuture<ExportPageResult> getExportDataPage(DccPORequest reques
             }
         }
 
-        logger.info("QuantityContext built: {} deliveredKeys, {} uplByPoLineKeys, {} existsKeys",
-                deliveredByUplKey.size(), uplByPoLine.size(), dccLnExistsByKey.size());
+        // ── 7. Non-UPL PO Pending Qty: "poNumber|poLineNumber" → pending ─────
+        // Same formula combinedPurchaseOrderView uses for poPendingQuantity on a PO line with no
+        // ACTIVE UPL (what the create-acceptance-request page validates against):
+        //   quantityDue (quantityDueNew if poQtyNew > 0, else quantityDueOld)
+        //   - sum of deliveredQty on that PO + line, excluding incomplete/rejected/returned DCCs.
+        // UPL rows keep their own calculation in calculateQuantitiesFromContext.
+        Set<String> excludedForPending = new HashSet<>(Arrays.asList("incomplete", "rejected", "returned"));
+        Map<String, Double> deliveredByPoLine = new HashMap<>();
+        for (DCCLineItem ln : allLnForPos) {
+            if (!hasValue(ln.getPoId()) || !hasValue(ln.getLineNumber()) || ln.getDeliveredQty() == null) continue;
+            long dccId;
+            try { dccId = Long.parseLong(ln.getDccId()); } catch (NumberFormatException e) { continue; }
+            String status = dccStatusByRecordNo.get(dccId);
+            // A NULL status never satisfies the view's NOT IN, so it isn't counted there either.
+            if (status == null || excludedForPending.contains(status.toLowerCase())) continue;
+            deliveredByPoLine.merge(ln.getPoId() + "|" + ln.getLineNumber(), ln.getDeliveredQty(), Double::sum);
+        }
+        Map<String, Double> nonUplPendingByPoLine = new HashMap<>();
+        if (poMap != null) {
+            for (List<tbPurchaseOrder> lines : poMap.values()) {
+                for (tbPurchaseOrder po : lines) {
+                    if (!hasValue(po.getPoNumber()) || po.getLineNumber() == null) continue;
+                    String key = po.getPoNumber() + "|" + po.getLineNumber();
+                    nonUplPendingByPoLine.putIfAbsent(key,
+                            quantityDue(po) - deliveredByPoLine.getOrDefault(key, 0.0));
+                }
+            }
+        }
 
-        return new QuantityContext(deliveredByUplKey, uplByPoLine, dccLnExistsByKey);
+        logger.info("QuantityContext built: {} deliveredKeys, {} uplByPoLineKeys, {} existsKeys, {} nonUplPendingKeys",
+                deliveredByUplKey.size(), uplByPoLine.size(), dccLnExistsByKey.size(), nonUplPendingByPoLine.size());
+
+        return new QuantityContext(deliveredByUplKey, uplByPoLine, dccLnExistsByKey, nonUplPendingByPoLine);
+    }
+
+    /** quantityDueNew when the PO line was re-quantified (poQtyNew > 0), else quantityDueOld. */
+    private static double quantityDue(tbPurchaseOrder po) {
+        Double qtyNew = po.getPoQtyNew();
+        Double due = (qtyNew != null && qtyNew > 0) ? po.getQuantityDueNew() : po.getQuantityDueOld();
+        return due != null ? due : 0.0;
     }
 
     private List<DccPOCombinedViewDTO> fetchRows(FetchContext ctx) {
@@ -478,7 +515,7 @@ public CompletableFuture<ExportPageResult> getExportDataPage(DccPORequest reques
         populateDccFields(dto, dcc, fmt, latestReq);
         populateLineItemFields(dto, ln, siteBySiteId, fmt);
         populatePoAndUplFields(dto, ln, po, upl);
-        calculateQuantitiesFromContext(dto, upl, qtyCtx);
+        calculateQuantitiesFromContext(dto, dcc, ln, upl, qtyCtx);
 
         if (latestReq != null) {
             calculateApprovalFieldsBatched(dto, latestReq, allReqs, allApprovals);
@@ -713,15 +750,18 @@ public CompletableFuture<ExportPageResult> getExportDataPage(DccPORequest reques
     /**
      * Replaces the old {@code calculateQuantities} method.
      * Zero DB queries — reads everything from the pre-built {@link QuantityContext}.
-     * When {@code upl} is null, UPL-derived quantity fields are left null/blank.
+     * When {@code upl} is null (non-UPL row), UPL-derived quantity fields are left null/blank and
+     * PO Pending Qty comes from the non-UPL formula in {@link QuantityContext#nonUplPendingByPoLine}.
      */
-    private void calculateQuantitiesFromContext(DccPOCombinedViewDTO dto,
+    private void calculateQuantitiesFromContext(DccPOCombinedViewDTO dto, DCC dcc, DCCLineItem ln,
                                                 tb_PurchaseOrderUPL upl,
                                                 QuantityContext qtyCtx) {
         if (upl == null || qtyCtx == null) {
             dto.setUPLACPTRequestValue(null);
             dto.setPOLineAcceptanceQty(null);
-            dto.setPoPendingQuantity(null);
+            dto.setPoPendingQuantity(upl == null && qtyCtx != null
+                    ? qtyCtx.nonUplPendingByPoLine.get(dcc.getPoNumber() + "|" + ln.getLineNumber())
+                    : null);
             dto.setUplPendingQuantity(null);
             return;
         }
@@ -964,13 +1004,17 @@ public CompletableFuture<ExportPageResult> getExportDataPage(DccPORequest reques
         final Map<String, List<tb_PurchaseOrderUPL>> uplByPoLine;
         /** "poNumber|poLineNumber|uplLine" → true if any DCCLineItem exists for that key */
         final Map<String, Boolean> dccLnExistsByKey;
+        /** "poNumber|poLineNumber" → PO Pending Qty for non-UPL rows (see buildQuantityContext step 7) */
+        final Map<String, Double> nonUplPendingByPoLine;
 
         QuantityContext(Map<String, Double> deliveredByUplKey,
                         Map<String, List<tb_PurchaseOrderUPL>> uplByPoLine,
-                        Map<String, Boolean> dccLnExistsByKey) {
-            this.deliveredByUplKey = deliveredByUplKey;
-            this.uplByPoLine       = uplByPoLine;
-            this.dccLnExistsByKey  = dccLnExistsByKey;
+                        Map<String, Boolean> dccLnExistsByKey,
+                        Map<String, Double> nonUplPendingByPoLine) {
+            this.deliveredByUplKey     = deliveredByUplKey;
+            this.uplByPoLine           = uplByPoLine;
+            this.dccLnExistsByKey      = dccLnExistsByKey;
+            this.nonUplPendingByPoLine = nonUplPendingByPoLine;
         }
     }
 }
