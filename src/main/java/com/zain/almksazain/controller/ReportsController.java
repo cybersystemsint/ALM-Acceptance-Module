@@ -3706,14 +3706,10 @@ private String convertToSqlDate(String input) {
             searchableColumns.put("description", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineDescription ELSE HD.poLineDescription END)");
             searchableColumns.put("quantity", "LN2.deliveredQty");
             searchableColumns.put("partNumber", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (CASE WHEN LENGTH(LN2.actualItemCode) > 0 THEN LN2.actualItemCode ELSE upl.uplLineItemCode END) ELSE HD.itemPartNumber END)");
-            searchableColumns.put("itemSerializedStatus",
-                "(CASE " +
-                        "WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('YES','Y','TRUE','1') THEN 'YES' " +
-                        "WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('NO','N','FALSE','0') THEN 'NO' " +
-                        "ELSE NULL END)");
+            searchableColumns.put("itemSerializedStatus", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (CASE WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('YES','Y','TRUE','1') THEN 'YES' WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('NO','N','FALSE','0') THEN 'NO' ELSE NULL END) ELSE (CASE WHEN UPPER(TRIM(HD.vendorSerialNumberYN)) IN ('YES','Y','TRUE','1') THEN 'YES' WHEN UPPER(TRIM(HD.vendorSerialNumberYN)) IN ('NO','N','FALSE','0') THEN 'NO' ELSE NULL END) END)");
             searchableColumns.put("serialNumber", "LN2.serialNumber");
-            searchableColumns.put("uplItemCategoryCodeDescription", "upl.zainItemCategoryDescription");
-            searchableColumns.put("faBookingAmount", "(upl.uplLineUnitPrice * LN2.deliveredQty)");
+            searchableColumns.put("uplItemCategoryCodeDescription", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.zainItemCategoryDescription ELSE HD.inventoryCategoryDescription END)");
+            searchableColumns.put("faBookingAmount", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (upl.uplLineUnitPrice * LN2.deliveredQty) ELSE (HD.unitPriceInPoCurrency * LN2.deliveredQty) END)");
             searchableColumns.put("currency", "'SAR'");
             searchableColumns.put("tagNumber", "LN2.tagNumber");
             searchableColumns.put("receiveddate", "rec.approvedDate");
@@ -3807,7 +3803,7 @@ private String convertToSqlDate(String input) {
                     "    GROUP BY r.categoryApprovalRequestId " +
                     ") rec ON AR.recordNo = rec.categoryApprovalRequestId " +
                     "JOIN tb_DCC_LN LN2 ON DCC.recordNo = LN2.dccId " +
-                    "LEFT JOIN tb_PurchaseOrderUPL upl ON DCC.poNumber = upl.poNumber AND LN2.uplLineNumber = upl.uplLine AND upl.poLineNumber = LN2.lineNumber " +
+                    "LEFT JOIN tb_PurchaseOrderUPL upl ON DCC.poNumber = upl.poNumber AND LN2.uplLineNumber = upl.uplLine AND upl.poLineNumber = LN2.lineNumber AND upl.status = 'ACTIVE' " +
                     "LEFT JOIN tb_Site site ON LN2.locationName COLLATE utf8mb4_general_ci = site.siteId COLLATE utf8mb4_general_ci " +
                     "LEFT JOIN tb_Site_Type siteType ON site.siteTypeId COLLATE utf8mb4_general_ci = siteType.recordNo COLLATE utf8mb4_general_ci " +
                     "LEFT JOIN tb_Region rg ON site.regionId COLLATE utf8mb4_general_ci = rg.recordNo COLLATE utf8mb4_general_ci " +
@@ -3849,13 +3845,14 @@ private String convertToSqlDate(String input) {
                     "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineDescription ELSE HD.poLineDescription END) AS description, " +
                     "LN2.deliveredQty AS quantity, " +
                     "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (CASE WHEN LENGTH(LN2.actualItemCode) > 0 THEN LN2.actualItemCode ELSE upl.uplLineItemCode END) ELSE HD.itemPartNumber END) AS partNumber, " +
-                    " (CASE " +
-                     "WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('YES','Y','TRUE','1') THEN 'YES' " +
-                     "WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('NO','N','FALSE','0') THEN 'NO' " +
-                     "ELSE NULL END) AS itemSerializedStatus, " +
+                    // Non-UPL rows (blank uplLineNumber - no upl row) take serialized status, category
+                    // description and price from the PO line; UPL rows use their ACTIVE UPL row (see join).
+                    // This is the endpoint the grid calls whenever a filter is applied, so it must stay
+                    // identical to /reports/v2/capitalizationReport and the capitalization export.
+                    "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (CASE WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('YES','Y','TRUE','1') THEN 'YES' WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('NO','N','FALSE','0') THEN 'NO' ELSE NULL END) ELSE (CASE WHEN UPPER(TRIM(HD.vendorSerialNumberYN)) IN ('YES','Y','TRUE','1') THEN 'YES' WHEN UPPER(TRIM(HD.vendorSerialNumberYN)) IN ('NO','N','FALSE','0') THEN 'NO' ELSE NULL END) END) AS itemSerializedStatus, " +
                     "LN2.serialNumber AS serialNumber, " +
-                    "upl.zainItemCategoryDescription AS uplItemCategoryCodeDescription, " +
-                    "(upl.uplLineUnitPrice * LN2.deliveredQty) AS faBookingAmount, " +
+                    "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.zainItemCategoryDescription ELSE HD.inventoryCategoryDescription END) AS uplItemCategoryCodeDescription, " +
+                    "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (upl.uplLineUnitPrice * LN2.deliveredQty) ELSE (HD.unitPriceInPoCurrency * LN2.deliveredQty) END) AS faBookingAmount, " +
                     "'SAR' AS currency, " +
                     "LN2.tagNumber AS tagNumber, " +
                     "DATE_FORMAT(rec.approvedDate, '%d-%m-%Y') AS receiveddate " +
