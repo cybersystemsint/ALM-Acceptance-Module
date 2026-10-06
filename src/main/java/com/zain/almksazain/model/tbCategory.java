@@ -16,6 +16,7 @@ public class tbCategory implements Serializable {
     public long recordNo;
     public String itemCategoryCode;
     public String scope;
+    public int status;
 
     public long getRecordNo() {
         return recordNo;
@@ -39,5 +40,13 @@ public class tbCategory implements Serializable {
 
     public void setScope(String scope) {
         this.scope = scope;
+    }
+
+    public int getStatus() {
+        return status;
+    }
+
+    public void setStatus(int status) {
+        this.status = status;
     }
 }
