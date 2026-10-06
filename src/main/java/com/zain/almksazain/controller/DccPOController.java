@@ -1373,6 +1373,10 @@ public class DccPOController {
 
             CellStyle preciseQtyStyle = workbook.createCellStyle();
             preciseQtyStyle.setDataFormat(createHelper.createDataFormat().getFormat("0.####################"));
+            // Whole numbers get "0" - under "0.###..." Excel shows them with a trailing point ("74.").
+            // Same per-cell choice as the Actioned Requests export (applyQtyStyle).
+            CellStyle wholeQtyStyle = workbook.createCellStyle();
+            wholeQtyStyle.setDataFormat(createHelper.createDataFormat().getFormat("0"));
 
             CellStyle headerStyle = workbook.createCellStyle();
             Font headerFont = workbook.createFont();
@@ -1463,19 +1467,22 @@ public class DccPOController {
                     row.createCell(col++).setCellValue(dto.getActualItemCode() != null ? dto.getActualItemCode() : "");
                     row.createCell(col++).setCellValue(dto.getUplLineItemCode() != null ? dto.getUplLineItemCode() : "");
                     Cell poAcceptanceQtyCell = row.createCell(col++);
-                    poAcceptanceQtyCell.setCellValue(dto.getpoAcceptanceQty() != null ? dto.getpoAcceptanceQty() : 0);
-                    poAcceptanceQtyCell.setCellStyle(preciseQtyStyle);
+                    double poAcceptanceQtyVal = dto.getpoAcceptanceQty() != null ? dto.getpoAcceptanceQty() : 0;
+                    poAcceptanceQtyCell.setCellValue(poAcceptanceQtyVal);
+                    applyQtyStyle(poAcceptanceQtyCell, poAcceptanceQtyVal, preciseQtyStyle, wholeQtyStyle);
 
                     row.createCell(col++).setCellValue(dto.getPoLineDescription() != null ? dto.getPoLineDescription() : "");
                     row.createCell(col++).setCellValue(dto.getUplLineDescription() != null ? dto.getUplLineDescription() : "");
 
                     Cell poPendingQtyCell = row.createCell(col++);
-                    poPendingQtyCell.setCellValue(dto.getPoPendingQuantity() != null ? dto.getPoPendingQuantity() : 0.0);
-                    poPendingQtyCell.setCellStyle(preciseQtyStyle);
+                    double poPendingQtyVal = dto.getPoPendingQuantity() != null ? dto.getPoPendingQuantity() : 0.0;
+                    poPendingQtyCell.setCellValue(poPendingQtyVal);
+                    applyQtyStyle(poPendingQtyCell, poPendingQtyVal, preciseQtyStyle, wholeQtyStyle);
 
                     Cell acceptanceQtyCell = row.createCell(col++);
-                    acceptanceQtyCell.setCellValue(dto.getLnDeliveredQty() != null ? dto.getLnDeliveredQty() : 0.0);
-                    acceptanceQtyCell.setCellStyle(preciseQtyStyle);
+                    double acceptanceQtyVal = dto.getLnDeliveredQty() != null ? dto.getLnDeliveredQty() : 0.0;
+                    acceptanceQtyCell.setCellValue(acceptanceQtyVal);
+                    applyQtyStyle(acceptanceQtyCell, acceptanceQtyVal, preciseQtyStyle, wholeQtyStyle);
                     row.createCell(col++).setCellValue(dto.getLnLocationName() != null ? dto.getLnLocationName() : "");
                     row.createCell(col++).setCellValue(dto.getLnScopeOfWork() != null ? dto.getLnScopeOfWork() : "");
 

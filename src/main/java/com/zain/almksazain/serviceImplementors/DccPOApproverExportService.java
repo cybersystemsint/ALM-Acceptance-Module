@@ -45,6 +45,9 @@ public class DccPOApproverExportService {
     @Autowired
     private AcceptanceRequestReceiptRepository acceptanceRequestReceiptRepository;
 
+    @Autowired
+    private NonUplPoPendingQtyCalculator nonUplPoPendingQtyCalculator;
+
     private static final DateTimeFormatter DATE_FORMATTER =
             DateTimeFormatter.ofPattern("d-MMM-yyyy").withZone(ZoneId.of("Africa/Nairobi"));
 
@@ -357,6 +360,8 @@ public class DccPOApproverExportService {
                         (dln.getUplLineNumber() != null ? dln.getUplLineNumber() : ""))
                 .collect(Collectors.toSet());
 
+        Map<String, Double> nonUplPendingByPoLine = nonUplPoPendingQtyCalculator.pendingByPoLine(poNumbers, purchaseOrderMap, dccMap);
+
         // Fetch approval data
         List<TbCategoryApprovalRequests> allRequests = tbCategoryApprovalRequestsRepository
                 .findByAcceptanceRequestRecordNoInOrderByAcceptanceRequestRecordNoAscRecordDateTimeDesc(dccIds);
@@ -411,7 +416,7 @@ public class DccPOApproverExportService {
 
                     return buildDccPOCombinedViewDTOs(dcc, purchaseOrder, uplList, dccLnList,
                             latestApprovalRequest, dccRequests, allRelatedApprovals, deliveredMap,
-                            acceptanceByPoLine, hasDccLnSet, dateFormat).stream();
+                            acceptanceByPoLine, hasDccLnSet, nonUplPendingByPoLine, dateFormat).stream();
                 })
                 .collect(Collectors.toList());
 
@@ -431,7 +436,7 @@ public class DccPOApproverExportService {
             List<DCCLineItem> dccLnList, TbCategoryApprovalRequests latestApprovalRequest,
             List<TbCategoryApprovalRequests> allRelatedRequests, List<TbCategoryApprovals> allRelatedApprovals,
             Map<String, Double> deliveredMap, Map<String, Double> acceptanceByPoLine,
-            Set<String> hasDccLnSet, SimpleDateFormat dateFormat) {
+            Set<String> hasDccLnSet, Map<String, Double> nonUplPendingByPoLine, SimpleDateFormat dateFormat) {
 
         List<DccPOCombinedViewDTO> dtos = new ArrayList<>();
 
@@ -464,6 +469,11 @@ public class DccPOApproverExportService {
             calculateQuantitiesAndApprovals(dto, dcc, purchaseOrder, upl, deliveredMap,
                     acceptanceByPoLine, hasDccLnSet, latestApprovalRequest, allRelatedRequests,
                     allRelatedApprovals);
+            if (upl == null) {
+                // Non-UPL row: PO Pending Qty follows combinedPurchaseOrderView's poPendingQuantity
+                // (see NonUplPoPendingQtyCalculator); UPL rows keep the calculation above.
+                dto.setPoPendingQuantity(nonUplPendingByPoLine.get(dcc.getPoNumber() + "|" + dccLn.getLineNumber()));
+            }
 
             dtos.add(dto);
         }
