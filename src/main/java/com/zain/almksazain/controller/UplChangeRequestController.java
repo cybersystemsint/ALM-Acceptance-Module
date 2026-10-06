@@ -102,9 +102,17 @@ public class UplChangeRequestController {
     public ResponseEntity<Map<String, Object>> decide(@RequestBody DecideChangeRequestsPayload payload) {
         List<UplChangeRequest> decided = new ArrayList<>();
         List<Map<String, String>> failures = new ArrayList<>();
+        // Precomputed once per request (not per id) so every id being decided together in this
+        // same call - e.g. selecting several rows under the same PO line in Massive Approval -
+        // sees each other's proposed values, not just its own against everyone else's stale,
+        // pre-edit DB values. Only meaningful for APPROVED (REJECTED never validates a line total).
+        Map<Long, double[]> batchProposedByRecordNo = payload.getDecision() == UplDecision.APPROVED
+                ? service.buildBatchProposedValues(payload.getIds())
+                : java.util.Collections.emptyMap();
         for (Long id : payload.getIds()) {
             try {
-                decided.add(service.decide(id, payload.getDecidedBy(), payload.getDecision(), payload.getComments()));
+                decided.add(service.decide(id, payload.getDecidedBy(), payload.getDecision(), payload.getComments(),
+                        batchProposedByRecordNo));
             } catch (UplValidationException ex) {
                 Map<String, String> failure = new HashMap<>();
                 failure.put("recordId", String.valueOf(id));
@@ -118,6 +126,11 @@ public class UplChangeRequestController {
                 failures.add(failure);
             }
         }
+        // One "UPL request(s) approved/rejected" email per distinct requester covering everything
+        // of theirs decided in THIS call, instead of decide() emailing per id - see
+        // notifyRequestersOfBatchDecision's own doc for why (and why in-app bell notifications,
+        // sent inside decide() itself via notifyRequesterInApp, stay per-record).
+        service.notifyRequestersOfBatchDecision(decided, payload.getDecision(), payload.getComments());
         Map<String, Object> body = success(decided);
         body.put("failures", failures);
         return ResponseEntity.ok(body);

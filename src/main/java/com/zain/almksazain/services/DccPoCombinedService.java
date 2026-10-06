@@ -271,8 +271,13 @@ public class DccPoCombinedService {
         Set<String> poIds = allLineItems.stream().map(DCCLineItem::getPoId).filter(Objects::nonNull).collect(Collectors.toSet());
         Set<String> lineNumbers = allLineItems.stream().map(DCCLineItem::getLineNumber).filter(Objects::nonNull).collect(Collectors.toSet());
         Set<String> uplLineNumbers = allLineItems.stream().map(DCCLineItem::getUplLineNumber).filter(Objects::nonNull).collect(Collectors.toSet());
+        // Only ACTIVE UPL revisions (DELETED = superseded, PENDING = unapproved change request) -
+        // without this, every revision of a revised UPL line came back and the first one (usually
+        // the older DELETED row) supplied the price, e.g. understating Request Amount (SAR).
         Map<String, List<tb_PurchaseOrderUPL>> uplMap = tbPurchaseOrderUPLRepo.findByPoNumberInAndPoLineNumberInAndUplLineIn(poIds, lineNumbers, uplLineNumbers)
-                .stream().collect(Collectors.groupingBy(upl -> upl.getPoNumber() + "-" + upl.getPoLineNumber() + "-" + upl.getUplLine()));
+                .stream()
+                .filter(upl -> "ACTIVE".equalsIgnoreCase(upl.getStatus()))
+                .collect(Collectors.groupingBy(upl -> upl.getPoNumber() + "-" + upl.getPoLineNumber() + "-" + upl.getUplLine()));
         result.put("uplMap", uplMap);
 
         // Preload Approval Requests
@@ -373,7 +378,7 @@ public class DccPoCombinedService {
         row.put("totalAgingInDays", extractDaysFromAging(totalAging));
 
         // Request Amount SAR
-        Double requestAmountSAR = calculateRequestAmountSAR(lineItems, uplMap);
+        Double requestAmountSAR = calculateRequestAmountSAR(lineItems, uplMap, poByNumberLine);
         row.put("requestAmountSAR", requestAmountSAR);
         row.put("poId", po != null ? po.getPoNumber() : dcc.getPoNumber());
 
@@ -490,11 +495,22 @@ private ApprovalInfo calculateApprovalInfo(List<tbCategoryApprovals> approvals, 
         }
     }
 
-private Double calculateRequestAmountSAR(List<DCCLineItem> lineItems, Map<String, List<tb_PurchaseOrderUPL>> uplMap) {
+/**
+ * Sum over the request's lines of:
+ *   UPL line:     uplLineUnitPrice (ACTIVE UPL row) * deliveredQty
+ *   non-UPL line: tb_PurchaseOrder.unitPriceInSAR (same PO + line) * deliveredQty
+ */
+private Double calculateRequestAmountSAR(List<DCCLineItem> lineItems, Map<String, List<tb_PurchaseOrderUPL>> uplMap,
+                                         Map<String, tbPurchaseOrder> poByNumberLine) {
     if (lineItems == null || lineItems.isEmpty()) return 0.0;
     return lineItems.stream()
-        .filter(li -> li.getPoId() != null && li.getLineNumber() != null && li.getUplLineNumber() != null)
+        .filter(li -> li.getPoId() != null && li.getLineNumber() != null)
         .mapToDouble(li -> {
+            boolean isUpl = li.getUplLineNumber() != null && !li.getUplLineNumber().trim().isEmpty();
+            if (!isUpl) {
+                tbPurchaseOrder po = poByNumberLine != null ? poByNumberLine.get(li.getPoId() + "-" + li.getLineNumber()) : null;
+                return po != null ? po.getUnitPriceInSAR() * li.getDeliveredQty() : 0.0;
+            }
             String key = li.getPoId() + "-" + li.getLineNumber() + "-" + li.getUplLineNumber();
             List<tb_PurchaseOrderUPL> upls = uplMap.getOrDefault(key, Collections.emptyList());
             if (upls.isEmpty()) return 0.0;
@@ -1005,7 +1021,9 @@ private String calculateTotalAgingCustom(DCC dcc, tbCategoryApprovalRequests lat
      * FULL matching row set, unpaginated, regardless of whether filters is empty.
      */
     public List<Map<String, Object>> getFullAgingReportForExport(String supplierId, Map<String, String> filters) {
-        return loadAndFilterAgingRows(supplierId, filters, "incomplete", false);
+        List<Map<String, Object>> rows = loadAndFilterAgingRows(supplierId, filters, "incomplete", false);
+        rows.sort((a, b) -> Long.compare((Long) b.get("recordNo"), (Long) a.get("recordNo")));
+        return rows;
     }
 
     //  debug method for troubleshooting

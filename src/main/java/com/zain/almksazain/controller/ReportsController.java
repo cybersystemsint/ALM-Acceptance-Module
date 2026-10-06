@@ -42,6 +42,7 @@ import com.zain.almksazain.repo.dccpoviewrepo;
 import com.zain.almksazain.repo.poviewrepo;
 import com.zain.almksazain.repo.tbChargeAccountRepo;
 import com.zain.almksazain.repo.uplrepo;
+import com.zain.almksazain.services.UplChangeRequestService;
 import com.zain.almksazain.specs.PoFilterBuilder;
 import com.zain.almksazain.specs.QueryFilterBuilder;
 import com.zain.almksazain.specs.UplFilterBuilder;
@@ -76,6 +77,9 @@ public class ReportsController {
 
     @Autowired
     tbChargeAccountRepo chargeAccountRepo;
+
+    @Autowired
+    UplChangeRequestService uplChangeRequestService;
 
     @Autowired
     public ReportsController(JdbcTemplate jdbcTemplate) {
@@ -429,7 +433,7 @@ public class ReportsController {
                 "    GROUP BY acceptanceRequestRecordNo " +
                 ") AR_latest ON DCC.recordNo = AR_latest.acceptanceRequestRecordNo " +
                 "JOIN tb_Category_Approval_Requests AR ON AR.recordNo = AR_latest.recordNo " +
-                "LEFT JOIN tb_PurchaseOrderUPL upl ON DCC.poNumber = upl.poNumber AND LN2.uplLineNumber = upl.uplLine AND upl.poLineNumber = LN2.lineNumber " +
+                "LEFT JOIN tb_PurchaseOrderUPL upl ON DCC.poNumber = upl.poNumber AND LN2.uplLineNumber = upl.uplLine AND upl.poLineNumber = LN2.lineNumber AND upl.status = 'ACTIVE' " +
                 "LEFT JOIN tb_Site site ON LN2.locationName COLLATE utf8mb4_general_ci = site.siteId COLLATE utf8mb4_general_ci " +
                 "LEFT JOIN tb_Site_Type siteType ON site.siteTypeId COLLATE utf8mb4_general_ci = siteType.recordNo COLLATE utf8mb4_general_ci " +
                 "LEFT JOIN tb_Region rg ON site.regionId COLLATE utf8mb4_general_ci = rg.recordNo COLLATE utf8mb4_general_ci " +
@@ -600,14 +604,10 @@ public Map<String, Object> capitalizationReceivingReport(@RequestBody String req
 
     searchableColumns.put("quantity", "LN2.deliveredQty");
     searchableColumns.put("partNumber", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (CASE WHEN LENGTH(LN2.actualItemCode) > 0 THEN LN2.actualItemCode ELSE upl.uplLineItemCode END) ELSE HD.itemPartNumber END)");
-        searchableColumns.put("itemSerializedStatus",
-        "(CASE " +
-            "WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('YES','Y','TRUE','1') THEN 'YES' " +
-            "WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('NO','N','FALSE','0') THEN 'NO' " +
-            "ELSE NULL END)");
+        searchableColumns.put("itemSerializedStatus", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (CASE WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('YES','Y','TRUE','1') THEN 'YES' WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('NO','N','FALSE','0') THEN 'NO' ELSE NULL END) ELSE (CASE WHEN UPPER(TRIM(HD.vendorSerialNumberYN)) IN ('YES','Y','TRUE','1') THEN 'YES' WHEN UPPER(TRIM(HD.vendorSerialNumberYN)) IN ('NO','N','FALSE','0') THEN 'NO' ELSE NULL END) END)");
     searchableColumns.put("serialNumber", "LN2.serialNumber");
-    searchableColumns.put("uplItemCategoryCodeDescription", "upl.zainItemCategoryDescription");
-    searchableColumns.put("faBookingAmount", "(upl.uplLineUnitPrice * LN2.deliveredQty)");
+    searchableColumns.put("uplItemCategoryCodeDescription", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.zainItemCategoryDescription ELSE HD.inventoryCategoryDescription END)");
+    searchableColumns.put("faBookingAmount", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (upl.uplLineUnitPrice * LN2.deliveredQty) ELSE (HD.unitPriceInPoCurrency * LN2.deliveredQty) END)");
     searchableColumns.put("currency", "'SAR'");
     searchableColumns.put("tagNumber", "LN2.tagNumber");
     searchableColumns.put("receiveddate", "rec.approvedDate");
@@ -699,7 +699,7 @@ if (!isdFrom.isEmpty() && !isdTo.isEmpty()) {
     "    GROUP BY r.categoryApprovalRequestId " +
     ") rec ON AR.recordNo = rec.categoryApprovalRequestId " +
     "JOIN tb_DCC_LN LN2 ON DCC.recordNo = LN2.dccId " +
-    "LEFT JOIN tb_PurchaseOrderUPL upl ON DCC.poNumber = upl.poNumber AND LN2.uplLineNumber = upl.uplLine AND upl.poLineNumber = LN2.lineNumber " +
+    "LEFT JOIN tb_PurchaseOrderUPL upl ON DCC.poNumber = upl.poNumber AND LN2.uplLineNumber = upl.uplLine AND upl.poLineNumber = LN2.lineNumber AND upl.status = 'ACTIVE' " +
     "LEFT JOIN tb_Site site ON LN2.locationName COLLATE utf8mb4_general_ci = site.siteId COLLATE utf8mb4_general_ci " +
     "LEFT JOIN tb_Site_Type siteType ON site.siteTypeId COLLATE utf8mb4_general_ci = siteType.recordNo COLLATE utf8mb4_general_ci " +
     "LEFT JOIN tb_Region rg ON site.regionId COLLATE utf8mb4_general_ci = rg.recordNo COLLATE utf8mb4_general_ci " +
@@ -739,13 +739,13 @@ if (!isdFrom.isEmpty() && !isdTo.isEmpty()) {
 
             "LN2.deliveredQty AS quantity, " +
             "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (CASE WHEN LENGTH(LN2.actualItemCode) > 0 THEN LN2.actualItemCode ELSE upl.uplLineItemCode END) ELSE HD.itemPartNumber END) AS partNumber, " +
-            "(CASE " +
-                "WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('YES','Y','TRUE','1') THEN 'YES' " +
-                "WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('NO','N','FALSE','0') THEN 'NO' " +
-                "ELSE NULL END) AS itemSerializedStatus, " +
+            // Non-UPL rows (blank uplLineNumber - no upl row) take serialized status, category
+            // description and price from the PO line; UPL rows use their ACTIVE UPL row (see join).
+            // Kept identical to ExportsController.runCapitalizationReportExportJob.
+            "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (CASE WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('YES','Y','TRUE','1') THEN 'YES' WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('NO','N','FALSE','0') THEN 'NO' ELSE NULL END) ELSE (CASE WHEN UPPER(TRIM(HD.vendorSerialNumberYN)) IN ('YES','Y','TRUE','1') THEN 'YES' WHEN UPPER(TRIM(HD.vendorSerialNumberYN)) IN ('NO','N','FALSE','0') THEN 'NO' ELSE NULL END) END) AS itemSerializedStatus, " +
             "LN2.serialNumber AS serialNumber, " +
-            "upl.zainItemCategoryDescription AS uplItemCategoryCodeDescription, " +
-            "(upl.uplLineUnitPrice * LN2.deliveredQty) AS faBookingAmount, " +
+            "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.zainItemCategoryDescription ELSE HD.inventoryCategoryDescription END) AS uplItemCategoryCodeDescription, " +
+            "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (upl.uplLineUnitPrice * LN2.deliveredQty) ELSE (HD.unitPriceInPoCurrency * LN2.deliveredQty) END) AS faBookingAmount, " +
             "'SAR' AS currency, " +
             "LN2.tagNumber AS tagNumber, " +
             "DATE_FORMAT(rec.approvedDate, '%d-%m-%Y') AS receiveddate " +
@@ -3345,6 +3345,36 @@ private String convertToSqlDate(String input) {
                     + "LEFT JOIN tb_PurchaseOrderUPL upl ON upl.recordNo = cr.uplRecordNo "
                     + "LEFT JOIN tb_UPL_Change_Request_Decision d ON d.changeRequestId = cr.recordId ";
 
+    /**
+     * CREATE rows here have no fieldChanges diff (nothing to diff a brand new line against), same
+     * as on the UPL Approval page - attaches the same "newLineDetails" snapshot
+     * enrichWithUplLineDetails gives the Approval grid/export, via
+     * UplChangeRequestService#buildNewLineDetailsForUplRecord, so this page's own detail dialog and
+     * export can show approvers the whole new line instead of nothing. Static (not an instance
+     * method) so ExportsController's own audit-trail export job - which shares
+     * UPL_AUDIT_TRAIL_SELECT/FROM with this controller already - can call it too, on rows it fetched
+     * itself. One lookup per distinct uplRecordNo per call: the LEFT JOIN on
+     * tb_UPL_Change_Request_Decision means a single request can appear as several rows (one per
+     * decided level), and the cache avoids repeating that request's lookup for each one.
+     */
+    static void attachNewLineDetailsToUplAuditRows(List<Map<String, Object>> rows,
+            UplChangeRequestService uplChangeRequestService) {
+        Map<Long, Map<String, Object>> newLineDetailsCache = new HashMap<>();
+        for (Map<String, Object> row : rows) {
+            if (!"CREATE".equals(String.valueOf(row.get("changeType")))) {
+                continue;
+            }
+            Object uplRecordNoObj = row.get("uplRecordNo");
+            if (uplRecordNoObj == null) {
+                continue;
+            }
+            Long uplRecordNo = ((Number) uplRecordNoObj).longValue();
+            Map<String, Object> newLineDetails = newLineDetailsCache.computeIfAbsent(
+                    uplRecordNo, uplChangeRequestService::buildNewLineDetailsForUplRecord);
+            row.put("newLineDetails", newLineDetails);
+        }
+    }
+
     @PostMapping(value = "/reports/getUplAuditTrail", produces = "application/json")
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
     public ResponseEntity<Map<String, Object>> getUplAuditTrail(@RequestBody String req) {
@@ -3374,6 +3404,7 @@ private String convertToSqlDate(String input) {
             sqlParams.add(size);
             sqlParams.add(offset);
             List<Map<String, Object>> result = jdbcTemplate.queryForList(sql, sqlParams.toArray());
+            attachNewLineDetailsToUplAuditRows(result, uplChangeRequestService);
 
             Map<String, Object> response = new HashMap<>();
             response.put("responseCode", "0");
@@ -3422,6 +3453,7 @@ private String convertToSqlDate(String input) {
             sqlParams.add(size);
             sqlParams.add(offset);
             List<Map<String, Object>> result = jdbcTemplate.queryForList(sql, sqlParams.toArray());
+            attachNewLineDetailsToUplAuditRows(result, uplChangeRequestService);
 
             Map<String, Object> response = new HashMap<>();
             response.put("reports", result);
@@ -3671,14 +3703,10 @@ private String convertToSqlDate(String input) {
             searchableColumns.put("description", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineDescription ELSE HD.poLineDescription END)");
             searchableColumns.put("quantity", "LN2.deliveredQty");
             searchableColumns.put("partNumber", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (CASE WHEN LENGTH(LN2.actualItemCode) > 0 THEN LN2.actualItemCode ELSE upl.uplLineItemCode END) ELSE HD.itemPartNumber END)");
-            searchableColumns.put("itemSerializedStatus",
-                "(CASE " +
-                        "WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('YES','Y','TRUE','1') THEN 'YES' " +
-                        "WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('NO','N','FALSE','0') THEN 'NO' " +
-                        "ELSE NULL END)");
+            searchableColumns.put("itemSerializedStatus", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (CASE WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('YES','Y','TRUE','1') THEN 'YES' WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('NO','N','FALSE','0') THEN 'NO' ELSE NULL END) ELSE (CASE WHEN UPPER(TRIM(HD.vendorSerialNumberYN)) IN ('YES','Y','TRUE','1') THEN 'YES' WHEN UPPER(TRIM(HD.vendorSerialNumberYN)) IN ('NO','N','FALSE','0') THEN 'NO' ELSE NULL END) END)");
             searchableColumns.put("serialNumber", "LN2.serialNumber");
-            searchableColumns.put("uplItemCategoryCodeDescription", "upl.zainItemCategoryDescription");
-            searchableColumns.put("faBookingAmount", "(upl.uplLineUnitPrice * LN2.deliveredQty)");
+            searchableColumns.put("uplItemCategoryCodeDescription", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.zainItemCategoryDescription ELSE HD.inventoryCategoryDescription END)");
+            searchableColumns.put("faBookingAmount", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (upl.uplLineUnitPrice * LN2.deliveredQty) ELSE (HD.unitPriceInPoCurrency * LN2.deliveredQty) END)");
             searchableColumns.put("currency", "'SAR'");
             searchableColumns.put("tagNumber", "LN2.tagNumber");
             searchableColumns.put("receiveddate", "rec.approvedDate");
@@ -3772,7 +3800,7 @@ private String convertToSqlDate(String input) {
                     "    GROUP BY r.categoryApprovalRequestId " +
                     ") rec ON AR.recordNo = rec.categoryApprovalRequestId " +
                     "JOIN tb_DCC_LN LN2 ON DCC.recordNo = LN2.dccId " +
-                    "LEFT JOIN tb_PurchaseOrderUPL upl ON DCC.poNumber = upl.poNumber AND LN2.uplLineNumber = upl.uplLine AND upl.poLineNumber = LN2.lineNumber " +
+                    "LEFT JOIN tb_PurchaseOrderUPL upl ON DCC.poNumber = upl.poNumber AND LN2.uplLineNumber = upl.uplLine AND upl.poLineNumber = LN2.lineNumber AND upl.status = 'ACTIVE' " +
                     "LEFT JOIN tb_Site site ON LN2.locationName COLLATE utf8mb4_general_ci = site.siteId COLLATE utf8mb4_general_ci " +
                     "LEFT JOIN tb_Site_Type siteType ON site.siteTypeId COLLATE utf8mb4_general_ci = siteType.recordNo COLLATE utf8mb4_general_ci " +
                     "LEFT JOIN tb_Region rg ON site.regionId COLLATE utf8mb4_general_ci = rg.recordNo COLLATE utf8mb4_general_ci " +
@@ -3814,13 +3842,14 @@ private String convertToSqlDate(String input) {
                     "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineDescription ELSE HD.poLineDescription END) AS description, " +
                     "LN2.deliveredQty AS quantity, " +
                     "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (CASE WHEN LENGTH(LN2.actualItemCode) > 0 THEN LN2.actualItemCode ELSE upl.uplLineItemCode END) ELSE HD.itemPartNumber END) AS partNumber, " +
-                    " (CASE " +
-                     "WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('YES','Y','TRUE','1') THEN 'YES' " +
-                     "WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('NO','N','FALSE','0') THEN 'NO' " +
-                     "ELSE NULL END) AS itemSerializedStatus, " +
+                    // Non-UPL rows (blank uplLineNumber - no upl row) take serialized status, category
+                    // description and price from the PO line; UPL rows use their ACTIVE UPL row (see join).
+                    // This is the endpoint the grid calls whenever a filter is applied, so it must stay
+                    // identical to /reports/v2/capitalizationReport and the capitalization export.
+                    "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (CASE WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('YES','Y','TRUE','1') THEN 'YES' WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('NO','N','FALSE','0') THEN 'NO' ELSE NULL END) ELSE (CASE WHEN UPPER(TRIM(HD.vendorSerialNumberYN)) IN ('YES','Y','TRUE','1') THEN 'YES' WHEN UPPER(TRIM(HD.vendorSerialNumberYN)) IN ('NO','N','FALSE','0') THEN 'NO' ELSE NULL END) END) AS itemSerializedStatus, " +
                     "LN2.serialNumber AS serialNumber, " +
-                    "upl.zainItemCategoryDescription AS uplItemCategoryCodeDescription, " +
-                    "(upl.uplLineUnitPrice * LN2.deliveredQty) AS faBookingAmount, " +
+                    "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.zainItemCategoryDescription ELSE HD.inventoryCategoryDescription END) AS uplItemCategoryCodeDescription, " +
+                    "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (upl.uplLineUnitPrice * LN2.deliveredQty) ELSE (HD.unitPriceInPoCurrency * LN2.deliveredQty) END) AS faBookingAmount, " +
                     "'SAR' AS currency, " +
                     "LN2.tagNumber AS tagNumber, " +
                     "DATE_FORMAT(rec.approvedDate, '%d-%m-%Y') AS receiveddate " +

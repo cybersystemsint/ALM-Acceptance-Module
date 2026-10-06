@@ -93,6 +93,29 @@ public class ExportsController {
     private static final int MAX_PO_EXPORT_RECORDS = 250_000;
     private static final int MAX_UPL_AUDIT_TRAIL_EXPORT_RECORDS = 250_000;
 
+    // Each running export job holds a live SXSSFWorkbook plus an open streaming JDBC ResultSet
+    // for its full duration - individually bounded, but with no limit here several large exports
+    // (any mix of the 6 job types below) running at once could still exhaust the shared heap.
+    // Caps how many run concurrently; extra jobs simply wait (status stays PENDING) until a slot
+    // frees up rather than all starting immediately.
+    private static final int MAX_CONCURRENT_EXPORTS = 3;
+    private final java.util.concurrent.Semaphore exportSemaphore =
+            new java.util.concurrent.Semaphore(MAX_CONCURRENT_EXPORTS);
+
+    private void runWithExportGuard(Runnable job) {
+        try {
+            exportSemaphore.acquire();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return;
+        }
+        try {
+            job.run();
+        } finally {
+            exportSemaphore.release();
+        }
+    }
+
     @Autowired
     private JdbcTemplate jdbcTemplate;
     @Autowired
@@ -132,7 +155,7 @@ public class ExportsController {
         job.setCreatedAt(LocalDateTime.now());
         exportJobRepository.save(job);
 
-        CompletableFuture.runAsync(() -> runAcceptanceReportExportJob(jobId, req));
+        CompletableFuture.runAsync(() -> runWithExportGuard(() -> runAcceptanceReportExportJob(jobId, req)));
 
         Map<String, String> resp = new HashMap<>();
         resp.put("jobId", jobId);
@@ -294,7 +317,8 @@ public class ExportsController {
                     for (Object p : finalParams) ps.setObject(idx++, p);
 
                     CellStyle headerStyle = buildHeaderStyle(workbook);
-                    CellStyle numberStyle = buildNumberStyle(workbook);
+                    CellStyle wholeNumberStyle = buildWholeNumberStyle(workbook);
+                    CellStyle preciseNumberStyle = buildPreciseNumberStyle(workbook);
 
                     Sheet[] sheetRef = {workbook.createSheet(sheetName(1))};
                     sheetCount[0] = 1;
@@ -319,7 +343,7 @@ public class ExportsController {
                                         cell.setBlank();
                                     } else {
                                         cell.setCellValue(d);
-                                        cell.setCellStyle(numberStyle);
+                                        cell.setCellStyle(pickNumberStyle(d, wholeNumberStyle, preciseNumberStyle));
                                     }
                                 } else {
                                     String val = rs.getString(field);
@@ -479,7 +503,7 @@ public class ExportsController {
         job.setCreatedAt(LocalDateTime.now());
         exportJobRepository.save(job);
 
-        CompletableFuture.runAsync(() -> runAgingLikeReportExportJob(reportType, jobId, req));
+        CompletableFuture.runAsync(() -> runWithExportGuard(() -> runAgingLikeReportExportJob(reportType, jobId, req)));
 
         Map<String, String> resp = new HashMap<>();
         resp.put("jobId", jobId);
@@ -560,7 +584,8 @@ public class ExportsController {
 
         try {
             CellStyle headerStyle = buildHeaderStyle(workbook);
-            CellStyle numberStyle = buildNumberStyle(workbook);
+            CellStyle wholeNumberStyle = buildWholeNumberStyle(workbook);
+            CellStyle preciseNumberStyle = buildPreciseNumberStyle(workbook);
 
             Sheet[] sheetRef = {workbook.createSheet(sheetLabel)};
             sheetCount[0] = 1;
@@ -581,8 +606,9 @@ public class ExportsController {
                     if (value == null) {
                         cell.setBlank();
                     } else if (value instanceof Number) {
-                        cell.setCellValue(((Number) value).doubleValue());
-                        cell.setCellStyle(numberStyle);
+                        double d = ((Number) value).doubleValue();
+                        cell.setCellValue(d);
+                        cell.setCellStyle(pickNumberStyle(d, wholeNumberStyle, preciseNumberStyle));
                     } else {
                         cell.setCellValue(value.toString());
                     }
@@ -632,8 +658,74 @@ public class ExportsController {
     // ============================================================================
 
     @PostMapping(value = "/reports/v2/capitalizationReport/export")
-    public void exportCapitalizationReport(@RequestBody String req,
-                                           HttpServletResponse response) throws IOException {
+    public ResponseEntity<Map<String, String>> startCapitalizationReportExport(@RequestBody String req) {
+        logger.info("Capitalization report export requested : " + req);
+
+        String jobId = UUID.randomUUID().toString();
+        ExportJob job = new ExportJob();
+        job.setJobId(jobId);
+        job.setReportType("capitalizationReport");
+        job.setStatus(ExportJob.STATUS_PENDING);
+        job.setRowsWritten(0);
+        job.setSheetCount(0);
+        job.setCreatedAt(LocalDateTime.now());
+        exportJobRepository.save(job);
+
+        CompletableFuture.runAsync(() -> runWithExportGuard(() -> runCapitalizationReportExportJob(jobId, req)));
+
+        Map<String, String> resp = new HashMap<>();
+        resp.put("jobId", jobId);
+        return ResponseEntity.accepted().body(resp);
+    }
+
+    @GetMapping(value = "/reports/v2/capitalizationReport/export/{jobId}/status")
+    public ResponseEntity<?> getCapitalizationReportExportStatus(@PathVariable String jobId) {
+        Optional<ExportJob> jobOpt = exportJobRepository.findById(jobId);
+        if (jobOpt.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        ExportJob job = jobOpt.get();
+        Map<String, Object> resp = new HashMap<>();
+        resp.put("jobId", job.getJobId());
+        resp.put("status", job.getStatus());
+        resp.put("rowsWritten", job.getRowsWritten());
+        resp.put("sheetCount", job.getSheetCount());
+        resp.put("fileName", job.getFileName());
+        resp.put("errorMessage", job.getErrorMessage());
+        return ResponseEntity.ok(resp);
+    }
+
+    @GetMapping(value = "/reports/v2/capitalizationReport/export/{jobId}/download")
+    public ResponseEntity<?> downloadCapitalizationReportExport(@PathVariable String jobId) {
+        Optional<ExportJob> jobOpt = exportJobRepository.findById(jobId);
+        if (jobOpt.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        ExportJob job = jobOpt.get();
+        if (!ExportJob.STATUS_DONE.equals(job.getStatus())) {
+            return ResponseEntity.status(HttpStatus.CONFLICT)
+                    .body("Export not ready yet, status=" + job.getStatus());
+        }
+        File file = new File(job.getFilePath());
+        if (!file.exists()) {
+            return ResponseEntity.status(HttpStatus.GONE).body("Export file no longer available");
+        }
+
+        HttpHeaders responseHeaders = new HttpHeaders();
+        responseHeaders.setContentType(MediaType.parseMediaType(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"));
+        responseHeaders.add("Content-Disposition", "attachment; filename=" + job.getFileName());
+        return ResponseEntity.ok().headers(responseHeaders).body(new FileSystemResource(file));
+    }
+
+    private void runCapitalizationReportExportJob(String jobId, String req) {
+        ExportJob job = exportJobRepository.findById(jobId).orElse(null);
+        if (job == null) {
+            logger.error("Export job {} disappeared before it could start", jobId);
+            return;
+        }
+        job.setStatus(ExportJob.STATUS_RUNNING);
+        exportJobRepository.save(job);
 
         JsonObject obj = JsonParser.parseString(req).getAsJsonObject();
 
@@ -651,12 +743,10 @@ public class ExportsController {
         searchableColumns.put("description",                    "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.uplLineDescription ELSE HD.poLineDescription END)");
         searchableColumns.put("quantity",                       "LN2.deliveredQty");
         searchableColumns.put("partNumber",                     "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (CASE WHEN LENGTH(LN2.actualItemCode) > 0 THEN LN2.actualItemCode ELSE upl.uplLineItemCode END) ELSE HD.itemPartNumber END)");
-        searchableColumns.put("itemSerializedStatus",
-                "(CASE WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('YES','Y','TRUE','1') THEN 'YES' " +
-                        "WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('NO','N','FALSE','0') THEN 'NO' ELSE NULL END)");
+        searchableColumns.put("itemSerializedStatus", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (CASE WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('YES','Y','TRUE','1') THEN 'YES' WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('NO','N','FALSE','0') THEN 'NO' ELSE NULL END) ELSE (CASE WHEN UPPER(TRIM(HD.vendorSerialNumberYN)) IN ('YES','Y','TRUE','1') THEN 'YES' WHEN UPPER(TRIM(HD.vendorSerialNumberYN)) IN ('NO','N','FALSE','0') THEN 'NO' ELSE NULL END) END)");
         searchableColumns.put("serialNumber",                   "LN2.serialNumber");
-        searchableColumns.put("uplItemCategoryCodeDescription", "upl.zainItemCategoryDescription");
-        searchableColumns.put("faBookingAmount",                "(upl.uplLineUnitPrice * LN2.deliveredQty)");
+        searchableColumns.put("uplItemCategoryCodeDescription", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.zainItemCategoryDescription ELSE HD.inventoryCategoryDescription END)");
+        searchableColumns.put("faBookingAmount",                "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (upl.uplLineUnitPrice * LN2.deliveredQty) ELSE (HD.unitPriceInPoCurrency * LN2.deliveredQty) END)");
         searchableColumns.put("currency",                       "'SAR'");
         searchableColumns.put("tagNumber",                      "LN2.tagNumber");
         searchableColumns.put("receiveddate",                   "rec.approvedDate");
@@ -782,7 +872,7 @@ public class ExportsController {
                 + "    GROUP BY r.categoryApprovalRequestId "
                 + ") rec ON AR.recordNo = rec.categoryApprovalRequestId "
                 + "JOIN tb_DCC_LN LN2 ON DCC.recordNo = LN2.dccId "
-                + "LEFT JOIN tb_PurchaseOrderUPL upl ON DCC.poNumber = upl.poNumber AND LN2.uplLineNumber = upl.uplLine AND upl.poLineNumber = LN2.lineNumber "
+                + "LEFT JOIN tb_PurchaseOrderUPL upl ON DCC.poNumber = upl.poNumber AND LN2.uplLineNumber = upl.uplLine AND upl.poLineNumber = LN2.lineNumber AND upl.status = 'ACTIVE' "
                 + "LEFT JOIN tb_Site site ON LN2.locationName COLLATE utf8mb4_general_ci = site.siteId COLLATE utf8mb4_general_ci "
                 + "LEFT JOIN tb_Site_Type siteType ON site.siteTypeId COLLATE utf8mb4_general_ci = siteType.recordNo COLLATE utf8mb4_general_ci "
                 + "LEFT JOIN tb_Region rg ON site.regionId COLLATE utf8mb4_general_ci = rg.recordNo COLLATE utf8mb4_general_ci "
@@ -806,16 +896,19 @@ public class ExportsController {
                 + "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.uplLineDescription ELSE HD.poLineDescription END) AS description, "
                 + "LN2.deliveredQty AS quantity, "
                 + "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (CASE WHEN LENGTH(LN2.actualItemCode) > 0 THEN LN2.actualItemCode ELSE upl.uplLineItemCode END) ELSE HD.itemPartNumber END) AS partNumber, "
-                + "(CASE WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('YES','Y','TRUE','1') THEN 'YES' "
-                + "WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('NO','N','FALSE','0') THEN 'NO' ELSE NULL END) AS itemSerializedStatus, "
+                // Non-UPL rows (blank uplLineNumber - no upl row) take serialized status, category
+                // description and price from the PO line; UPL rows use their ACTIVE UPL row (see join).
+                // Kept identical to ReportsController's /reports/v2/capitalizationReport.
+                + "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (CASE WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('YES','Y','TRUE','1') THEN 'YES' WHEN UPPER(TRIM(upl.uplItemSerialized)) IN ('NO','N','FALSE','0') THEN 'NO' ELSE NULL END) ELSE (CASE WHEN UPPER(TRIM(HD.vendorSerialNumberYN)) IN ('YES','Y','TRUE','1') THEN 'YES' WHEN UPPER(TRIM(HD.vendorSerialNumberYN)) IN ('NO','N','FALSE','0') THEN 'NO' ELSE NULL END) END) AS itemSerializedStatus, "
                 + "LN2.serialNumber AS serialNumber, "
-                + "upl.zainItemCategoryDescription AS uplItemCategoryCodeDescription, "
-                + "(upl.uplLineUnitPrice * LN2.deliveredQty) AS faBookingAmount, "
+                + "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.zainItemCategoryDescription ELSE HD.inventoryCategoryDescription END) AS uplItemCategoryCodeDescription, "
+                + "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN (upl.uplLineUnitPrice * LN2.deliveredQty) ELSE (HD.unitPriceInPoCurrency * LN2.deliveredQty) END) AS faBookingAmount, "
                 + "'SAR' AS currency, "
                 + "LN2.tagNumber AS tagNumber, "
                 + "rec.approvedDate AS receiveddate "
                 + baseSql
-                + " GROUP BY LN2.recordNo";
+                + " GROUP BY LN2.recordNo"
+                + " ORDER BY DCC.recordNo DESC, LN2.recordNo DESC";
 
         List<String> columns = Arrays.asList(
                 "sequenceNo", "requestNo", "poNumber", "poLineNumber", "uplLineNumber",
@@ -833,53 +926,63 @@ public class ExportsController {
                 "PO Currency", "TAG Number", "Received Date"
         );
 
-        response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-        response.setHeader("Content-Disposition", "attachment; filename=capitalization_report.xlsx");
+        File dir = new File(exportDir);
+        if (!dir.exists()) {
+            dir.mkdirs();
+        }
+        String storedFileName = "capitalization_report_"
+                + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
+                + "_" + jobId.substring(0, 8) + ".xlsx";
+        File outFile = new File(dir, storedFileName);
 
         try {
             jdbcTemplate.execute("SET SESSION sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''))");
         } catch (Exception ignore) {}
 
         SXSSFWorkbook workbook = new SXSSFWorkbook(500);
+        long[] totalRows = {0};
+        int[] sheetCount = {0};
+        boolean success = false;
+        String errorMessage = null;
+
         try (Connection conn = dataSource.getConnection()) {
             try { conn.setAutoCommit(false); } catch (Exception ignore) {}
 
             try (PreparedStatement ps = conn.prepareStatement(sql,
                     ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY)) {
-                try { ps.setFetchSize(DEFAULT_FETCH_SIZE); } catch (Exception ignore) {}
+                try { ps.setFetchSize(Integer.MIN_VALUE); } catch (Exception ignore) {}
 
                 int idx = 1;
                 for (Object p : params) ps.setObject(idx++, p);
 
-                Sheet sheet = workbook.createSheet("Capitalization Report");
-                Row header = sheet.createRow(0);
-                for (int i = 0; i < headerNames.size(); i++) {
-                    header.createCell(i).setCellValue(headerNames.get(i));
-                }
-
+                CellStyle headerStyle = buildHeaderStyle(workbook);
                 CellStyle dateCellStyle = workbook.createCellStyle();
                 CreationHelper createHelper = workbook.getCreationHelper();
                 dateCellStyle.setDataFormat(createHelper.createDataFormat().getFormat("dd-mmm-yyyy"));
                 dateCellStyle.setAlignment(HorizontalAlignment.CENTER);
+                CellStyle wholeNumberStyle = buildWholeNumberStyle(workbook);
+                CellStyle preciseNumberStyle = buildPreciseNumberStyle(workbook);
 
-                AtomicInteger rowIdx     = new AtomicInteger(1);
-                AtomicInteger sequenceNo = new AtomicInteger(1);
+                Sheet[] sheetRef = {workbook.createSheet("Capitalization Report")};
+                sheetCount[0] = 1;
+                writeHeaderRow(sheetRef[0], headerNames, headerStyle);
+                int[] rowIdx = {1};
+                int[] sequenceNo = {1};
 
                 try (ResultSet rs = ps.executeQuery()) {
-                    ResultSetMetaData rsMd = rs.getMetaData();
-                    Set<String> rsColsLower = new HashSet<>();
-                    for (int i = 1; i <= rsMd.getColumnCount(); i++) {
-                        String label = rsMd.getColumnLabel(i);
-                        if (label != null) rsColsLower.add(label.toLowerCase(Locale.ROOT));
-                    }
-
                     while (rs.next()) {
-                        Row row = sheet.createRow(rowIdx.getAndIncrement());
+                        if (rowIdx[0] > MAX_ROWS_PER_SHEET) {
+                            sheetCount[0]++;
+                            sheetRef[0] = workbook.createSheet("Capitalization Report (" + sheetCount[0] + ")");
+                            writeHeaderRow(sheetRef[0], headerNames, headerStyle);
+                            rowIdx[0] = 1;
+                        }
+                        Row row = sheetRef[0].createRow(rowIdx[0]++);
                         for (int i = 0; i < columns.size(); i++) {
                             String colName = columns.get(i);
                             Cell cell = row.createCell(i);
                             if ("sequenceNo".equals(colName)) {
-                                cell.setCellValue(sequenceNo.getAndIncrement());
+                                cell.setCellValue(sequenceNo[0]++);
                             } else if ("receiveddate".equals(colName) || "isd".equals(colName)) {
                                 Timestamp ts = null;
                                 try { ts = rs.getTimestamp(colName); } catch (SQLException ignored) {}
@@ -891,33 +994,63 @@ public class ExportsController {
                                     cell.setBlank();
                                 }
                             } else {
-                                String val = null;
-                                try { val = rs.getString(colName); } catch (SQLException ex) {}
-                                cell.setCellValue(val == null ? "" : val);
+                                // Read as the ResultSet's native type so genuinely numeric columns
+                                // (quantity, faBookingAmount, poLineNumber, ...) land as real Excel
+                                // numbers with accurate, unrounded precision instead of text pulled
+                                // via getString() - same "0" / "0.####################" pairing used
+                                // by every other report export; see pickNumberStyle.
+                                Object raw = null;
+                                try { raw = rs.getObject(colName); } catch (SQLException ex) {}
+                                if (raw == null) {
+                                    cell.setBlank();
+                                } else if (raw instanceof Number) {
+                                    double d = ((Number) raw).doubleValue();
+                                    cell.setCellValue(d);
+                                    cell.setCellStyle(pickNumberStyle(d, wholeNumberStyle, preciseNumberStyle));
+                                } else {
+                                    cell.setCellValue(raw.toString());
+                                }
                             }
+                        }
+                        totalRows[0]++;
+                        if (totalRows[0] % PROGRESS_UPDATE_EVERY_N_ROWS == 0) {
+                            job.setRowsWritten(totalRows[0]);
+                            job.setSheetCount(sheetCount[0]);
+                            exportJobRepository.save(job);
                         }
                     }
                 }
-
-                try (BufferedOutputStream bos = new BufferedOutputStream(
-                        response.getOutputStream(), 128 * 1024)) {
-                    workbook.write(bos);
-                    bos.flush();
-                }
-                response.flushBuffer();
             }
+
+            try (FileOutputStream fos = new FileOutputStream(outFile)) {
+                workbook.write(fos);
+            }
+            success = true;
 
         } catch (Exception e) {
-            if (!response.isCommitted()) {
-                response.reset();
-                response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
-                response.setContentType("text/plain");
-                response.getWriter().write("Excel export failed: " + e.getMessage());
-                response.getWriter().flush();
-            }
+            logger.error("Capitalization report export job {} failed", jobId, e);
+            errorMessage = e.getMessage();
         } finally {
             workbook.dispose();
         }
+
+        LocalDateTime completedAt = LocalDateTime.now();
+        job.setRowsWritten(totalRows[0]);
+        job.setSheetCount(sheetCount[0]);
+        job.setCompletedAt(completedAt);
+        if (success) {
+            job.setStatus(ExportJob.STATUS_DONE);
+            job.setFileName("CAPITALIZATION_REPORT_"
+                    + completedAt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")) + ".xlsx");
+            job.setFilePath(outFile.getAbsolutePath());
+        } else {
+            job.setStatus(ExportJob.STATUS_FAILED);
+            job.setErrorMessage(errorMessage);
+            if (outFile.exists()) {
+                outFile.delete();
+            }
+        }
+        exportJobRepository.save(job);
     }
     // ============================================================================
     // Item Code Substitutes Export
@@ -1084,7 +1217,7 @@ public class ExportsController {
         job.setCreatedAt(LocalDateTime.now());
         exportJobRepository.save(job);
 
-        CompletableFuture.runAsync(() -> runPurchaseOrdersNestedExportJob(jobId, req));
+        CompletableFuture.runAsync(() -> runWithExportGuard(() -> runPurchaseOrdersNestedExportJob(jobId, req)));
 
         Map<String, String> resp = new HashMap<>();
         resp.put("jobId", jobId);
@@ -1504,6 +1637,7 @@ public class ExportsController {
                 + "    ON DCC.poNumber = upl.poNumber "
                 + "    AND LN2.uplLineNumber = upl.uplLine "
                 + "    AND upl.poLineNumber = LN2.lineNumber "
+                + "    AND upl.status = 'ACTIVE' "
                 + "LEFT JOIN tb_Site site "
                 + "    ON LN2.locationName COLLATE utf8mb4_general_ci = site.siteId COLLATE utf8mb4_general_ci "
                 + "LEFT JOIN tb_Site_Type siteType "
@@ -1561,10 +1695,37 @@ public class ExportsController {
         return style;
     }
 
-    private CellStyle buildNumberStyle(SXSSFWorkbook workbook) {
+    /** Whole-number cell style: plain "0", no decimal point at all. Excel's format engine
+     *  renders a literal "." unconditionally whenever a format section contains one, even if
+     *  every placeholder after it is an empty "#" - so a fractional-capable format alone would
+     *  print whole numbers like 3 as "3." with a trailing dot. Verified directly against
+     *  SheetJS's ssf (the reference implementation of Excel's number-format spec): "0.##" and
+     *  "#,##0.##" both render 3 as "3.". Use this style whenever the value has no fractional
+     *  part; see pickNumberStyle. */
+    private CellStyle buildWholeNumberStyle(SXSSFWorkbook workbook) {
         CellStyle style = workbook.createCellStyle();
-        style.setDataFormat(workbook.createDataFormat().getFormat("#,##0.##"));
+        style.setDataFormat(workbook.createDataFormat().getFormat("0"));
         return style;
+    }
+
+    /** Fractional-value cell style: full precision, no rounding. The previous single style used
+     *  here ("#,##0.##") only allowed 2 digits after the decimal point, silently rounding a
+     *  value like 282.449 to 282.45 on display - this format allows up to 20 significant
+     *  fractional digits (more than a double can meaningfully hold) so the displayed value
+     *  always matches what's stored, unrounded. Use this style only for genuinely fractional
+     *  values; see pickNumberStyle. */
+    private CellStyle buildPreciseNumberStyle(SXSSFWorkbook workbook) {
+        CellStyle style = workbook.createCellStyle();
+        style.setDataFormat(workbook.createDataFormat().getFormat("0.####################"));
+        return style;
+    }
+
+    /** Picks between the whole-number and full-precision styles based on whether this specific
+     *  value actually has a fractional part, so the cell always displays exactly what's stored:
+     *  an integer shows with no decimal point, and a fractional value shows in full. */
+    private CellStyle pickNumberStyle(double value, CellStyle wholeStyle, CellStyle preciseStyle) {
+        boolean isWhole = !Double.isNaN(value) && !Double.isInfinite(value) && value == Math.rint(value);
+        return isWhole ? wholeStyle : preciseStyle;
     }
 
     // ============================================================================
@@ -1621,7 +1782,7 @@ public class ExportsController {
         exportJobRepository.save(job);
 
         Map<String, String> effectiveFilters = filters != null ? filters : new HashMap<>();
-        CompletableFuture.runAsync(() -> runUplExportJob(jobId, effectiveFilters));
+        CompletableFuture.runAsync(() -> runWithExportGuard(() -> runUplExportJob(jobId, effectiveFilters)));
 
         Map<String, String> resp = new HashMap<>();
         resp.put("jobId", jobId);
@@ -1829,6 +1990,73 @@ public class ExportsController {
         UPL_CHANGE_FIELD_LABELS.put("uplLineDescription", "UPL Line Description");
         UPL_CHANGE_FIELD_LABELS.put("projectName", "Project Name");
         UPL_CHANGE_FIELD_LABELS.put("uplLineItemCode", "UPL Line-Item Code");
+        // Wording below matches UPL_CREATE_FIELD_LABELS below exactly, so a field reads
+        // identically whether shown as part of a new line or an edited field on an existing one.
+        UPL_CHANGE_FIELD_LABELS.put("vendor", "Vendor");
+        UPL_CHANGE_FIELD_LABELS.put("manufacturer", "Manufacturer");
+        UPL_CHANGE_FIELD_LABELS.put("countryOfOrigin", "Country of Origin");
+        UPL_CHANGE_FIELD_LABELS.put("poType", "PO Type");
+        UPL_CHANGE_FIELD_LABELS.put("releaseNumber", "Release Number");
+        UPL_CHANGE_FIELD_LABELS.put("poLineItemType", "PO Line Item Type");
+        UPL_CHANGE_FIELD_LABELS.put("poLineItemCode", "PO Line Item Code");
+        UPL_CHANGE_FIELD_LABELS.put("poLineDescription", "PO Line Description");
+        UPL_CHANGE_FIELD_LABELS.put("uplLineItemType", "UPL Item Type");
+        UPL_CHANGE_FIELD_LABELS.put("zainItemCategoryCode", "Zain Item Category Code");
+        UPL_CHANGE_FIELD_LABELS.put("zainItemCategoryDescription", "Zain Item Category Description");
+        UPL_CHANGE_FIELD_LABELS.put("uom", "UOM");
+        UPL_CHANGE_FIELD_LABELS.put("currency", "Currency");
+        UPL_CHANGE_FIELD_LABELS.put("poLineQuantity", "PO Line Quantity");
+        UPL_CHANGE_FIELD_LABELS.put("poLineUnitPrice", "PO Line Unit Price");
+        UPL_CHANGE_FIELD_LABELS.put("substituteItemCode", "Substitute Item Code");
+        UPL_CHANGE_FIELD_LABELS.put("remarks", "Remarks");
+    }
+
+    // Labels for the fuller field set enrichWithUplLineDetails attaches for CREATE requests under
+    // "newLineDetails" (UplChangeRequestService#buildNewLineDetails) - a superset of
+    // UPL_CHANGE_FIELD_LABELS above since a brand new line has no "changed field" to restrict to.
+    private static final Map<String, String> UPL_CREATE_FIELD_LABELS = new LinkedHashMap<>();
+    static {
+        UPL_CREATE_FIELD_LABELS.put("poLineItemType", "PO Line Item Type");
+        UPL_CREATE_FIELD_LABELS.put("poLineItemCode", "PO Line Item Code");
+        UPL_CREATE_FIELD_LABELS.put("poLineDescription", "PO Line Description");
+        UPL_CREATE_FIELD_LABELS.put("poLineQuantity", "PO Line Quantity");
+        UPL_CREATE_FIELD_LABELS.put("poLineUnitPrice", "PO Line Unit Price");
+        UPL_CREATE_FIELD_LABELS.put("uplLineItemType", "UPL Item Type");
+        UPL_CREATE_FIELD_LABELS.put("uplLineItemCode", "UPL Line-Item Code");
+        UPL_CREATE_FIELD_LABELS.put("uplLineDescription", "UPL Line Description");
+        UPL_CREATE_FIELD_LABELS.put("uplLineQuantity", "UPL Line Qty");
+        UPL_CREATE_FIELD_LABELS.put("uplLineUnitPrice", "UPL Unit Price");
+        UPL_CREATE_FIELD_LABELS.put("uom", "UOM");
+        UPL_CREATE_FIELD_LABELS.put("currency", "Currency");
+        UPL_CREATE_FIELD_LABELS.put("activeOrPassive", "Active/Passive");
+        UPL_CREATE_FIELD_LABELS.put("uplItemSerialized", "Serialized");
+        UPL_CREATE_FIELD_LABELS.put("projectName", "Project Name");
+        UPL_CREATE_FIELD_LABELS.put("poType", "PO Type");
+        UPL_CREATE_FIELD_LABELS.put("releaseNumber", "Release Number");
+        UPL_CREATE_FIELD_LABELS.put("substituteItemCode", "Substitute Item Code");
+        UPL_CREATE_FIELD_LABELS.put("remarks", "Remarks");
+        UPL_CREATE_FIELD_LABELS.put("vendor", "Vendor");
+        UPL_CREATE_FIELD_LABELS.put("manufacturer", "Manufacturer");
+        UPL_CREATE_FIELD_LABELS.put("countryOfOrigin", "Country of Origin");
+        UPL_CREATE_FIELD_LABELS.put("zainItemCategoryCode", "Zain Item Category Code");
+        UPL_CREATE_FIELD_LABELS.put("zainItemCategoryDescription", "Zain Item Category Description");
+    }
+
+    /** One {label, "", value} row per field of a CREATE request's new line - EVERY field the bulk
+     *  upload template can carry, including ones left blank/null in the upload (shown as "(empty)",
+     *  matching jsonValueToDisplayString's convention for UPDATE rows below) - not just the
+     *  populated ones, so the export always reflects the whole record actually committed to
+     *  tb_PurchaseOrderUPL. The "old value" column is always blank since there's nothing to diff a
+     *  brand new line against. Kept separate from parseFieldChangeRows (which the Audit Trail
+     *  export also shares and has no newLineDetails data of its own) rather than folding this in there. */
+    private List<String[]> createLineDetailRows(Map<String, Object> newLineDetails) {
+        List<String[]> rows = new ArrayList<>();
+        for (Map.Entry<String, String> labelEntry : UPL_CREATE_FIELD_LABELS.entrySet()) {
+            Object value = newLineDetails.get(labelEntry.getKey());
+            String valueStr = cellToString(value);
+            rows.add(new String[]{labelEntry.getValue(), "", valueStr.isBlank() ? "(empty)" : valueStr});
+        }
+        return rows;
     }
 
     @PostMapping(value = "/upl/change-requests/export", produces = MediaType.APPLICATION_JSON_VALUE)
@@ -1851,7 +2079,7 @@ public class ExportsController {
         job.setCreatedAt(LocalDateTime.now());
         exportJobRepository.save(job);
 
-        CompletableFuture.runAsync(() -> runUplChangeRequestExportJob(jobId, userId));
+        CompletableFuture.runAsync(() -> runWithExportGuard(() -> runUplChangeRequestExportJob(jobId, userId)));
 
         Map<String, String> resp = new HashMap<>();
         resp.put("jobId", jobId);
@@ -1979,10 +2207,18 @@ public class ExportsController {
                         : cellToString(requestedAtObj);
                 Object fieldChanges = cr.get("fieldChanges");
 
-                // One row per changed field (matching the grid's own "Change" detail dialog table)
-                // - every other column repeats the same request-level values on each of those rows.
-                for (String[] fieldChange : parseFieldChangeRows(
-                        changeTypeStr, fieldChanges != null ? fieldChanges.toString() : null, cr.get("recordId"))) {
+                // One row per changed field (matching the grid's own "Change" detail dialog table).
+                // CREATE has no fieldChanges diff (nothing to diff a brand new line against), but
+                // enrichWithUplLineDetails attaches the new line's own fields under "newLineDetails" -
+                // use those instead so a CREATE request gets one populated row per field here too,
+                // rather than parseFieldChangeRows's usual single blank row for an empty diff.
+                // Every other column repeats the same request-level values on each of those rows.
+                @SuppressWarnings("unchecked")
+                Map<String, Object> newLineDetails = (Map<String, Object>) cr.get("newLineDetails");
+                List<String[]> fieldRows = "CREATE".equals(changeTypeStr) && newLineDetails != null
+                        ? createLineDetailRows(newLineDetails)
+                        : parseFieldChangeRows(changeTypeStr, fieldChanges != null ? fieldChanges.toString() : null, cr.get("recordId"));
+                for (String[] fieldChange : fieldRows) {
                     Row row = sheet.createRow(rowNum++);
                     row.createCell(0).setCellValue(cellToString(cr.get("recordId")));
                     row.createCell(1).setCellValue(changeTypeStr != null ? changeTypeStr : "");
@@ -2080,7 +2316,7 @@ public class ExportsController {
         exportJobRepository.save(job);
 
         Map<String, String> effectiveFilters = filters != null ? filters : new HashMap<>();
-        CompletableFuture.runAsync(() -> runUplAuditTrailExportJob(jobId, effectiveFilters));
+        CompletableFuture.runAsync(() -> runWithExportGuard(() -> runUplAuditTrailExportJob(jobId, effectiveFilters)));
 
         Map<String, String> resp = new HashMap<>();
         resp.put("jobId", jobId);
@@ -2164,6 +2400,7 @@ public class ExportsController {
             String sql = ReportsController.UPL_AUDIT_TRAIL_SELECT + ReportsController.UPL_AUDIT_TRAIL_FROM
                     + whereClause + " ORDER BY cr.recordId DESC, d.levelNo ASC";
             List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql, params.toArray());
+            ReportsController.attachNewLineDetailsToUplAuditRows(rows, uplChangeRequestService);
 
             if (rows.isEmpty()) {
                 job.setStatus(ExportJob.STATUS_FAILED);
@@ -2231,10 +2468,17 @@ public class ExportsController {
                 Object totalLevels = auditRow.get("totalLevels");
                 String levelText = cellToString(currentLevelNo) + " of " + cellToString(totalLevels);
 
-                for (String[] fieldChange : parseFieldChangeRows(
-                        changeType != null ? changeType.toString() : null,
-                        fieldChanges != null ? fieldChanges.toString() : null,
-                        auditRow.get("recordId"))) {
+                // CREATE has no fieldChanges diff (nothing to diff a brand new line against), but
+                // attachNewLineDetailsToUplAuditRows attaches the new line's own fields under
+                // "newLineDetails" (mirrors buildUplChangeRequestExcelToFile's own CREATE branch
+                // above) - use those instead of parseFieldChangeRows's usual single blank row.
+                @SuppressWarnings("unchecked")
+                Map<String, Object> newLineDetails = (Map<String, Object>) auditRow.get("newLineDetails");
+                String changeTypeStr = changeType != null ? changeType.toString() : null;
+                List<String[]> fieldRows = "CREATE".equals(changeTypeStr) && newLineDetails != null
+                        ? createLineDetailRows(newLineDetails)
+                        : parseFieldChangeRows(changeTypeStr, fieldChanges != null ? fieldChanges.toString() : null, auditRow.get("recordId"));
+                for (String[] fieldChange : fieldRows) {
                     Row row = sheet.createRow(rowNum++);
                     row.createCell(0).setCellValue(cellToString(auditRow.get("recordId")));
                     row.createCell(1).setCellValue(cellToString(auditRow.get("uplRecordNo")));
