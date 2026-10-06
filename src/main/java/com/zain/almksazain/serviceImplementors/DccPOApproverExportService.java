@@ -305,8 +305,16 @@ public class DccPOApproverExportService {
         Map<String, List<tbPurchaseOrder>> purchaseOrderMap = tbPurchaseOrderRepository.findByPoNumberIn(poNumbers)
                 .stream().collect(Collectors.groupingBy(tbPurchaseOrder::getPoNumber));
 
+        // tb_PurchaseOrderUPL keeps every revision as its own row (DELETED = superseded, PENDING =
+        // an in-flight change request not yet approved), so a revised UPL line has multiple rows
+        // sharing the same (poNumber, poLineNumber, uplLine). Only ACTIVE is the current, approved
+        // record - without this filter, acceptanceByPoLine below counted every revision (doubling
+        // PO Pending Qty for a PO line revised once) and the per-line UPL match could pick up a
+        // superseded row. Matches the Requests tab export (DccPOV2ServiceImpl / DccPOExportService).
         Map<String, List<tb_PurchaseOrderUPL>> uplMap = tbPurchaseOrderUplRepository.findByPoNumberIn(poNumbers)
-                .stream().collect(Collectors.groupingBy(tb_PurchaseOrderUPL::getPoNumber));
+                .stream()
+                .filter(u -> "ACTIVE".equalsIgnoreCase(u.getStatus()))
+                .collect(Collectors.groupingBy(tb_PurchaseOrderUPL::getPoNumber));
 
         List<Long> dccIds = dccList.stream().map(DCC::getRecordNo).collect(Collectors.toList());
         List<DCCLineItem> allDccLn = tbDccLnRepository.findByDccIdIn(
