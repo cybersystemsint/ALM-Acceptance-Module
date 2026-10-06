@@ -265,12 +265,8 @@ public class DccSpecification implements Specification<DCC> {
                 .where(cb.equal(lineItemRoot.get("dccId"), root.get("recordNo").as(String.class)));
         predicates.add(cb.exists(lineItemSubquery));
 
-        // Subquery for tb_PurchaseOrderUPL (ensure records have UPL data)
-        Subquery<tb_PurchaseOrderUPL> uplSubquery = query.subquery(tb_PurchaseOrderUPL.class);
-        Root<tb_PurchaseOrderUPL> uplRoot = uplSubquery.from(tb_PurchaseOrderUPL.class);
-        uplSubquery.select(uplRoot)
-                .where(cb.equal(uplRoot.get("poNumber"), root.get("poNumber")));
-        predicates.add(cb.exists(uplSubquery));
+        // UPL is optional: DCCs without tb_PurchaseOrderUPL rows must still appear.
+        // UPL-derived fields are left null/blank when building the response DTOs.
 
         return cb.and(predicates.toArray(new Predicate[0]));
     }
