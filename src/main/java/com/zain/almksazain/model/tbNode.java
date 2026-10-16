@@ -19,7 +19,7 @@ public class tbNode implements Serializable {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private int id;
+    private Long id;
     // @Column(name = "recordDateTime", nullable = false, columnDefinition = "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
     private Timestamp recordDateTime;
 
@@ -42,11 +42,11 @@ public class tbNode implements Serializable {
     private Timestamp insertDate;
     private Timestamp updateDate;
 
-    public int getId() {
+    public Long getId() {
         return id;
     }
 
-    public void setId(int id) {
+    public void setId(Long id) {
         this.id = id;
     }
 

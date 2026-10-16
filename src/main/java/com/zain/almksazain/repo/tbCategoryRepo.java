@@ -7,4 +7,6 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface tbCategoryRepo extends JpaRepository<tbCategory, Long> {
 
     List<tbCategory> findByItemCategoryCodeAndScope(String itemCategoryCode, String scope);
+
+    List<tbCategory> findByItemCategoryCodeAndScopeAndStatus(String itemCategoryCode, String scope, int status);
 }

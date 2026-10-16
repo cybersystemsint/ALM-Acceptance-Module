@@ -1,7 +1,6 @@
 package com.zain.almksazain.controller;
 
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.Map;
 import java.util.stream.Collectors;
 
@@ -50,42 +49,11 @@ public class AgingReportController {
             return ResponseEntity.badRequest().body(Map.of("error", "Invalid JSON"));
         }
 
-        // Safe extraction of fields (guards against missing keys / null values)
-        String supplierId = (obj.has("supplierId") && !obj.get("supplierId").isJsonNull())
-                ? obj.get("supplierId").getAsString() : null;
-        int page = (obj.has("page") && !obj.get("page").isJsonNull()) ? obj.get("page").getAsInt() : 1;
-        int size = (obj.has("size") && !obj.get("size").isJsonNull()) ? obj.get("size").getAsInt() : 100;
-
-        // Extract filters - support both old format (columnName/searchQuery) and new format (filterBy object)
-        Map<String, String> filters = new HashMap<>();
-
-        // Legacy format: single columnName + searchQuery
-        if (obj.has("columnName") && !obj.get("columnName").isJsonNull() && !obj.get("columnName").getAsString().isEmpty()) {
-            String columnName = obj.get("columnName").getAsString();
-            String searchQuery = (obj.has("searchQuery") && !obj.get("searchQuery").isJsonNull())
-                    ? obj.get("searchQuery").getAsString() : "";
-            if (!searchQuery.isEmpty()) {
-                filters.put(columnName, searchQuery);
-                logger.debug("Legacy filter format - columnName: {}, searchQuery: {}", columnName, searchQuery);
-            }
-        }
-
-        // New format: filterBy object with multiple filters
-        if (obj.has("filterBy") && obj.get("filterBy").isJsonObject()) {
-            JsonObject filterByObj = obj.get("filterBy").getAsJsonObject();
-            for (String key : filterByObj.keySet()) {
-                if (!filterByObj.get(key).isJsonNull()) {
-                    String value = filterByObj.get(key).getAsString().trim();
-                    if (!value.isEmpty()) {
-                        filters.put(key, value);
-                        logger.debug("Filter from filterBy - {}: {}", key, value);
-                    }
-                }
-            }
-        }
-
-        logger.debug("Parsed params - supplierId: {}, page: {}, size: {}, total filters: {}",
-                supplierId, page, size, filters.size());
+        AgingReportRequestParser.ParsedRequest parsed = AgingReportRequestParser.parse(obj);
+        String supplierId = parsed.supplierId();
+        int page = parsed.page();
+        int size = parsed.size();
+        Map<String, String> filters = parsed.filters();
 
         // Use multi-filter method if filters exist, otherwise use single-filter method
         Map<String, Object> response;
@@ -126,42 +94,11 @@ public class AgingReportController {
             return ResponseEntity.badRequest().body(Map.of("error", "Invalid JSON"));
         }
 
-        // Safe extraction of fields (guards against missing keys / null values)
-        String supplierId = (obj.has("supplierId") && !obj.get("supplierId").isJsonNull())
-                ? obj.get("supplierId").getAsString() : null;
-        int page = (obj.has("page") && !obj.get("page").isJsonNull()) ? obj.get("page").getAsInt() : 1;
-        int size = (obj.has("size") && !obj.get("size").isJsonNull()) ? obj.get("size").getAsInt() : 100;
-
-        // Extract filters - support both old format (columnName/searchQuery) and new format (filterBy object)
-        Map<String, String> filters = new HashMap<>();
-
-        // Legacy format: single columnName + searchQuery
-        if (obj.has("columnName") && !obj.get("columnName").isJsonNull() && !obj.get("columnName").getAsString().isEmpty()) {
-            String columnName = obj.get("columnName").getAsString();
-            String searchQuery = (obj.has("searchQuery") && !obj.get("searchQuery").isJsonNull())
-                    ? obj.get("searchQuery").getAsString() : "";
-            if (!searchQuery.isEmpty()) {
-                filters.put(columnName, searchQuery);
-                logger.debug("Legacy filter format - columnName: {}, searchQuery: {}", columnName, searchQuery);
-            }
-        }
-
-        // New format: filterBy object with multiple filters
-        if (obj.has("filterBy") && obj.get("filterBy").isJsonObject()) {
-            JsonObject filterByObj = obj.get("filterBy").getAsJsonObject();
-            for (String key : filterByObj.keySet()) {
-                if (!filterByObj.get(key).isJsonNull()) {
-                    String value = filterByObj.get(key).getAsString().trim();
-                    if (!value.isEmpty()) {
-                        filters.put(key, value);
-                        logger.debug("Filter from filterBy - {}: {}", key, value);
-                    }
-                }
-            }
-        }
-
-        logger.debug("Parsed params - supplierId: {}, page: {}, size: {}, total filters: {}",
-                supplierId, page, size, filters.size());
+        AgingReportRequestParser.ParsedRequest parsed = AgingReportRequestParser.parse(obj);
+        String supplierId = parsed.supplierId();
+        int page = parsed.page();
+        int size = parsed.size();
+        Map<String, String> filters = parsed.filters();
 
         // Use multi-filter method if filters exist, otherwise use single-filter method
         Map<String, Object> response;

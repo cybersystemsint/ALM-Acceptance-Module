@@ -35,6 +35,14 @@ public interface tbPurchaseOrderUPLRepo extends JpaRepository<tb_PurchaseOrderUP
     tb_PurchaseOrderUPL findTopByPoNumberAndPoLineNumberAndUplLine(@Param("poNumber") String poNumber, @Param("poLineNumber") String poLineNumber, @Param("uplLine") String uplLine);
      
     tb_PurchaseOrderUPL findFirstByPoNumberAndPoLineNumberAndUplLine(String poNumber, String poLineNumber, String uplLine);
+
+    // "Does this line already exist" for the UPL creation flow's duplicate check - excludes
+    // DELETED rows (a soft-deleted line, or the placeholder row left behind by a rejected CREATE
+    // request) so re-submitting the same PO+line+UPL-line combo after a rejection/deletion isn't
+    // permanently blocked. Still matches ACTIVE and PENDING rows, so a genuinely live line or one
+    // still awaiting its own decision correctly continues to block a duplicate submission.
+    tb_PurchaseOrderUPL findFirstByPoNumberAndPoLineNumberAndUplLineAndStatusNot(
+            String poNumber, String poLineNumber, String uplLine, String status);
     List<tb_PurchaseOrderUPL> findByPoNumberInAndPoLineNumberInAndUplLineIn(
         List<String> poNumbers,
         List<String> poLineNumbers,
@@ -42,7 +50,11 @@ public interface tbPurchaseOrderUPLRepo extends JpaRepository<tb_PurchaseOrderUP
     );
     List<tb_PurchaseOrderUPL> findByPoNumberInAndPoLineNumberInAndUplLineIn(
     Set<String> poNumbers, Set<String> lineNumbers, Set<String> uplLines);
-//    //NEW CODE 
+//    //NEW CODE
 //    List<tb_PurchaseOrderUPL> findByPoNumber(String poNumber);
+
+    // UPL edit/delete approval workflow: every other active line under the same PO line,
+    // for the line-total-vs-PO-line-total ceiling check.
+    List<tb_PurchaseOrderUPL> findByPoNumberAndPoLineNumberAndStatus(String poNumber, String poLineNumber, String status);
 
 }
