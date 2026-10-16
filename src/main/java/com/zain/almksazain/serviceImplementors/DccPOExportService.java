@@ -303,7 +303,6 @@ public class DccPOExportService {
                         return Stream.empty(); // Skip instead of throw for export
                     }
 
-                    tbPurchaseOrder purchaseOrder = purchaseOrderList.get(0);
 
                     List<tb_PurchaseOrderUPL> uplList = uplMap
                             .getOrDefault(dcc.getPoNumber(), Collections.emptyList());
@@ -333,7 +332,7 @@ public class DccPOExportService {
 
                     return buildDccPOCombinedViewDTOs(
                             dcc,
-                            purchaseOrder,
+                            purchaseOrderList,
                             uplList,
                             dccLnList,
                             latestApprovalRequest,
@@ -355,11 +354,20 @@ public class DccPOExportService {
     }
 
     private List<DccPOCombinedViewDTO> buildDccPOCombinedViewDTOs(
-            DCC dcc, tbPurchaseOrder purchaseOrder, List<tb_PurchaseOrderUPL> uplList,
+            DCC dcc, List<tbPurchaseOrder> purchaseOrderList, List<tb_PurchaseOrderUPL> uplList,
             List<DCCLineItem> dccLnList, TbCategoryApprovalRequests latestApprovalRequest,
             List<TbCategoryApprovalRequests> allRelatedRequests, List<TbCategoryApprovals> allRelatedApprovals, Map<String, Double> deliveredMap,
             Map<String, Double> acceptanceByPoLine, Set<String> hasDccLnSet, Map<String, Double> nonUplPendingByPoLine, SimpleDateFormat dateFormat) {
         List<DccPOCombinedViewDTO> dtos = new ArrayList<>();
+
+        // Each line item must use its own PO line - non-UPL rows take itemPartNumber,
+        // poLineDescription and quantities from it. tbPurchaseOrder.lineNumber is an Integer
+        // while DCCLineItem.lineNumber is a String, so key by the string form.
+        Map<String, tbPurchaseOrder> poByLine = new HashMap<>();
+        for (tbPurchaseOrder p : purchaseOrderList) {
+            if (p.getLineNumber() != null)
+                poByLine.putIfAbsent(String.valueOf(p.getLineNumber()), p);
+        }
 
         // Optimize matching with maps
         // uplList is already filtered to ACTIVE rows (see processDccBatch), which is what
@@ -377,6 +385,9 @@ public class DccPOExportService {
                         }));
 
         for (DCCLineItem dccLn : dccLnList) {
+            tbPurchaseOrder purchaseOrder = (dccLn.getLineNumber() != null && !dccLn.getLineNumber().trim().isEmpty())
+                    ? poByLine.getOrDefault(dccLn.getLineNumber().trim(), purchaseOrderList.get(0))
+                    : purchaseOrderList.get(0);
             String key = (dccLn.getUplLineNumber() != null ? dccLn.getUplLineNumber() : "") + "-" + dccLn.getLineNumber() + "-" + dcc.getPoNumber();
             tb_PurchaseOrderUPL upl = uplByKey.get(key);
 
@@ -484,9 +495,13 @@ public class DccPOExportService {
         dto.setVendorName(purchaseOrder.getVendorName());
 
         if (upl == null) {
+            // No UPL row (non-UPL PO line): fall back to the PO's own item code/description.
+            // No PO-side equivalent exists for UOM, so unitOfMeasure intentionally stays blank.
             double poOrderQty = parsePoOrderQuantity(purchaseOrder);
             dto.setPoLineQuantity(poOrderQty);
             dto.setPoOrderQuantity(poOrderQty);
+            dto.setItemPartNumber(purchaseOrder.getItemPartNumber());
+            dto.setPoLineDescription(purchaseOrder.getPoLineDescription());
             return;
         }
 
@@ -761,8 +776,11 @@ public class DccPOExportService {
                 .orElse(null);
     }
 
+    // Revised quantity (poQtyNew) only when it has been set (> 0), otherwise the original
+    // poOrderQuantity - same rule NonUplPoPendingQtyCalculator / combinedPurchaseOrderView use.
     private double parsePoOrderQuantity(tbPurchaseOrder purchaseOrder) {
-        String poQtyNew = String.valueOf(purchaseOrder.getPoQtyNew());
-        return (poQtyNew != null && !poQtyNew.isEmpty()) ? Double.parseDouble(poQtyNew) : purchaseOrder.getAmountDueLine();
+        Double qtyNew = purchaseOrder.getPoQtyNew();
+        if (qtyNew != null && qtyNew > 0) return qtyNew;
+        return purchaseOrder.getAmountDueLine() != null ? purchaseOrder.getAmountDueLine() : 0.0;
     }
 }

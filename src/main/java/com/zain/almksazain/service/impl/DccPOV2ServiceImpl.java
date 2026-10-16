@@ -460,7 +460,7 @@ public CompletableFuture<ExportPageResult> getExportDataPage(DccPORequest reques
             List<TbCategoryApprovalRequests> allR = ctx.allReqs.getOrDefault(dcc.getRecordNo(), List.of());
             List<TbCategoryApprovals> allA = collectApprovals(allR, ctx.approvMap);
 
-            result.addAll(buildLineRows(dcc, pos.get(0), uplList, lnList,
+            result.addAll(buildLineRows(dcc, pos, uplList, lnList,
                     latestReq, allR, allA, fmt, ctx.qtyCtx, ctx.siteBySiteId));
             processed.add(dcc.getRecordNo());
         }
@@ -468,7 +468,7 @@ public CompletableFuture<ExportPageResult> getExportDataPage(DccPORequest reques
     }
 
     private List<DccPOCombinedViewDTO> buildLineRows(
-            DCC dcc, tbPurchaseOrder po,
+            DCC dcc, List<tbPurchaseOrder> pos,
             List<tb_PurchaseOrderUPL> uplList, List<DCCLineItem> lnList,
             TbCategoryApprovalRequests latestReq,
             List<TbCategoryApprovalRequests> allReqs, List<TbCategoryApprovals> allApprovals,
@@ -476,7 +476,20 @@ public CompletableFuture<ExportPageResult> getExportDataPage(DccPORequest reques
 
         List<DccPOCombinedViewDTO> dtos = new ArrayList<>();
 
+        // Each line item must use its own PO line - non-UPL rows take itemPartNumber,
+        // poLineDescription and quantities from it. tbPurchaseOrder.lineNumber is an Integer
+        // while DCCLineItem.lineNumber is a String, so key by the string form.
+        Map<String, tbPurchaseOrder> poByLine = new HashMap<>();
+        for (tbPurchaseOrder p : pos) {
+            if (p.getLineNumber() != null)
+                poByLine.putIfAbsent(String.valueOf(p.getLineNumber()), p);
+        }
+
         for (DCCLineItem ln : lnList) {
+            tbPurchaseOrder po = hasValue(ln.getLineNumber())
+                    ? poByLine.getOrDefault(ln.getLineNumber().trim(), pos.get(0))
+                    : pos.get(0);
+
             List<tb_PurchaseOrderUPL> matchedUpls = new ArrayList<>();
             if (uplList != null) {
                 for (tb_PurchaseOrderUPL upl : uplList) {
@@ -923,9 +936,12 @@ public CompletableFuture<ExportPageResult> getExportDataPage(DccPORequest reques
         return hasValue(po.getNewProjectName()) ? po.getNewProjectName() : po.getProjectName();
     }
 
+    // Revised quantity (poQtyNew) only when it has been set (> 0), otherwise the original
+    // poOrderQuantity - same rule NonUplPoPendingQtyCalculator / combinedPurchaseOrderView use.
     private double parsePoQty(tbPurchaseOrder po) {
-        String v = String.valueOf(po.getPoQtyNew());
-        return hasValue(v) ? Double.parseDouble(v) : po.getAmountDueLine();
+        Double qtyNew = po.getPoQtyNew();
+        if (qtyNew != null && qtyNew > 0) return qtyNew;
+        return po.getAmountDueLine() != null ? po.getAmountDueLine() : 0.0;
     }
 
     private void setDefaultApprovalFields(DccPOCombinedViewDTO dto) {

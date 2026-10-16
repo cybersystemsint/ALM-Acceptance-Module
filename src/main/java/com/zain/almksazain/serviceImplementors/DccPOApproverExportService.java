@@ -390,7 +390,6 @@ public class DccPOApproverExportService {
                         return Stream.empty();
                     }
 
-                    tbPurchaseOrder purchaseOrder = purchaseOrderList.get(0);
                     List<tb_PurchaseOrderUPL> uplList = uplMap.getOrDefault(
                             dcc.getPoNumber(), Collections.emptyList());
                     List<DCCLineItem> dccLnList = allDccLn.stream()
@@ -414,7 +413,7 @@ public class DccPOApproverExportService {
                         return Stream.empty();
                     }
 
-                    return buildDccPOCombinedViewDTOs(dcc, purchaseOrder, uplList, dccLnList,
+                    return buildDccPOCombinedViewDTOs(dcc, purchaseOrderList, uplList, dccLnList,
                             latestApprovalRequest, dccRequests, allRelatedApprovals, deliveredMap,
                             acceptanceByPoLine, hasDccLnSet, nonUplPendingByPoLine, dateFormat).stream();
                 })
@@ -432,13 +431,22 @@ public class DccPOApproverExportService {
     // All the helper methods remain the same as your original code...
 
     private List<DccPOCombinedViewDTO> buildDccPOCombinedViewDTOs(
-            DCC dcc, tbPurchaseOrder purchaseOrder, List<tb_PurchaseOrderUPL> uplList,
+            DCC dcc, List<tbPurchaseOrder> purchaseOrderList, List<tb_PurchaseOrderUPL> uplList,
             List<DCCLineItem> dccLnList, TbCategoryApprovalRequests latestApprovalRequest,
             List<TbCategoryApprovalRequests> allRelatedRequests, List<TbCategoryApprovals> allRelatedApprovals,
             Map<String, Double> deliveredMap, Map<String, Double> acceptanceByPoLine,
             Set<String> hasDccLnSet, Map<String, Double> nonUplPendingByPoLine, SimpleDateFormat dateFormat) {
 
         List<DccPOCombinedViewDTO> dtos = new ArrayList<>();
+
+        // Each line item must use its own PO line - non-UPL rows take itemPartNumber,
+        // poLineDescription and quantities from it. tbPurchaseOrder.lineNumber is an Integer
+        // while DCCLineItem.lineNumber is a String, so key by the string form.
+        Map<String, tbPurchaseOrder> poByLine = new HashMap<>();
+        for (tbPurchaseOrder p : purchaseOrderList) {
+            if (p.getLineNumber() != null)
+                poByLine.putIfAbsent(String.valueOf(p.getLineNumber()), p);
+        }
 
         Map<String, tb_PurchaseOrderUPL> uplByKey = uplList == null ? Collections.emptyMap() : uplList.stream()
                 .collect(Collectors.toMap(
@@ -448,6 +456,9 @@ public class DccPOApproverExportService {
                         (a, b) -> a));
 
         for (DCCLineItem dccLn : dccLnList) {
+            tbPurchaseOrder purchaseOrder = (dccLn.getLineNumber() != null && !dccLn.getLineNumber().trim().isEmpty())
+                    ? poByLine.getOrDefault(dccLn.getLineNumber().trim(), purchaseOrderList.get(0))
+                    : purchaseOrderList.get(0);
             String key = (dccLn.getUplLineNumber() != null ? dccLn.getUplLineNumber() : "") + "-" +
                     dccLn.getLineNumber() + "-" + dcc.getPoNumber();
             tb_PurchaseOrderUPL upl = uplByKey.get(key);
@@ -794,9 +805,11 @@ public class DccPOApproverExportService {
                 .orElse(null);
     }
 
+    // Revised quantity (poQtyNew) only when it has been set (> 0), otherwise the original
+    // poOrderQuantity - same rule NonUplPoPendingQtyCalculator / combinedPurchaseOrderView use.
     private double parsePoOrderQuantity(tbPurchaseOrder purchaseOrder) {
-        String poQtyNew = String.valueOf(purchaseOrder.getPoQtyNew());
-        return (poQtyNew != null && !poQtyNew.isEmpty()) ?
-                Double.parseDouble(poQtyNew) : purchaseOrder.getAmountDueLine();
+        Double qtyNew = purchaseOrder.getPoQtyNew();
+        if (qtyNew != null && qtyNew > 0) return qtyNew;
+        return purchaseOrder.getAmountDueLine() != null ? purchaseOrder.getAmountDueLine() : 0.0;
     }
 }
