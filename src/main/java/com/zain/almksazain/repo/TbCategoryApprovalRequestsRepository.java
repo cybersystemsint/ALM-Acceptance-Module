@@ -9,8 +9,8 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 
 public interface TbCategoryApprovalRequestsRepository extends JpaRepository<tbCategoryApprovalRequests, Integer>, JpaSpecificationExecutor<tbCategoryApprovalRequests> {
-    List<tbCategoryApprovalRequests> findByAcceptanceRequestRecordNoOrderByRecordDateTimeDesc(int acceptanceRequestRecordNo);
-    Optional<tbCategoryApprovalRequests> findFirstByAcceptanceRequestRecordNoOrderByRecordDateTimeDesc(int acceptanceRequestRecordNo);
-    List<tbCategoryApprovalRequests> findByAcceptanceRequestRecordNoInOrderByRecordDateTimeDesc(List<Integer> recordNos);
+    List<tbCategoryApprovalRequests> findByAcceptanceRequestRecordNoOrderByRecordDateTimeDescRecordNoDesc(int acceptanceRequestRecordNo);
+    Optional<tbCategoryApprovalRequests> findFirstByAcceptanceRequestRecordNoOrderByRecordDateTimeDescRecordNoDesc(int acceptanceRequestRecordNo);
+    List<tbCategoryApprovalRequests> findByAcceptanceRequestRecordNoInOrderByRecordDateTimeDescRecordNoDesc(List<Integer> recordNos);
     Optional<tbCategoryApprovalRequests> findByAcceptanceRequestRecordNoAndStatus(int acceptanceRequestRecordNo, String status);
 }

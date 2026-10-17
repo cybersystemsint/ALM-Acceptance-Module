@@ -19,9 +19,13 @@ import com.zain.almksazain.repo.tbScopeApprovalLevelRegionsRepo;
 import com.zain.almksazain.repo.tbScopeApprovalLevelsRepo;
 import com.zain.almksazain.repo.tbScopeApprovalSuppliersRepo;
 
+import java.sql.Timestamp;
 import java.time.LocalDateTime;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -40,11 +44,12 @@ import org.springframework.transaction.annotation.Transactional;
  *
  * Kept as close as possible to the original algorithm (same level/region
  * iteration, same first-level supplier-override + delegation handling) to
- * minimize behavioral drift from the tested WorkFlow-Management logic - the
- * one deliberate change is that levelNumber/departmentId are copied onto
- * each tb_Category_Approvals row at creation time (see tbCategoryApprovals),
- * so a later edit to tb_Scope_Approval_Levels can't retroactively change what
- * an already-created approval row resolves to.
+ * minimize behavioral drift from the tested WorkFlow-Management logic
+ * (duplicate-initialization guard, soft-deleted levels skipped, a single
+ * resolved level-1 config). levelNumber/departmentId are copied onto each
+ * tb_Category_Approvals row at creation time (see tbCategoryApprovals), so a
+ * later edit to tb_Scope_Approval_Levels can't retroactively change what an
+ * already-created approval row resolves to.
  */
 @Service
 public class CategoryApprovalInitializationService {
@@ -91,8 +96,10 @@ public class CategoryApprovalInitializationService {
             int scopeRecordNo, Integer createdByUserId, List<String> regionNames, String tableName,
             String poLineItemDescription, String poNumber) {
 
+        assertNotAlreadyInitialized(acceptanceRequestRecordNo, scopeRecordNo);
+
         tbCategoryApprovalRequests approvalRequest = new tbCategoryApprovalRequests();
-        approvalRequest.setRecordDateTime(new java.sql.Date(System.currentTimeMillis()));
+        approvalRequest.setRecordDateTime(new Timestamp(System.currentTimeMillis()));
         approvalRequest.setAcceptanceRequestRecordNo(acceptanceRequestRecordNo);
         approvalRequest.setPoNumber(poNumber);
         approvalRequest.setTableName(tableName);
@@ -138,7 +145,7 @@ public class CategoryApprovalInitializationService {
 
         parentRecord.setStatus("pending");
         parentRecord.setApprovedDate(null);
-        parentRecord.setRecordDateTime(new java.sql.Date(System.currentTimeMillis()));
+        parentRecord.setRecordDateTime(new Timestamp(System.currentTimeMillis()));
 
         List<tbCategoryApprovals> children = categoryApprovalsRepo.findByApprovalRecordId(parentRecord.getRecordNo());
 
@@ -183,25 +190,64 @@ public class CategoryApprovalInitializationService {
         return userRepository.findById(infoRequesterChild.getApproverId());
     }
 
+    /**
+     * Blocks a second active chain for the same acceptance request and scope -
+     * mirrors ScopeApprovalService.assertNotAlreadyInitialized(). Returned and
+     * rejected requests may be initialized again; pending, approved and
+     * request-info may not. Checked per scope (the original checked per
+     * acceptance request only) because postdcc() initializes one chain per
+     * item category inside a single transaction, so a cross-scope check would
+     * roll back every multi-category DCC.
+     */
+    private void assertNotAlreadyInitialized(int acceptanceRequestRecordNo, int scopeRecordNo) {
+        categoryApprovalRequestsRepo.findByAcceptanceRequestRecordNoOrderByRecordDateTimeDescRecordNoDesc(acceptanceRequestRecordNo)
+                .stream()
+                .filter(request -> request.getScope() == scopeRecordNo)
+                .filter(request -> blocksReinitialization(request.getStatus()))
+                .findFirst()
+                .ifPresent(request -> {
+                    throw new RuntimeException("Approval request already initialized for acceptance request "
+                            + acceptanceRequestRecordNo + " with status '" + request.getStatus()
+                            + "'. Duplicate initialization is not allowed.");
+                });
+    }
+
+    private boolean blocksReinitialization(String status) {
+        if (status == null) {
+            return false;
+        }
+        switch (status.toLowerCase()) {
+            case "pending":
+            case "approved":
+            case "request-info":
+                return true;
+            default:
+                return false;
+        }
+    }
+
     private boolean createCategoryApprovalsForRequest(tbCategoryApprovalRequests approvalRequest, List<String> regionNames,
             String vendorName, int scopeRecordNo) {
-        List<tbScopeApprovalLevels> approvalLevels = scopeApprovalLevelsRepo.findByScopeOrderByLevelAsc(scopeRecordNo);
+        List<tbScopeApprovalLevels> approvalLevels = scopeApprovalLevelsRepo.findByScopeAndStatusOrderByLevelAsc(scopeRecordNo, 1);
         if (approvalLevels.isEmpty()) {
             logger.warn("No approval levels found for scope: {}", scopeRecordNo);
             return false;
         }
 
-        boolean isFirstLevel = true;
+        tbScopeApprovalLevels resolvedLevelOne = resolveLevelOneApprovalLevel(approvalLevels, vendorName, scopeRecordNo, regionNames);
         boolean atLeastOneCreated = false;
+        boolean readyForApprovalAssigned = false;
 
         for (tbScopeApprovalLevels level : approvalLevels) {
-            User approver = isFirstLevel
-                    ? resolveFirstLevelApprover(level, vendorName, scopeRecordNo)
-                    : mustFindUser(level.getApproverUserId());
+            if (level.getLevel() != null && level.getLevel() == 1 && level.getRecordNo() != resolvedLevelOne.getRecordNo()) {
+                logger.info("Skipping level-1 config recordNo {} for vendor {}", level.getRecordNo(), vendorName);
+                continue;
+            }
 
-            User originalApprover = approver;
-            User delegatedApprover = getDelegatedApprover(approver);
+            User originalApprover = mustFindUser(level.getApproverUserId());
+            User delegatedApprover = getDelegatedApprover(originalApprover);
             boolean isDelegated = !originalApprover.getUserId().equals(delegatedApprover.getUserId());
+            boolean assignReadyForApproval = !readyForApprovalAssigned;
 
             List<tbScopeApprovalLevelRegions> approvalRegions = scopeApprovalLevelRegionsRepo
                     .findByScopeIdAndApprovalLevelId(scopeRecordNo, (int) level.getRecordNo());
@@ -226,7 +272,7 @@ public class CategoryApprovalInitializationService {
                     continue;
                 }
 
-                if (isFirstLevel && isDelegated) {
+                if (assignReadyForApproval && isDelegated) {
                     tbCategoryApprovals delegatedEntry = buildBaseApproval(approvalRequest, level, region);
                     delegatedEntry.setApproverId(originalApprover.getUserId());
                     delegatedEntry.setApproverName(originalApprover.getUsername());
@@ -241,21 +287,20 @@ public class CategoryApprovalInitializationService {
                             originalApprover.getUsername(), delegatedApprover.getUsername(), regionName);
                 }
 
-                User effectiveApprover = isFirstLevel ? delegatedApprover : originalApprover;
+                User effectiveApprover = assignReadyForApproval ? delegatedApprover : originalApprover;
                 tbCategoryApprovals categoryApproval = buildBaseApproval(approvalRequest, level, region);
                 categoryApproval.setApproverId(effectiveApprover.getUserId());
                 categoryApproval.setApproverName(effectiveApprover.getUsername());
                 categoryApproval.setStatus("pending");
-                categoryApproval.setApprovalStatus(isFirstLevel ? "readyForApproval" : "pending");
+                categoryApproval.setApprovalStatus(assignReadyForApproval ? "readyForApproval" : "pending");
                 categoryApprovalsRepo.save(categoryApproval);
                 logger.info("Created category approval for approverId: {}, level: {}, regionId: {}",
                         effectiveApprover.getUserId(), level.getLevel(), region.getRecordNo());
 
                 atLeastOneCreated = true;
-            }
-
-            if (atLeastOneCreated && isFirstLevel) {
-                isFirstLevel = false;
+                if (assignReadyForApproval) {
+                    readyForApprovalAssigned = true;
+                }
             }
         }
 
@@ -278,26 +323,76 @@ public class CategoryApprovalInitializationService {
         return approval;
     }
 
-    private User resolveFirstLevelApprover(tbScopeApprovalLevels level, String vendorName, int scopeRecordNo) {
-        try {
-            supplierdata supplier = supplierRepo.findBySupplierNameIgnoreCase(vendorName)
-                    .orElseThrow(() -> new RuntimeException("Supplier not found for vendor name: " + vendorName));
-
-            List<tbScopeApprovalSuppliers> matches = scopeApprovalSuppliersRepo
-                    .findBySupplierAndScopeOrderByRecordNoAsc((int) supplier.getRecordNo(), scopeRecordNo);
-
-            if (!matches.isEmpty()) {
-                tbScopeApprovalSuppliers supplierLevelMapping = matches.get(0);
-                tbScopeApprovalLevels supplierLevel = scopeApprovalLevelsRepo.findById((long) supplierLevelMapping.getApprovalLevelId())
-                        .orElseThrow(() -> new RuntimeException("Approval level not found with recordNo: " + supplierLevelMapping.getApprovalLevelId()));
-                return mustFindUser(supplierLevel.getApproverUserId());
-            }
-            logger.warn("No supplier-level mapping found for vendor: {}, defaulting to level approver", vendorName);
-            return mustFindUser(level.getApproverUserId());
-        } catch (Exception e) {
-            logger.error("Failed to determine first-level approver by supplier: {}, defaulting to level approver", e.getMessage());
-            return mustFindUser(level.getApproverUserId());
+    /**
+     * Resolves the single level-1 config to use for this request - mirrors
+     * ScopeApprovalService.resolveLevelOneApprovalLevel(). A level-1 config
+     * mapped to the request's vendor takes precedence; otherwise the first
+     * generic level-1 config (no supplier mappings) covering every requested
+     * region is used.
+     *
+     * @throws RuntimeException if neither exists, so the caller's transaction
+     *         rolls back instead of creating a chain with no level 1.
+     */
+    private tbScopeApprovalLevels resolveLevelOneApprovalLevel(List<tbScopeApprovalLevels> approvalLevels, String vendorName,
+            int scopeRecordNo, List<String> regionNames) {
+        List<tbScopeApprovalLevels> levelOnes = approvalLevels.stream()
+                .filter(level -> level.getLevel() != null && level.getLevel() == 1)
+                .collect(Collectors.toList());
+        if (levelOnes.isEmpty()) {
+            throw new RuntimeException("No level-1 approval config found for scope: " + scopeRecordNo);
         }
+
+        List<Integer> levelOneIds = levelOnes.stream().map(level -> (int) level.getRecordNo()).collect(Collectors.toList());
+        List<tbScopeApprovalSuppliers> supplierMappings = scopeApprovalSuppliersRepo.findByApprovalLevelIdIn(levelOneIds);
+        Set<Integer> vendorSpecificLevelIds = supplierMappings.stream()
+                .map(tbScopeApprovalSuppliers::getApprovalLevelId)
+                .collect(Collectors.toSet());
+
+        if (vendorName != null && !vendorName.trim().isEmpty()) {
+            Optional<supplierdata> supplier = supplierRepo.findBySupplierNameIgnoreCase(vendorName.trim());
+            if (supplier.isPresent()) {
+                Optional<tbScopeApprovalLevels> vendorLevel = supplierMappings.stream()
+                        .filter(mapping -> mapping.getSupplierId() == supplier.get().getRecordNo())
+                        .map(mapping -> levelOnes.stream()
+                                .filter(level -> level.getRecordNo() == mapping.getApprovalLevelId())
+                                .findFirst())
+                        .filter(Optional::isPresent)
+                        .map(Optional::get)
+                        .findFirst();
+                if (vendorLevel.isPresent()) {
+                    logger.info("Resolved level-1 config recordNo {} for vendor {}", vendorLevel.get().getRecordNo(), vendorName);
+                    return vendorLevel.get();
+                }
+            }
+            logger.warn("No level-1 vendor mapping for {} on scope {}, falling back to generic level-1 config", vendorName, scopeRecordNo);
+        }
+
+        return levelOnes.stream()
+                .filter(level -> !vendorSpecificLevelIds.contains((int) level.getRecordNo()))
+                .sorted(Comparator.comparingLong(tbScopeApprovalLevels::getRecordNo))
+                .filter(level -> levelCoversAllRegions(level, scopeRecordNo, regionNames))
+                .findFirst()
+                .orElseThrow(() -> new RuntimeException("Error! No generic level-1 approval config exists for scope "
+                        + scopeRecordNo + ", region(s) " + String.join(", ", regionNames)
+                        + " without vendor-specific suppliers."));
+    }
+
+    private boolean levelCoversAllRegions(tbScopeApprovalLevels level, int scopeRecordNo, List<String> regionNames) {
+        Set<Integer> configuredRegionIds = scopeApprovalLevelRegionsRepo
+                .findByScopeIdAndApprovalLevelId(scopeRecordNo, (int) level.getRecordNo())
+                .stream()
+                .map(r -> (int) r.getRegionId())
+                .collect(Collectors.toSet());
+        for (String regionName : regionNames) {
+            if (regionName == null || regionName.trim().isEmpty()) {
+                continue;
+            }
+            tb_Region region = regionRepo.findByRegionName(regionName.trim());
+            if (region == null || !configuredRegionIds.contains((int) region.getRecordNo())) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private User getDelegatedApprover(User approver) {

@@ -14,4 +14,6 @@ public interface tbScopeApprovalSuppliersRepo extends JpaRepository<tbScopeAppro
             + "AND s.approvalLevelId IN (SELECT l.recordNo FROM tbScopeApprovalLevels l WHERE l.scope = :scopeId) "
             + "ORDER BY s.recordNo ASC")
     List<tbScopeApprovalSuppliers> findBySupplierAndScopeOrderByRecordNoAsc(@Param("supplierId") int supplierId, @Param("scopeId") int scopeId);
+
+    List<tbScopeApprovalSuppliers> findByApprovalLevelIdIn(List<Integer> approvalLevelIds);
 }
