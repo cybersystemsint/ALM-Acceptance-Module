@@ -129,7 +129,7 @@ public class AgingReportService {
         // --- Batch fetch related entities ---
         List<Integer> dccRecordNos = dccList.stream().map(d -> (int) d.getRecordNo()).collect(Collectors.toList());
         List<tbCategoryApprovalRequests> allApprovalRequests = approvalRequestsRepository
-                .findByAcceptanceRequestRecordNoInOrderByRecordDateTimeDesc(dccRecordNos);
+                .findByAcceptanceRequestRecordNoInOrderByRecordDateTimeDescRecordNoDesc(dccRecordNos);
         Map<Integer, tbCategoryApprovalRequests> latestReqMap = new HashMap<>();
         for (tbCategoryApprovalRequests reqObj : allApprovalRequests) {
             latestReqMap.putIfAbsent(reqObj.getAcceptanceRequestRecordNo(), reqObj);

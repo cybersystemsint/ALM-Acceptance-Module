@@ -6,10 +6,12 @@ package com.zain.almksazain.model;
 
 import java.io.Serializable;
 import java.sql.Date;
+import java.sql.Timestamp;
 import javax.persistence.Entity;
 import javax.persistence.GeneratedValue;
 import javax.persistence.GenerationType;
 import javax.persistence.Id;
+import javax.persistence.PrePersist;
 import javax.persistence.Table;
 
 /**
@@ -24,7 +26,10 @@ public class tbCategoryApprovalRequests implements Serializable {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private int recordNo;
 
-    private Date recordDateTime;
+    // Full timestamp, not java.sql.Date: the grids pick the latest request per
+    // DCC by ordering on this column, so a date-only value (midnight) sorts a
+    // same-day resubmission behind the request it replaced.
+    private Timestamp recordDateTime;
 
     private int acceptanceRequestRecordNo;
 
@@ -58,12 +63,19 @@ public class tbCategoryApprovalRequests implements Serializable {
         this.recordNo = recordNo;
     }
 
-    public Date getRecordDateTime() {
+    public Timestamp getRecordDateTime() {
         return recordDateTime;
     }
 
-    public void setRecordDateTime(Date recordDateTime) {
+    public void setRecordDateTime(Timestamp recordDateTime) {
         this.recordDateTime = recordDateTime;
+    }
+
+    @PrePersist
+    protected void onCreate() {
+        if (recordDateTime == null) {
+            recordDateTime = new Timestamp(System.currentTimeMillis());
+        }
     }
 
     public int getAcceptanceRequestRecordNo() {

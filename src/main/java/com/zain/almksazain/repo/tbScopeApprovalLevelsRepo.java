@@ -18,4 +18,9 @@ public interface tbScopeApprovalLevelsRepo extends JpaRepository<tbScopeApproval
 
     List<tbScopeApprovalLevels> findByScope(Integer scope);
 
+    List<tbScopeApprovalLevels> findByScopeOrderByLevelAsc(Integer scope);
+
+    // status = 0 marks a soft-deleted level, which must never be assigned to a new request.
+    List<tbScopeApprovalLevels> findByScopeAndStatusOrderByLevelAsc(Integer scope, Integer status);
+
 }

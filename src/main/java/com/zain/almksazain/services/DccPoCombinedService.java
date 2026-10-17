@@ -282,7 +282,7 @@ public class DccPoCombinedService {
 
         // Preload Approval Requests
         Map<Integer, tbCategoryApprovalRequests> approvalRequestMap = tbCategoryApprovalRequestsRepo
-                .findByAcceptanceRequestRecordNoInOrderByRecordDateTimeDesc(dccIds.stream().map(Integer::parseInt).collect(Collectors.toList()))
+                .findByAcceptanceRequestRecordNoInOrderByRecordDateTimeDescRecordNoDesc(dccIds.stream().map(Integer::parseInt).collect(Collectors.toList()))
                 .stream().collect(Collectors.toMap(tbCategoryApprovalRequests::getAcceptanceRequestRecordNo, req -> req, (r1, r2) -> r1));
 
         // Preload Approvals
