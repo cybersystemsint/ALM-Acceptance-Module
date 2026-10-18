@@ -18,13 +18,23 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
+import javax.annotation.PostConstruct;
+
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 
 import com.zain.almksazain.controller.AgingReportController;
@@ -44,6 +54,7 @@ import com.zain.almksazain.repo.UserRepository;
 import com.zain.almksazain.repo.deptsrepo;
 import com.zain.almksazain.repo.tbPurchaseOrderRepo;
 import com.zain.almksazain.repo.tbPurchaseOrderUPLRepo;
+import com.zain.almksazain.specs.AgingReportDccSpecifications;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 @Service
@@ -61,6 +72,39 @@ public class DccPoCombinedService {
     @Autowired private TbCategoryApprovalsRepository tbCategoryApprovalsRepo;
     @Autowired private UserRepository userAccountRepo;
     @Autowired private deptsrepo tbDepartmentRepo;
+
+    // A filtered aging request has to build every candidate row before it can
+    // filter (see loadAndFilterAgingRows). Built rows are cached briefly per
+    // supplier/status so a user refining a filter reuses one load, concurrent
+    // identical requests share a single in-flight load, and only a few loads
+    // may run at once - unbounded parallel loads were saturating the JVM's CPU.
+    @Value("${aging.report.cache-ttl-seconds:60}")
+    private long agingRowsCacheTtlSeconds;
+
+    @Value("${aging.report.max-concurrent-loads:2}")
+    private int maxConcurrentAgingLoads;
+
+    // How long a request waits for a free load slot before giving up: short for
+    // interactive grid requests, long for background export jobs.
+    private static final long GRID_LOAD_WAIT_SECONDS = 30;
+    private static final long EXPORT_LOAD_WAIT_SECONDS = 300;
+
+    private Semaphore agingLoadPermits;
+    private final ConcurrentHashMap<String, CachedAgingRows> agingRowsCache = new ConcurrentHashMap<>();
+
+    private static final class CachedAgingRows {
+        final CompletableFuture<List<Map<String, Object>>> rows = new CompletableFuture<>();
+        volatile long loadedAtMillis;
+
+        boolean isExpired(long nowMillis, long ttlMillis) {
+            return rows.isDone() && !rows.isCompletedExceptionally() && nowMillis - loadedAtMillis > ttlMillis;
+        }
+    }
+
+    @PostConstruct
+    void initAgingLoadPermits() {
+        agingLoadPermits = new Semaphore(Math.max(1, maxConcurrentAgingLoads));
+    }
 
    private static final Map<String, ColumnInfo> COLUMN_MAPPINGS = new HashMap<>();
     private static final List<String> CALCULATED_COLUMNS = Arrays.asList(
@@ -680,7 +724,7 @@ private String calculateTotalAgingCustom(DCC dcc, tbCategoryApprovalRequests lat
         if (hasFilters) {
             // Filtering needs every matching row loaded first (can't filter accurately
             // against just one already-sliced DB page) - see loadAndFilterAgingRows.
-            List<Map<String, Object>> filtered = loadAndFilterAgingRows(supplierId, filters, "inprocess", true);
+            List<Map<String, Object>> filtered = loadAndFilterAgingRows(supplierId, filters, "inprocess", true, GRID_LOAD_WAIT_SECONDS);
 
             int totalRecords = filtered.size();
             int totalPages = totalRecords == 0 ? 0 : (int) Math.ceil((double) totalRecords / size);
@@ -742,19 +786,190 @@ private String calculateTotalAgingCustom(DCC dcc, tbCategoryApprovalRequests lat
      * ("export everything currently in scope" rather than "one grid page").
      */
     public List<Map<String, Object>> getAgingReportForExport(String supplierId, Map<String, String> filters) {
-        return loadAndFilterAgingRows(supplierId, filters, "inprocess", true);
+        return loadAndFilterAgingRows(supplierId, filters, "inprocess", true, EXPORT_LOAD_WAIT_SECONDS);
     }
 
     /**
-     * Loads every DCC row for the supplier/status (never paginated - filtering has to
-     * see the whole candidate set to be accurate), builds the grouped/aggregated rows,
-     * and applies filters if any were supplied. Shared by the interactive filtered-fetch
-     * path and the export path, which both need the identical "everything that matches"
-     * result - export just skips the final page-slice the fetch path applies afterward.
+     * Returns every aging row for the supplier/status that matches the filters (never
+     * paginated - filtering has to see the whole candidate set to be accurate). Shared
+     * by the interactive filtered-fetch path and the export path, which both need the
+     * identical "everything that matches" result - export just skips the final
+     * page-slice the fetch path applies afterward.
+     *
+     * Filters on real columns are first applied in the database (see
+     * AgingReportDccSpecifications) so only candidate DCCs get built; matchesFilter /
+     * matchesDateRanges then make the final decision on those rows exactly as before.
+     * Filters only on computed columns (aging, approvals, amounts) still need every
+     * row, which comes from the short-lived cache.
      */
     private List<Map<String, Object>> loadAndFilterAgingRows(
-            String supplierId, Map<String, String> filters, String status, boolean excludeStatus) {
+            String supplierId, Map<String, String> filters, String status, boolean excludeStatus, long permitWaitSeconds) {
 
+        // Rows can be shared through the cache, and callers mutate what they get back
+        // (SlaNotificationService adds a key, export sorts the list) - hand out copies.
+        if (filters == null || filters.isEmpty()) {
+            return getCachedAgingRows(supplierId, status, excludeStatus, permitWaitSeconds).stream()
+                    .map(LinkedHashMap::new).collect(Collectors.toList());
+        }
+
+        // Date range filters (e.g. "dccCreatedDateStart"/"dccCreatedDateEnd") have no single-column
+        // mapping of their own - routing them through matchesFilter below would treat them as an
+        // unknown column and reject every row. Split them out and handle with matchesDateRanges instead.
+        Map<String, String> rangeFilters = new HashMap<>();
+        Map<String, String> regularFilters = new HashMap<>();
+        for (Map.Entry<String, String> e : filters.entrySet()) {
+            String key = e.getKey();
+            String base = key.endsWith("Start") ? key.substring(0, key.length() - "Start".length())
+                    : key.endsWith("End") ? key.substring(0, key.length() - "End".length())
+                    : null;
+            if (base != null && isDateColumnName(base)) {
+                rangeFilters.put(key, e.getValue());
+            } else {
+                regularFilters.put(key, e.getValue());
+            }
+        }
+
+        Specification<DCC> narrowing = AgingReportDccSpecifications.narrowing(regularFilters, rangeFilters, this::rowKeyOf);
+        List<Map<String, Object>> candidateRows;
+        if (narrowing == null) {
+            candidateRows = getCachedAgingRows(supplierId, status, excludeStatus, permitWaitSeconds);
+        } else {
+            // A full row set already in the cache is cheaper than another query.
+            List<Map<String, Object>> cached = peekFreshCachedAgingRows(supplierId, status, excludeStatus);
+            candidateRows = cached != null
+                    ? cached
+                    : loadNarrowedAgingRows(supplierId, status, excludeStatus, narrowing, permitWaitSeconds);
+        }
+
+        return candidateRows.stream()
+                .filter(row -> regularFilters.entrySet().stream().allMatch(filterEntry -> {
+                    String searchQuery = filterEntry.getValue();
+                    if (searchQuery == null || searchQuery.trim().isEmpty()) {
+                        return true;
+                    }
+                    return matchesFilter(row, filterEntry.getKey(), searchQuery);
+                }))
+                .filter(row -> matchesDateRanges(row, rangeFilters))
+                .map(LinkedHashMap::new)
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Returns every built row for the supplier/status, from the short-lived cache
+     * when possible. Only one thread builds a given key; others asking for the same
+     * key while it is being built wait for that result instead of starting their own.
+     *
+     * @throws AgingReportBusyException if no load slot frees up within permitWaitSeconds.
+     */
+    private List<Map<String, Object>> getCachedAgingRows(
+            String supplierId, String status, boolean excludeStatus, long permitWaitSeconds) {
+
+        String cacheKey = agingRowsCacheKey(supplierId, status, excludeStatus);
+        long ttlMillis = TimeUnit.SECONDS.toMillis(agingRowsCacheTtlSeconds);
+
+        long now = System.currentTimeMillis();
+        agingRowsCache.entrySet().removeIf(e -> e.getValue().isExpired(now, ttlMillis));
+
+        CachedAgingRows entry = new CachedAgingRows();
+        CachedAgingRows existing = agingRowsCache.putIfAbsent(cacheKey, entry);
+        if (existing != null) {
+            return awaitCachedRows(existing);
+        }
+
+        try {
+            List<Map<String, Object>> rows = Collections.unmodifiableList(withAgingLoadPermit(
+                    "all rows supplierId=" + supplierId + " status=" + status + " excludeStatus=" + excludeStatus,
+                    permitWaitSeconds,
+                    () -> loadAllAgingRows(supplierId, status, excludeStatus)));
+            entry.loadedAtMillis = System.currentTimeMillis();
+            entry.rows.complete(rows);
+            return rows;
+        } catch (RuntimeException ex) {
+            agingRowsCache.remove(cacheKey, entry);
+            entry.rows.completeExceptionally(ex);
+            throw ex;
+        }
+    }
+
+    // The cached full row set if one has finished loading and is still fresh, else null.
+    private List<Map<String, Object>> peekFreshCachedAgingRows(String supplierId, String status, boolean excludeStatus) {
+        CachedAgingRows entry = agingRowsCache.get(agingRowsCacheKey(supplierId, status, excludeStatus));
+        if (entry == null || !entry.rows.isDone() || entry.rows.isCompletedExceptionally()
+                || entry.isExpired(System.currentTimeMillis(), TimeUnit.SECONDS.toMillis(agingRowsCacheTtlSeconds))) {
+            return null;
+        }
+        return entry.rows.join();
+    }
+
+    private String agingRowsCacheKey(String supplierId, String status, boolean excludeStatus) {
+        String supplierKey = (supplierId != null && !"0".equals(supplierId.trim())) ? supplierId.trim() : "ALL";
+        return supplierKey + "|" + status + "|" + excludeStatus;
+    }
+
+    // Same key resolution as matchesFilter / matchesDateRange.
+    private String rowKeyOf(String filterKey) {
+        ColumnInfo mapping = getColumnInfoInsensitive(filterKey);
+        return (mapping != null && mapping.getFieldName() != null && !mapping.getFieldName().trim().isEmpty())
+                ? mapping.getFieldName()
+                : filterKey;
+    }
+
+    private List<Map<String, Object>> loadNarrowedAgingRows(String supplierId, String status, boolean excludeStatus,
+            Specification<DCC> narrowing, long permitWaitSeconds) {
+        return withAgingLoadPermit(
+                "narrowed rows supplierId=" + supplierId + " status=" + status + " excludeStatus=" + excludeStatus,
+                permitWaitSeconds,
+                // Ascending recordNo: the order the unpaged full-load queries return rows in,
+                // so filtered pages keep the same row order as before.
+                () -> buildAgingRows(dccRepository.findAll(
+                        AgingReportDccSpecifications.inReportScope(supplierId, status, excludeStatus).and(narrowing),
+                        Sort.by(Sort.Direction.ASC, "recordNo"))));
+    }
+
+    private List<Map<String, Object>> awaitCachedRows(CachedAgingRows entry) {
+        try {
+            return entry.rows.get();
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            throw new AgingReportBusyException("Interrupted while waiting for the aging report to load.");
+        } catch (ExecutionException ee) {
+            Throwable cause = ee.getCause();
+            if (cause instanceof RuntimeException) {
+                throw (RuntimeException) cause;
+            }
+            throw new IllegalStateException("Aging report load failed", cause);
+        }
+    }
+
+    private List<Map<String, Object>> withAgingLoadPermit(
+            String description, long permitWaitSeconds, Supplier<List<Map<String, Object>>> load) {
+
+        boolean acquired;
+        try {
+            acquired = agingLoadPermits.tryAcquire(permitWaitSeconds, TimeUnit.SECONDS);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            throw new AgingReportBusyException("Interrupted while waiting for the aging report to load.");
+        }
+        if (!acquired) {
+            logger.warn("Aging report load refused: {} loads already running ({})", maxConcurrentAgingLoads, description);
+            throw new AgingReportBusyException("The aging report is busy. Please try again in a moment.");
+        }
+
+        long startedAt = System.currentTimeMillis();
+        int rowCount = -1;
+        try {
+            List<Map<String, Object>> rows = load.get();
+            rowCount = rows.size();
+            return rows;
+        } finally {
+            agingLoadPermits.release();
+            logger.info("Aging report {} built: {} rows in {} ms", description, rowCount,
+                    System.currentTimeMillis() - startedAt);
+        }
+    }
+
+    private List<Map<String, Object>> loadAllAgingRows(String supplierId, String status, boolean excludeStatus) {
         Pageable unpaged = Pageable.unpaged();
         Page<DCC> pagedDcc = excludeStatus
                 ? ((supplierId != null && !"0".equals(supplierId.trim()))
@@ -763,8 +978,10 @@ private String calculateTotalAgingCustom(DCC dcc, tbCategoryApprovalRequests lat
                 : ((supplierId != null && !"0".equals(supplierId.trim()))
                         ? dccRepository.findAllBySupplierVendorAndStatusNot(supplierId, status, unpaged)
                         : dccRepository.findAllByStatusNot(status, unpaged));
-        List<DCC> dccList = pagedDcc.getContent();
+        return buildAgingRows(pagedDcc.getContent());
+    }
 
+    private List<Map<String, Object>> buildAgingRows(List<DCC> dccList) {
         if (dccList.isEmpty()) {
             return Collections.emptyList();
         }
@@ -788,41 +1005,9 @@ private String calculateTotalAgingCustom(DCC dcc, tbCategoryApprovalRequests lat
         @SuppressWarnings("unchecked")
         Map<Long, departmentsdata> depMap = (Map<Long, departmentsdata>) preloaded.get("departmentsMap");
 
-        List<Map<String, Object>> groupedResults = dccList.stream()
+        return dccList.stream()
                 .map(dcc -> buildGroupedRow(dcc, poMap, lineItemsMap, approvalRequestMap, approvalsMap,
                         userMap, uplMap, poByNumberLine, depMap))
-                .collect(Collectors.toList());
-
-        if (filters == null || filters.isEmpty()) {
-            return groupedResults;
-        }
-
-        // Date range filters (e.g. "dccCreatedDateStart"/"dccCreatedDateEnd") have no single-column
-        // mapping of their own - routing them through matchesFilter below would treat them as an
-        // unknown column and reject every row. Split them out and handle with matchesDateRanges instead.
-        Map<String, String> rangeFilters = new HashMap<>();
-        Map<String, String> regularFilters = new HashMap<>();
-        for (Map.Entry<String, String> e : filters.entrySet()) {
-            String key = e.getKey();
-            String base = key.endsWith("Start") ? key.substring(0, key.length() - "Start".length())
-                    : key.endsWith("End") ? key.substring(0, key.length() - "End".length())
-                    : null;
-            if (base != null && isDateColumnName(base)) {
-                rangeFilters.put(key, e.getValue());
-            } else {
-                regularFilters.put(key, e.getValue());
-            }
-        }
-
-        return groupedResults.stream()
-                .filter(row -> regularFilters.entrySet().stream().allMatch(filterEntry -> {
-                    String searchQuery = filterEntry.getValue();
-                    if (searchQuery == null || searchQuery.trim().isEmpty()) {
-                        return true;
-                    }
-                    return matchesFilter(row, filterEntry.getKey(), searchQuery);
-                }))
-                .filter(row -> matchesDateRanges(row, rangeFilters))
                 .collect(Collectors.toList());
     }
 
@@ -961,7 +1146,7 @@ private String calculateTotalAgingCustom(DCC dcc, tbCategoryApprovalRequests lat
         if (hasFilters) {
             // Filtering needs every matching row loaded first (can't filter accurately
             // against just one already-sliced DB page) - see loadAndFilterAgingRows.
-            List<Map<String, Object>> filtered = loadAndFilterAgingRows(supplierId, filters, excludedStatus, false);
+            List<Map<String, Object>> filtered = loadAndFilterAgingRows(supplierId, filters, excludedStatus, false, GRID_LOAD_WAIT_SECONDS);
 
             int totalRecords = filtered.size();
             int totalPages = totalRecords == 0 ? 0 : (int) Math.ceil((double) totalRecords / size);
@@ -1021,7 +1206,7 @@ private String calculateTotalAgingCustom(DCC dcc, tbCategoryApprovalRequests lat
      * FULL matching row set, unpaginated, regardless of whether filters is empty.
      */
     public List<Map<String, Object>> getFullAgingReportForExport(String supplierId, Map<String, String> filters) {
-        List<Map<String, Object>> rows = loadAndFilterAgingRows(supplierId, filters, "incomplete", false);
+        List<Map<String, Object>> rows = loadAndFilterAgingRows(supplierId, filters, "incomplete", false, EXPORT_LOAD_WAIT_SECONDS);
         rows.sort((a, b) -> Long.compare((Long) b.get("recordNo"), (Long) a.get("recordNo")));
         return rows;
     }
@@ -1050,10 +1235,7 @@ private String calculateTotalAgingCustom(DCC dcc, tbCategoryApprovalRequests lat
                 : columnName;
 
         Object value = row.get(targetKey);
-        // System.out.println("Target key: '" + targetKey + "', found: " + (value != null));
-
         if (value == null) {
-            System.out.println("Value is null for key: " + targetKey);
             return false;
         }
 
@@ -1063,9 +1245,7 @@ private String calculateTotalAgingCustom(DCC dcc, tbCategoryApprovalRequests lat
         // Exact match columns - CASE INSENSITIVE
         if (isExactMatchColumn(columnName)) {
             String valueStr = value.toString().trim();
-            boolean matches = valueStr.equalsIgnoreCase(rawSearch);
-            System.out.println("Exact match - " + columnName + ": '" + valueStr + "' vs '" + rawSearch + "' = " + matches);
-            return matches;
+            return valueStr.equalsIgnoreCase(rawSearch);
         }
 
         // Numeric columns
@@ -1079,7 +1259,6 @@ private String calculateTotalAgingCustom(DCC dcc, tbCategoryApprovalRequests lat
                     return Math.abs(valueNum - searchNum) < 0.001;
                 }
             } catch (NumberFormatException nfe) {
-                System.out.println("Numeric parse error for: " + rawSearch);
                 return false;
             }
         }
@@ -1088,16 +1267,12 @@ private String calculateTotalAgingCustom(DCC dcc, tbCategoryApprovalRequests lat
         if (isDateColumn(columnName, mapping)) {
             String formattedValue = formatValueForDateComparison(value);
             String formattedSearch = formatSearchForDateComparison(rawSearch);
-            boolean matches = formattedValue != null && formattedValue.equals(formattedSearch);
-            System.out.println("Date match - " + columnName + ": '" + formattedValue + "' vs '" + formattedSearch + "' = " + matches);
-            return matches;
+            return formattedValue != null && formattedValue.equals(formattedSearch);
         }
 
         // Default: case-insensitive contains for other strings
         String valueStr = value.toString().toLowerCase().trim();
-        boolean containsMatch = valueStr.contains(searchPattern);
-        System.out.println("Contains match - " + columnName + ": '" + valueStr + "' contains '" + searchPattern + "' = " + containsMatch);
-        return containsMatch;
+        return valueStr.contains(searchPattern);
     }
 
     // case-insensitive lookup helper
