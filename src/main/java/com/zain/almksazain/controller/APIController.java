@@ -2674,6 +2674,8 @@ public class APIController {
             Set<String> uniqueItemCategoryCodes = new LinkedHashSet<>(ItemCategoryCodes);
             List<String> regionNamesForApproval = Arrays.asList(workflowRegion.split(","));
             List<User> firstApproversToNotify = new ArrayList<>();
+            // Level 1 approvers of approverDefinedChain scopes (Others), who get an extra line in the email.
+            List<User> chainDefiningApprovers = new ArrayList<>();
 
             if (status.equalsIgnoreCase("incomplete")) {
                 // Draft/incomplete submissions never got an approval chain
@@ -2723,6 +2725,9 @@ public class APIController {
                             Integer.parseInt(recordId), vendorName, createdByName, (int) scopeRecord.getRecordNo(),
                             createdBy, regionNamesForApproval, "tb_DCC", poLineDecription, poNumber);
                     firstApprover.ifPresent(firstApproversToNotify::add);
+                    if (scopeRecord.isApproverDefinedChain()) {
+                        firstApprover.ifPresent(chainDefiningApprovers::add);
+                    }
                 }
 
                 if (TransactionSynchronizationManager.isSynchronizationActive()) {
@@ -2732,9 +2737,14 @@ public class APIController {
                             for (User approver : firstApproversToNotify) {
                                 try {
                                     if (approver.getEmailAddress() != null && !approver.getEmailAddress().isBlank()) {
+                                        String body = "A new acceptance request (PO # " + poNumber + ") requires your approval.";
+                                        if (chainDefiningApprovers.contains(approver)) {
+                                            // Others scope: Level 1 defines (or reviews) who approves after them.
+                                            body += " You will be asked to define the approval chain for this request.";
+                                        }
                                         emailService.sendEmail(approver.getEmailAddress(),
                                                 "Action Required: Approval - PO # " + poNumber,
-                                                "A new acceptance request (PO # " + poNumber + ") requires your approval.",
+                                                body,
                                                 null, null, approver.getUsername(), null, null, null, null);
                                     }
                                 } catch (Exception mailEx) {
