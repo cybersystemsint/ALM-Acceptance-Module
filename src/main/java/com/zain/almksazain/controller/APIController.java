@@ -42,6 +42,7 @@ import com.zain.almksazain.model.tbNode;
 import com.zain.almksazain.model.User;
 import com.zain.almksazain.services.CategoryApprovalInitializationService;
 import com.zain.almksazain.services.EmailService;
+import com.zain.almksazain.services.ResubmissionEmailService;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import com.zain.almksazain.repo.tbSiteRepo;
@@ -181,6 +182,9 @@ public class APIController {
 
     @Autowired
     EmailService emailService;
+
+    @Autowired
+    ResubmissionEmailService resubmissionEmailService;
 
     @Autowired
     tbPassiveInventoryRepo passiveRepo;
@@ -2684,26 +2688,17 @@ public class APIController {
                 // pending for the same approver - mirrors
                 // ScopeApprovalService.reInitializeRequestForInfo(), run
                 // locally so it shares this same transaction too.
-                Optional<User> infoRequester = categoryApprovalInitializationService
+                CategoryApprovalInitializationService.InfoResubmission resubmission = categoryApprovalInitializationService
                         .reInitializeRequestForInfo(Integer.parseInt(recordId));
-                infoRequester.ifPresent(firstApproversToNotify::add);
 
+                // Same email WorkFlow-Management used to send (request details, line items,
+                // action history), logged in tb_Email_Logs.
                 if (TransactionSynchronizationManager.isSynchronizationActive()) {
                     TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                         @Override
                         public void afterCommit() {
-                            for (User approver : firstApproversToNotify) {
-                                try {
-                                    if (approver.getEmailAddress() != null && !approver.getEmailAddress().isBlank()) {
-                                        emailService.sendEmail(approver.getEmailAddress(),
-                                                "Action Required: Approval - PO # " + poNumber,
-                                                "The acceptance request (PO # " + poNumber + ") has been resubmitted with the additional information you requested.",
-                                                null, null, approver.getUsername(), null, null, null, null);
-                                    }
-                                } catch (Exception mailEx) {
-                                    logger.error("| Failed to send resubmission notification email to " + approver.getEmailAddress() + ": " + mailEx);
-                                }
-                            }
+                            resubmissionEmailService.sendResubmissionEmail(
+                                    resubmission.getApprovalRequestRecordNo(), resubmission.getApproverUserId());
                         }
                     });
                 }

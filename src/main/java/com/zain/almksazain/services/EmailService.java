@@ -40,6 +40,11 @@ public class EmailService {
     @Value("${email.json.endpoint:}")
     private String JSON_EMAIL_ENDPOINT;
 
+    // Endpoint WorkFlow-Management sends its approval workflow emails to; it logs them
+    // in tb_Email_Logs (email.json.endpoint is the aging one, logged in tb_Aging_Email_Logs).
+    @Value("${email.workflow.json.endpoint:}")
+    private String WORKFLOW_JSON_EMAIL_ENDPOINT;
+
     private final RestTemplate restTemplate;
 
     public EmailService(RestTemplate restTemplate) {
@@ -85,11 +90,38 @@ public class EmailService {
             if (wantsMultipart) {
                 sendMultipartEmail(to, subject, message, attachments, emailId, department, userName, role, requestCount, cc, bcc);
             } else {
-                sendJsonEmail(to, subject, message, emailId, department, userName, role, requestCount, cc, bcc);
+                sendJsonEmail(JSON_EMAIL_ENDPOINT, to, subject, message, emailId, department, userName, role, requestCount, cc, bcc);
             }
 
         } catch (Exception e) {
             logger.error("Failed to send email to {}: {}", to, e.getMessage(), e);
+        } finally {
+            CompletableFuture.delayedExecutor(2, TimeUnit.MINUTES)
+                    .execute(() -> recentEmailHashes.remove(emailHash));
+        }
+    }
+
+    /**
+     * An approval workflow email (same template family as WorkFlow-Management's),
+     * sent to the endpoint that logs it in tb_Email_Logs.
+     */
+    @Async
+    public void sendWorkflowEmail(String to, String subject, String message) {
+        String emailHash = generateEmailHash(to, subject, message, null, null, null, null, null);
+        if (!recentEmailHashes.add(emailHash)) {
+            logger.warn("DUPLICATE_EMAIL_PREVENTED: to={}, subject={}", to, subject);
+            return;
+        }
+        if (WORKFLOW_JSON_EMAIL_ENDPOINT == null || WORKFLOW_JSON_EMAIL_ENDPOINT.isBlank()) {
+            logger.error("Aborting email send: email.workflow.json.endpoint is not configured. to={} subject={}", to, subject);
+            return;
+        }
+        try {
+            String emailId = generateEmailId();
+            logger.info("Sending workflow emailId={} to={} subject='{}'", emailId, to, subject);
+            sendJsonEmail(WORKFLOW_JSON_EMAIL_ENDPOINT, to, subject, message, emailId, null, null, null, null, null, null);
+        } catch (Exception e) {
+            logger.error("Failed to send workflow email to {}: {}", to, e.getMessage(), e);
         } finally {
             CompletableFuture.delayedExecutor(2, TimeUnit.MINUTES)
                     .execute(() -> recentEmailHashes.remove(emailHash));
@@ -144,7 +176,7 @@ public class EmailService {
         }
     }
 
-    private void sendJsonEmail(String to, String subject, String message, String emailId,
+    private void sendJsonEmail(String endpoint, String to, String subject, String message, String emailId,
                                String department, String userName, String role, Integer requestCount, String cc, String bcc) {
         try {
             HttpHeaders headers = new HttpHeaders();
@@ -167,9 +199,9 @@ public class EmailService {
             if (cc != null) requestBody.put("cc", cc);
             if (bcc != null) requestBody.put("bcc", bcc);
 
-            logger.debug("POST {} payload keys={}", JSON_EMAIL_ENDPOINT, requestBody.keySet());
+            logger.debug("POST {} payload keys={}", endpoint, requestBody.keySet());
             HttpEntity<Map<String, String>> requestEntity = new HttpEntity<>(requestBody, headers);
-            ResponseEntity<String> response = restTemplate.postForEntity(JSON_EMAIL_ENDPOINT, requestEntity, String.class);
+            ResponseEntity<String> response = restTemplate.postForEntity(endpoint, requestEntity, String.class);
 
             logger.info("JSON email sent: status={} body={}", response.getStatusCode(), response.getBody());
         } catch (Exception e) {
