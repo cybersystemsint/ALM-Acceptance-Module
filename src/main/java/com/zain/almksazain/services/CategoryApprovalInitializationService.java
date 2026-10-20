@@ -142,13 +142,14 @@ public class CategoryApprovalInitializationService {
      * "request-info" as a historical record) and opens a fresh child for the
      * same level/approver/region so that approver sees it as ready again.
      *
-     * @return the approver who requested more info (and who should be
-     *         re-notified now that the request is back in their queue).
+     * @return the re-activated approval request and the approver who
+     *         requested more info (to be re-notified now that the request is
+     *         back in their queue).
      * @throws RuntimeException if no request-info parent/child record is
      *         found for this acceptanceRequestRecordNo.
      */
     @Transactional(propagation = Propagation.MANDATORY)
-    public Optional<User> reInitializeRequestForInfo(int acceptanceRequestRecordNo) {
+    public InfoResubmission reInitializeRequestForInfo(int acceptanceRequestRecordNo) {
         tbCategoryApprovalRequests parentRecord = categoryApprovalRequestsRepo
                 .findByAcceptanceRequestRecordNoAndStatus(acceptanceRequestRecordNo, "request-info")
                 .orElseThrow(() -> new RuntimeException(
@@ -198,7 +199,26 @@ public class CategoryApprovalInitializationService {
 
         categoryApprovalRequestsRepo.save(parentRecord);
 
-        return userRepository.findById(infoRequesterChild.getApproverId());
+        return new InfoResubmission(parentRecord.getRecordNo(), infoRequesterChild.getApproverId());
+    }
+
+    /** What reInitializeRequestForInfo re-activated: the approval request and its info requester. */
+    public static class InfoResubmission {
+        private final int approvalRequestRecordNo;
+        private final int approverUserId;
+
+        public InfoResubmission(int approvalRequestRecordNo, int approverUserId) {
+            this.approvalRequestRecordNo = approvalRequestRecordNo;
+            this.approverUserId = approverUserId;
+        }
+
+        public int getApprovalRequestRecordNo() {
+            return approvalRequestRecordNo;
+        }
+
+        public int getApproverUserId() {
+            return approverUserId;
+        }
     }
 
     /**
