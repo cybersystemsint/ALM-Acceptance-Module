@@ -24,6 +24,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonSyntaxException;
 import com.zain.almksazain.services.DCCService;
+import com.zain.almksazain.services.TagNumberService;
 import com.zain.almzainksa.helper.helper;
 import com.zain.almksazain.model.FileRecord;
 import com.zain.almksazain.model.tb_Approval_Log;
@@ -117,6 +118,9 @@ public class APIController {
 
     @Autowired
     DccLineRepo dcclnrepo;
+
+    @Autowired
+    TagNumberService tagNumberService;
 
     @Autowired
     uplrepo uprepo;
@@ -2011,9 +2015,9 @@ public class APIController {
             }
 
             List<String> excludedDccStatuses = Arrays.asList("incomplete", "rejected", "returned");
-            Set<String> incomingTagNumbersLower = new LinkedHashSet<>();
+            // Tag numbers are trimmed and compared case-sensitively: "ABC" and "abc" are different tags.
+            Set<String> incomingTagNumbers = new LinkedHashSet<>();
             Set<String> duplicateTagsInRequest = new LinkedHashSet<>();
-            Set<String> seenTagsLower = new HashSet<>();
             Set<Long> currentDccRecordNos = new HashSet<>();
 
             for (int i = 0; i < jsonArray.length(); i++) {
@@ -2028,20 +2032,23 @@ public class APIController {
                     if (tagNumber.isEmpty()) {
                         continue;
                     }
-                    String tagLower = tagNumber.toLowerCase();
-                    if (!seenTagsLower.add(tagLower)) {
+                    if (!incomingTagNumbers.add(tagNumber)) {
                         duplicateTagsInRequest.add(tagNumber);
                     }
-                    incomingTagNumbersLower.add(tagLower);
                 }
             }
 
             Set<String> duplicateTagNumbers = new LinkedHashSet<>();
-            if (!incomingTagNumbersLower.isEmpty()) {
+            if (!incomingTagNumbers.isEmpty()) {
                 List<DCCLineItem> tagConflicts = dcclnrepo.findActiveTagConflicts(
-                        new ArrayList<>(incomingTagNumbersLower),
+                        new ArrayList<>(incomingTagNumbers),
                         excludedDccStatuses);
                 for (DCCLineItem conflict : tagConflicts) {
+                    // The DB collation may match case-insensitively; only an exact (trimmed) match is a conflict.
+                    String conflictTag = conflict.getTagNumber() == null ? "" : conflict.getTagNumber().trim();
+                    if (!incomingTagNumbers.contains(conflictTag)) {
+                        continue;
+                    }
                     if (conflict.getDccId() != null && !conflict.getDccId().isBlank()) {
                         try {
                             long conflictDccId = Long.parseLong(conflict.getDccId().trim());
@@ -2051,10 +2058,48 @@ public class APIController {
                         } catch (NumberFormatException ignored) {
                         }
                     }
-                    if (conflict.getTagNumber() != null && !conflict.getTagNumber().isBlank()) {
-                        duplicateTagNumbers.add(conflict.getTagNumber());
+                    duplicateTagNumbers.add(conflictTag);
+                }
+            }
+
+            // TAG Number registry (Configurations > Acceptance Workflow > TAG Numbers): when a request
+            // is submitted - a new one, a saved draft, or a 'returned' one being resubmitted - every
+            // TAG on it must be registered as 'Active' in tb_TagNumber with vendorNumber equal to the
+            // submitted vendorNumber. Exact, case-sensitive match. TAGs already reported as used on
+            // another active request aren't repeated here.
+            Set<String> unregisteredTagNumbers = new LinkedHashSet<>();
+            String unregisteredTagVendor = "";
+            for (int i = 0; i < jsonArray.length(); i++) {
+                JSONObject header = jsonArray.getJSONObject(i);
+                if (!"inprocess".equalsIgnoreCase(header.optString("status", "").trim())) {
+                    continue;
+                }
+                long headerRecordNo = Long.parseLong(header.getString("recordNo"));
+                DCC existingDcc = headerRecordNo > 0 ? dccrepo.findByRecordNo(headerRecordNo) : null;
+                String existingStatus = existingDcc != null && existingDcc.getStatus() != null
+                        ? existingDcc.getStatus().trim().toLowerCase() : "";
+                if (existingDcc != null && !existingStatus.isEmpty()
+                        && !existingStatus.equals("incomplete") && !existingStatus.equals("returned")) {
+                    continue;
+                }
+
+                Set<String> headerTags = new LinkedHashSet<>();
+                JSONArray lineItems = header.getJSONArray("lineItems");
+                for (int j = 0; j < lineItems.length(); j++) {
+                    String tagNumber = lineItems.getJSONObject(j).optString("tagNumber", "").trim();
+                    if (!tagNumber.isEmpty() && !duplicateTagNumbers.contains(tagNumber)) {
+                        headerTags.add(tagNumber);
                     }
                 }
+                if (headerTags.isEmpty()) {
+                    continue;
+                }
+                String vendorNumber = header.optString("vendorNumber", "").trim();
+                if (vendorNumber.isEmpty() && existingDcc != null && existingDcc.getVendorNumber() != null) {
+                    vendorNumber = existingDcc.getVendorNumber().trim();
+                }
+                unregisteredTagVendor = vendorNumber;
+                unregisteredTagNumbers.addAll(tagNumberService.findTagsNotActiveForVendor(vendorNumber, headerTags));
             }
 
             List<String> errorMessages = new ArrayList<>();
@@ -2176,6 +2221,14 @@ public class APIController {
             if (!duplicateTagNumbers.isEmpty()) {
                 errorMessages.add("Acceptance request for tag number(s) " + String.join(", ", duplicateTagNumbers)
                         + " has already been raised. Kindly use a different tag number.");
+            }
+
+            if (!unregisteredTagNumbers.isEmpty()) {
+                errorMessages.add("Tag number(s) " + String.join(", ", unregisteredTagNumbers)
+                        + " are not registered as Active for vendor "
+                        + (unregisteredTagVendor.isEmpty() ? "(unknown)" : unregisteredTagVendor)
+                        + ". Tag numbers must be added under Configurations > Acceptance Workflow > TAG Numbers"
+                        + " (exact, case-sensitive match) before they can be used.");
             }
 
             // ===== NEW VALIDATION: submitted batch quantity vs live UPL Pending Quantity =====
@@ -2837,7 +2890,7 @@ public class APIController {
             eddccLineItem.setScopeOfWork(jsonObject.getString("scopeOfWork"));
             eddccLineItem.setRemarks(jsonObject.getString("remarks"));
             eddccLineItem.setLinkId(jsonObject.getString("linkId"));
-            eddccLineItem.setTagNumber(jsonObject.getString("tagNumber"));
+            eddccLineItem.setTagNumber(jsonObject.optString("tagNumber", "").trim());
 
             try {
                 dcclnrepo.save(eddccLineItem);
@@ -2906,7 +2959,7 @@ public class APIController {
             dccLineItem.setScopeOfWork(jsonObject.getString("scopeOfWork"));
             dccLineItem.setRemarks(jsonObject.getString("remarks"));
             dccLineItem.setLinkId(jsonObject.getString("linkId"));
-            dccLineItem.setTagNumber(jsonObject.getString("tagNumber"));
+            dccLineItem.setTagNumber(jsonObject.optString("tagNumber", "").trim());
 
             System.out.println("DCC LIne save  " + dccLineItem);
 
