@@ -2355,6 +2355,15 @@ public class APIController {
                 createdBy = jsonObject.getInt("createdById");// createdById
                 createdByName = jsonObject.getString("createdByName");
                 JSONArray dcc_line_data = jsonObject.getJSONArray("lineItems");
+                // TAGs this request carried before the save, so a resubmit that drops one frees it (below).
+                Set<String> previousTags = new LinkedHashSet<>();
+                if (recordNo > 0) {
+                    for (DCCLineItem line : dcclnrepo.findByDccId(String.valueOf(recordNo))) {
+                        if (line.getTagNumber() != null && !line.getTagNumber().trim().isEmpty()) {
+                            previousTags.add(line.getTagNumber().trim());
+                        }
+                    }
+                }
                 String result = addEditDCC(recordNo, jsonObject);
                 DCC topRecord = dccrepo.findTopByPoNumber(poNumber);
                 String recordId = topRecord != null ? String.valueOf(topRecord.getRecordNo()) : "";
@@ -2428,20 +2437,31 @@ public class APIController {
                     String headerRegion = jsonObject.optString("region", "").trim();
                     postdccln(poNumber, newRecordNo, status, createdBy, createdByName, vendorName, headerRegion, dcc_line_data.toString());
 
-                    // Submitted (not just saved as a draft): its TAG Numbers are now Used.
+                    // Submitted (not just saved as a draft): its TAG Numbers are now Used, and any TAG
+                    // a resubmit took off the request is free again. (Reactivating the request already
+                    // marked its old lines' TAGs Used - trg_tb_DCC_sync_tag_numbers, sql/tag_number_schema.sql.)
                     if ("inprocess".equalsIgnoreCase(status == null ? "" : status.trim())) {
                         Set<String> submittedTags = new LinkedHashSet<>();
+                        Set<String> submittedKeys = new HashSet<>();
                         for (int x = 0; x < dcc_line_data.length(); x++) {
                             String tag = dcc_line_data.getJSONObject(x).optString("tagNumber", "").trim();
                             if (!tag.isEmpty()) {
                                 submittedTags.add(tag);
+                                submittedKeys.add(tag.toLowerCase(Locale.ROOT));
+                            }
+                        }
+                        Set<String> droppedTags = new LinkedHashSet<>();
+                        for (String tag : previousTags) {
+                            if (!submittedKeys.contains(tag.toLowerCase(Locale.ROOT))) {
+                                droppedTags.add(tag);
                             }
                         }
                         try {
                             tagNumberService.markTagsUsed(submittedTags, newRecordNo, createdBy, createdByName);
+                            tagNumberService.releaseTags(droppedTags, newRecordNo, createdBy, createdByName);
                         } catch (Exception e) {
-                            logger.error("Acceptance request {} saved, but marking its TAG Numbers {} as Used failed",
-                                    newRecordNo, submittedTags, e);
+                            logger.error("Acceptance request {} saved, but updating its TAG Numbers (used {}, dropped {}) failed",
+                                    newRecordNo, submittedTags, droppedTags, e);
                         }
                     }
                 }

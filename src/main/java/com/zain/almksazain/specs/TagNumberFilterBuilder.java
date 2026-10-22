@@ -80,12 +80,16 @@ public final class TagNumberFilterBuilder {
     // TAG Numbers page
     // ============================================================
 
-    // Every acceptance request whose lines carry this TAG (any status), newest first.
+    // Joins tb_DCC_LN (ln) to its request (d), keeping only active requests - the only ones
+    // Request No shows (a TAG on an inactive request is free again, see sql/tag_number_schema.sql).
+    private static final String REQUEST_NO_LINES = "tb_DCC_LN ln JOIN tb_DCC d ON d.recordNo = ln.dccId "
+            + "AND LOWER(d.status) NOT IN (" + INACTIVE_DCC_STATUSES + ")";
+    // Every active acceptance request whose lines carry this TAG, newest first.
     private static final String REQUEST_NO_SQL = "(SELECT GROUP_CONCAT(DISTINCT ln.dccId "
             + "ORDER BY CAST(ln.dccId AS UNSIGNED) DESC SEPARATOR ', ') "
-            + "FROM tb_DCC_LN ln WHERE ln.tagNumber = t.tagNumber)";
+            + "FROM " + REQUEST_NO_LINES + " WHERE ln.tagNumber = t.tagNumber)";
     private static final String REQUEST_NO_SORT_SQL = "(SELECT MAX(CAST(ln.dccId AS UNSIGNED)) "
-            + "FROM tb_DCC_LN ln WHERE ln.tagNumber = t.tagNumber)";
+            + "FROM " + REQUEST_NO_LINES + " WHERE ln.tagNumber = t.tagNumber)";
     // Lines on active requests - such a TAG can't be edited or deleted (TagNumberService).
     private static final String ACTIVE_REQUEST_COUNT_SQL = "(SELECT COUNT(*) FROM tb_DCC_LN ln "
             + "JOIN tb_DCC d ON d.recordNo = ln.dccId WHERE ln.tagNumber = t.tagNumber "
@@ -256,7 +260,8 @@ public final class TagNumberFilterBuilder {
             return null;
         }
         if (column.kind == Kind.REQUEST_NO) {
-            return "SELECT DISTINCT ln.dccId AS v FROM tb_DCC_LN ln JOIN tb_TagNumber t ON ln.tagNumber = t.tagNumber "
+            return "SELECT DISTINCT ln.dccId AS v FROM " + REQUEST_NO_LINES
+                    + " JOIN tb_TagNumber t ON ln.tagNumber = t.tagNumber "
                     + "WHERE t.status <> 'Deleted' ORDER BY CAST(ln.dccId AS UNSIGNED) DESC LIMIT " + limit;
         }
         String notBlank = column.kind == Kind.NUMBER
@@ -373,9 +378,12 @@ public final class TagNumberFilterBuilder {
         }
     }
 
-    /** Matches TAGs by the acceptance request numbers (tb_DCC_LN.dccId) whose lines carry them. */
+    /**
+     * Matches TAGs by the acceptance request numbers (tb_DCC_LN.dccId) whose lines carry them -
+     * the same active requests the Request No column shows.
+     */
     private static String requestNoClause(String op, List<String> values, List<Object> params) {
-        String lines = "SELECT 1 FROM tb_DCC_LN ln WHERE ln.tagNumber = t.tagNumber";
+        String lines = "SELECT 1 FROM " + REQUEST_NO_LINES + " WHERE ln.tagNumber = t.tagNumber";
         switch (op) {
             case "isEmpty":
                 return "NOT EXISTS (" + lines + ")";
@@ -388,7 +396,7 @@ public final class TagNumberFilterBuilder {
                 for (String v : requestNos) {
                     params.add(String.valueOf(parseNumber("requestNo", v)));
                 }
-                return "t.tagNumber IN (SELECT ln.tagNumber FROM tb_DCC_LN ln WHERE ln.dccId IN ("
+                return "t.tagNumber IN (SELECT ln.tagNumber FROM " + REQUEST_NO_LINES + " WHERE ln.dccId IN ("
                         + placeholders(requestNos.size()) + "))";
             case "notEquals":
                 params.add(String.valueOf(parseNumber("requestNo", values.get(0))));

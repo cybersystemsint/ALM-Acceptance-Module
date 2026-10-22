@@ -161,7 +161,7 @@ public class TagNumberService {
             String tag = trim(item.tagNumber);
             String vendor = trim(item.vendorNumber);
             String status = normalizeStatus(item.status,
-                    existing != null ? existing.getStatus() : TagNumber.STATUS_USED);
+                    existing != null ? existing.getStatus() : TagNumber.STATUS_UNUSED);
             rowErrors.addAll(validateTagAndVendor(tag, vendor, vendorNames));
             if (status == null) {
                 rowErrors.add("Status must be Used or Unused.");
@@ -400,6 +400,38 @@ public class TagNumberService {
             changes.put("status", new Object[] { t.getStatus(), TagNumber.STATUS_USED });
             changes.put("requestNo", new Object[] { null, requestNo });
             t.setStatus(TagNumber.STATUS_USED);
+            t.setLastUpdatedBy(userName);
+            t.setLastUpdatedDate(now);
+            tagNumberRepo.save(t);
+            log(t, TagNumberAuditLog.CHANGE_UPDATE, changes, batchId, userId, userName);
+        }
+    }
+
+    /**
+     * Frees TAGs that acceptance request requestNo no longer carries (taken off its lines on a
+     * resubmit): each 'Used' one goes back to 'Unused' unless another active request still has it.
+     * Status changes of the request itself are handled by trg_tb_DCC_sync_tag_numbers.
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void releaseTags(Collection<String> tagNumbers, String requestNo, Integer userId, String userName) {
+        if (tagNumbers == null || tagNumbers.isEmpty()) {
+            return;
+        }
+        Set<String> tags = new LinkedHashSet<>(tagNumbers);
+        Map<String, Integer> refs = countActiveReferences(tags);
+        List<TagNumber> toRelease = new ArrayList<>();
+        for (TagNumber t : findNonDeleted(tags)) {
+            if (TagNumber.STATUS_USED.equals(t.getStatus()) && refs.getOrDefault(tagKey(t.getTagNumber()), 0) == 0) {
+                toRelease.add(t);
+            }
+        }
+        String batchId = toRelease.size() > 1 ? UUID.randomUUID().toString() : null;
+        LocalDateTime now = LocalDateTime.now();
+        for (TagNumber t : toRelease) {
+            Map<String, Object[]> changes = new LinkedHashMap<>();
+            changes.put("status", new Object[] { t.getStatus(), TagNumber.STATUS_UNUSED });
+            changes.put("requestNo", new Object[] { requestNo, null });
+            t.setStatus(TagNumber.STATUS_UNUSED);
             t.setLastUpdatedBy(userName);
             t.setLastUpdatedDate(now);
             tagNumberRepo.save(t);
