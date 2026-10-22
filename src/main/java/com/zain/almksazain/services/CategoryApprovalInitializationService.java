@@ -2,9 +2,11 @@ package com.zain.almksazain.services;
 
 import com.zain.almksazain.model.User;
 import com.zain.almksazain.model.supplierdata;
+import com.zain.almksazain.model.tbApprovalChainChangeLogs;
 import com.zain.almksazain.model.tbCategoryApprovalRequests;
 import com.zain.almksazain.model.tbCategoryApprovals;
 import com.zain.almksazain.model.tbDelegation;
+import com.zain.almksazain.model.tbScope;
 import com.zain.almksazain.model.tbScopeApprovalLevelRegions;
 import com.zain.almksazain.model.tbScopeApprovalLevels;
 import com.zain.almksazain.model.tbScopeApprovalSuppliers;
@@ -13,16 +15,21 @@ import com.zain.almksazain.repo.TbCategoryApprovalRequestsRepository;
 import com.zain.almksazain.repo.TbCategoryApprovalsRepository;
 import com.zain.almksazain.repo.UserRepository;
 import com.zain.almksazain.repo.supplierrepo;
+import com.zain.almksazain.repo.tbApprovalChainChangeLogsRepo;
 import com.zain.almksazain.repo.tbDelegationRepo;
 import com.zain.almksazain.repo.tbRegionRepo;
 import com.zain.almksazain.repo.tbScopeApprovalLevelRegionsRepo;
 import com.zain.almksazain.repo.tbScopeApprovalLevelsRepo;
 import com.zain.almksazain.repo.tbScopeApprovalSuppliersRepo;
+import com.zain.almksazain.repo.tbScopeRepo;
 
 import java.sql.Timestamp;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -74,6 +81,10 @@ public class CategoryApprovalInitializationService {
     private TbCategoryApprovalRequestsRepository categoryApprovalRequestsRepo;
     @Autowired
     private TbCategoryApprovalsRepository categoryApprovalsRepo;
+    @Autowired
+    private tbScopeRepo scopeRepo;
+    @Autowired
+    private tbApprovalChainChangeLogsRepo chainChangeLogsRepo;
 
     /**
      * Creates the tb_Category_Approval_Requests parent row and the first
@@ -258,7 +269,17 @@ public class CategoryApprovalInitializationService {
         boolean atLeastOneCreated = false;
         boolean readyForApprovalAssigned = false;
 
-        for (tbScopeApprovalLevels level : approvalLevels) {
+        // Approver-defined chain scopes (Others): only Level 1 comes from config.
+        // Config levels above 1 are never turned into tasks - the Level 1
+        // approver defines the rest (WorkFlow-Management ApprovalChainService),
+        // and an earlier chain of this request is reapplied below.
+        boolean approverDefinedChain = scopeRepo.findById((long) scopeRecordNo)
+                .map(tbScope::isApproverDefinedChain)
+                .orElse(false);
+        List<tbScopeApprovalLevels> levelsToCreate = approverDefinedChain ? List.of(resolvedLevelOne) : approvalLevels;
+        Map<Long, tb_Region> levelOneRegions = new LinkedHashMap<>();
+
+        for (tbScopeApprovalLevels level : levelsToCreate) {
             if (level.getLevel() != null && level.getLevel() == 1 && level.getRecordNo() != resolvedLevelOne.getRecordNo()) {
                 logger.info("Skipping level-1 config recordNo {} for vendor {}", level.getRecordNo(), vendorName);
                 continue;
@@ -321,10 +342,74 @@ public class CategoryApprovalInitializationService {
                 if (assignReadyForApproval) {
                     readyForApprovalAssigned = true;
                 }
+                if (level.getLevel() != null && level.getLevel() == 1) {
+                    levelOneRegions.putIfAbsent(region.getRecordNo(), region);
+                }
             }
         }
 
+        if (approverDefinedChain && atLeastOneCreated) {
+            applyApproverDefinedChain(approvalRequest, new ArrayList<>(levelOneRegions.values()));
+        }
+
         return atLeastOneCreated;
+    }
+
+    /**
+     * Sets up the approver-defined chain of a new request header. On a first
+     * submission there is no chain yet: chainStatus = awaiting, and Level 1
+     * can't approve until they save one. On a resubmission after return or
+     * reject, the request's active chain levels (rows tagged with this
+     * acceptanceRequestRecordNo) get fresh pending tasks and the chain counts as
+     * confirmed; Level 1 can still edit it before approving.
+     *
+     * Tasks are built like WorkFlow-Management's ApprovalChainService builds
+     * them on save: one per level and Level 1 region, status and approvalStatus
+     * pending, with the levelNumber/departmentId snapshot from the level row.
+     */
+    private void applyApproverDefinedChain(tbCategoryApprovalRequests approvalRequest, List<tb_Region> regions) {
+        List<tbScopeApprovalLevels> chain = scopeApprovalLevelsRepo
+                .findByAcceptanceRequestRecordNoAndStatusOrderByLevelAsc(approvalRequest.getAcceptanceRequestRecordNo(), 1);
+
+        List<User> approvers = new ArrayList<>();
+        for (tbScopeApprovalLevels level : chain) {
+            Optional<User> approver = level.getApproverUserId() == null
+                    ? Optional.empty()
+                    : userRepository.findById(level.getApproverUserId());
+            if (approver.isEmpty() || !Boolean.TRUE.equals(approver.get().getSysStatus())) {
+                // Don't route to someone who can no longer approve: leave the chain
+                // for Level 1 to fix (the editor shows it) instead of reapplying it.
+                logger.warn("Not reapplying the approval chain of acceptance request {}: level {} approver {} is missing or inactive",
+                        approvalRequest.getAcceptanceRequestRecordNo(), level.getLevel(), level.getApproverUserId());
+                chain = List.of();
+                break;
+            }
+            approvers.add(approver.get());
+        }
+
+        if (chain.isEmpty()) {
+            approvalRequest.setChainStatus(tbCategoryApprovalRequests.CHAIN_AWAITING);
+        } else {
+            for (int i = 0; i < chain.size(); i++) {
+                tbScopeApprovalLevels level = chain.get(i);
+                User approver = approvers.get(i);
+                for (tb_Region region : regions) {
+                    tbCategoryApprovals task = buildBaseApproval(approvalRequest, level, region);
+                    task.setApproverId(approver.getUserId());
+                    task.setApproverName(approver.getUsername());
+                    task.setStatus("pending");
+                    task.setApprovalStatus("pending");
+                    categoryApprovalsRepo.save(task);
+                }
+            }
+            approvalRequest.setChainStatus(tbCategoryApprovalRequests.CHAIN_CONFIRMED);
+            approvalRequest.setChainConfirmedAt(LocalDateTime.now());
+            chainChangeLogsRepo.save(tbApprovalChainChangeLogs.reapplied(approvalRequest,
+                    approvalRequest.getRequestedBy() != null ? approvalRequest.getRequestedBy() : "system"));
+            logger.info("Reapplied {} approval chain level(s) to acceptance request {} (approval request {})",
+                    chain.size(), approvalRequest.getAcceptanceRequestRecordNo(), approvalRequest.getRecordNo());
+        }
+        categoryApprovalRequestsRepo.save(approvalRequest);
     }
 
     private tbCategoryApprovals buildBaseApproval(tbCategoryApprovalRequests approvalRequest, tbScopeApprovalLevels level, tb_Region region) {
