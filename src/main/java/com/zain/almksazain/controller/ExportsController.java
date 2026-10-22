@@ -76,6 +76,7 @@ import com.zain.almksazain.services.PurchaseOrderExportService;
 import com.zain.almksazain.services.UplChangeRequestService;
 import com.zain.almksazain.specs.PoFilterBuilder;
 import com.zain.almksazain.specs.QueryFilterBuilder;
+import com.zain.almksazain.specs.TagNumberFilterBuilder;
 import com.zain.almksazain.specs.UplFilterBuilder;
 
 @RestController
@@ -2510,16 +2511,28 @@ public class ExportsController {
     }
 
     // ============================================================================
-    // TAG Number Audit Trail Export — job-based (start/status/download)
+    // TAG Numbers + TAG Number Audit Trail Exports — job-based (start/status/download)
     // ============================================================================
-    // Exports what the "TAG Number Audit Trail" page (/tagNumberAuditTrail) shows, using
-    // TagNumberController's own column map/SELECT/FROM so fetch and export never drift apart.
-    // One export row per changed field, like the UPL Audit Trail export.
+    // Export what the "TAG Numbers" (/tagNumbers) and "TAG Number Audit Trail"
+    // (/tagNumberAuditTrail) pages show, filtered by the same request body through
+    // TagNumberFilterBuilder so fetch and export never drift apart. Rows are read with a
+    // streaming ResultSet and written to an SXSSFWorkbook, rolling over to a new sheet at
+    // MAX_ROWS_PER_SHEET, like the acceptance report export.
 
-    private static final String[] TAG_NUMBER_AUDIT_TRAIL_EXPORT_HEADERS = {
+    private static final int MAX_TAG_NUMBER_EXPORT_RECORDS = 500_000;
+
+    // Same first four headers as the bulk upload template, so an export can be edited and
+    // re-uploaded to update TAG Numbers by Record No.
+    private static final List<String> TAG_NUMBER_EXPORT_HEADERS = Arrays.asList(
+            "Record No", "TAG Number", "Vendor Number", "Status", "Vendor Name", "Request No",
+            "Created By", "Created Date", "Last Updated By", "Last Updated Date");
+    private static final List<String> TAG_NUMBER_EXPORT_FIELDS = Arrays.asList(
+            "recordNo", "tagNumber", "vendorNumber", "status", "vendorName", "requestNo",
+            "createdBy", "createdDate", "lastUpdatedBy", "lastUpdatedDate");
+
+    private static final List<String> TAG_NUMBER_AUDIT_TRAIL_EXPORT_HEADERS = Arrays.asList(
             "Audit ID", "TAG Record No", "Type", "TAG Number", "Vendor Number", "Vendor Name",
-            "Field", "Old Value", "New Value", "Changed By", "Changed At"
-    };
+            "Field", "Old Value", "New Value", "Changed By", "Changed At", "Batch");
 
     // LinkedHashMap: also the display order - MySQL's JSON column doesn't keep fieldChanges' key order.
     private static final Map<String, String> TAG_NUMBER_FIELD_LABELS = new LinkedHashMap<>();
@@ -2528,32 +2541,40 @@ public class ExportsController {
         TAG_NUMBER_FIELD_LABELS.put("vendorNumber", "Vendor Number");
         TAG_NUMBER_FIELD_LABELS.put("vendorName", "Vendor Name");
         TAG_NUMBER_FIELD_LABELS.put("status", "Status");
+        TAG_NUMBER_FIELD_LABELS.put("requestNo", "Request No");
+    }
+
+    @PostMapping(value = "/tagNumbers/filter/export", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<Map<String, String>> startTagNumberExport(
+            @RequestBody(required = false) Map<String, Object> body) {
+        String jobId = newExportJob("tagNumbers");
+        Map<String, Object> effectiveBody = body != null ? body : new HashMap<>();
+        CompletableFuture.runAsync(() -> runWithExportGuard(() -> runTagNumberExportJob(jobId, effectiveBody, false)));
+        return ResponseEntity.accepted().body(Collections.singletonMap("jobId", jobId));
+    }
+
+    @GetMapping(value = "/tagNumbers/filter/export/{jobId}/status")
+    public ResponseEntity<?> getTagNumberExportStatus(@PathVariable String jobId) {
+        // Same job table and response shape as the UPL audit trail export.
+        return getUplAuditTrailExportStatus(jobId);
+    }
+
+    @GetMapping(value = "/tagNumbers/filter/export/{jobId}/download")
+    public ResponseEntity<?> downloadTagNumberExport(@PathVariable String jobId) {
+        return downloadUplAuditTrailExport(jobId);
     }
 
     @PostMapping(value = "/tagNumberAuditTrailFilter/export", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<Map<String, String>> startTagNumberAuditTrailExport(
-            @RequestBody(required = false) Map<String, String> filters) {
-        String jobId = UUID.randomUUID().toString();
-        ExportJob job = new ExportJob();
-        job.setJobId(jobId);
-        job.setReportType("tagNumberAuditTrail");
-        job.setStatus(ExportJob.STATUS_PENDING);
-        job.setRowsWritten(0);
-        job.setSheetCount(0);
-        job.setCreatedAt(LocalDateTime.now());
-        exportJobRepository.save(job);
-
-        Map<String, String> effectiveFilters = filters != null ? filters : new HashMap<>();
-        CompletableFuture.runAsync(() -> runWithExportGuard(() -> runTagNumberAuditTrailExportJob(jobId, effectiveFilters)));
-
-        Map<String, String> resp = new HashMap<>();
-        resp.put("jobId", jobId);
-        return ResponseEntity.accepted().body(resp);
+            @RequestBody(required = false) Map<String, Object> body) {
+        String jobId = newExportJob("tagNumberAuditTrail");
+        Map<String, Object> effectiveBody = body != null ? body : new HashMap<>();
+        CompletableFuture.runAsync(() -> runWithExportGuard(() -> runTagNumberExportJob(jobId, effectiveBody, true)));
+        return ResponseEntity.accepted().body(Collections.singletonMap("jobId", jobId));
     }
 
     @GetMapping(value = "/tagNumberAuditTrailFilter/export/{jobId}/status")
     public ResponseEntity<?> getTagNumberAuditTrailExportStatus(@PathVariable String jobId) {
-        // Same job table and response shape as the UPL audit trail export.
         return getUplAuditTrailExportStatus(jobId);
     }
 
@@ -2562,139 +2583,275 @@ public class ExportsController {
         return downloadUplAuditTrailExport(jobId);
     }
 
-    private void runTagNumberAuditTrailExportJob(String jobId, Map<String, String> filters) {
+    private String newExportJob(String reportType) {
+        String jobId = UUID.randomUUID().toString();
+        ExportJob job = new ExportJob();
+        job.setJobId(jobId);
+        job.setReportType(reportType);
+        job.setStatus(ExportJob.STATUS_PENDING);
+        job.setRowsWritten(0);
+        job.setSheetCount(0);
+        job.setCreatedAt(LocalDateTime.now());
+        exportJobRepository.save(job);
+        return jobId;
+    }
+
+    /** auditTrail false = the TAG Numbers page, true = the TAG Number Audit Trail page. */
+    private void runTagNumberExportJob(String jobId, Map<String, Object> body, boolean auditTrail) {
+        String what = auditTrail ? "TAG Number audit trail" : "TAG Number";
         ExportJob job = exportJobRepository.findById(jobId).orElse(null);
         if (job == null) {
-            logger.error("TAG Number audit trail export job {} disappeared before it could start", jobId);
+            logger.error("{} export job {} disappeared before it could start", what, jobId);
             return;
         }
         job.setStatus(ExportJob.STATUS_RUNNING);
         exportJobRepository.save(job);
 
+        File outFile = null;
         try {
+            Map<String, TagNumberFilterBuilder.Column> columns = auditTrail
+                    ? TagNumberFilterBuilder.AUDIT_TRAIL_COLUMNS : TagNumberFilterBuilder.TAG_NUMBER_COLUMNS;
+            String from = auditTrail ? TagNumberFilterBuilder.AUDIT_TRAIL_FROM : TagNumberFilterBuilder.TAG_NUMBER_FROM;
+            List<TagNumberFilterBuilder.Condition> conditions = TagNumberFilterBuilder.parseConditions(body, columns);
             List<Object> params = new ArrayList<>();
-            String whereClause = TagNumberController.tagNumberAuditTrailWhere(filters, params);
+            String where = TagNumberFilterBuilder.buildWhere(columns, conditions, params);
 
-            String countSql = "SELECT COUNT(*) " + TagNumberController.TAG_NUMBER_AUDIT_TRAIL_FROM + whereClause;
-            int totalRecords = jdbcTemplate.queryForObject(countSql, params.toArray(), Integer.class);
-            if (totalRecords > MAX_UPL_AUDIT_TRAIL_EXPORT_RECORDS) {
+            int maxRecords = auditTrail ? MAX_UPL_AUDIT_TRAIL_EXPORT_RECORDS : MAX_TAG_NUMBER_EXPORT_RECORDS;
+            Integer totalRecords = jdbcTemplate.queryForObject("SELECT COUNT(*) " + from + where,
+                    params.toArray(), Integer.class);
+            String failure = null;
+            if (totalRecords == null || totalRecords == 0) {
+                failure = "No data found matching the specified filters.";
+            } else if (totalRecords > maxRecords) {
+                failure = String.format("Export would return %d records. Maximum allowed is %d. Please add more filters.",
+                        totalRecords, maxRecords);
+            }
+            if (failure != null) {
                 job.setStatus(ExportJob.STATUS_FAILED);
-                job.setErrorMessage(String.format(
-                        "Export would return %d records. Maximum allowed is %d. Please add more filters.",
-                        totalRecords, MAX_UPL_AUDIT_TRAIL_EXPORT_RECORDS));
+                job.setErrorMessage(failure);
                 job.setCompletedAt(LocalDateTime.now());
                 exportJobRepository.save(job);
                 return;
             }
 
-            String sql = TagNumberController.TAG_NUMBER_AUDIT_TRAIL_SELECT + TagNumberController.TAG_NUMBER_AUDIT_TRAIL_FROM
-                    + whereClause + " ORDER BY a.recordId DESC";
-            List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql, params.toArray());
-            if (rows.isEmpty()) {
-                job.setStatus(ExportJob.STATUS_FAILED);
-                job.setErrorMessage("No data found matching the specified filters.");
-                job.setCompletedAt(LocalDateTime.now());
-                exportJobRepository.save(job);
-                return;
-            }
+            // Same row order as the page's default sort.
+            String sql = auditTrail
+                    ? TagNumberFilterBuilder.AUDIT_TRAIL_SELECT + from + where + " ORDER BY a.recordId DESC"
+                    : TagNumberFilterBuilder.TAG_NUMBER_EXPORT_SELECT + from + where + " ORDER BY t.recordNo DESC";
 
             File dir = new File(exportDir);
             if (!dir.exists()) {
                 dir.mkdirs();
             }
-            String storedFileName = "tag_number_audit_trail_export_"
+            String storedFileName = (auditTrail ? "tag_number_audit_trail_export_" : "tag_numbers_export_")
                     + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
                     + "_" + jobId.substring(0, 8) + ".xlsx";
-            File outFile = new File(dir, storedFileName);
+            outFile = new File(dir, storedFileName);
 
-            int rowsWritten = buildTagNumberAuditTrailExcelToFile(rows, outFile);
+            int sheetCount = auditTrail
+                    ? writeTagNumberAuditTrailWorkbook(sql, params, outFile, job)
+                    : writeTagNumberWorkbook(sql, params, outFile, job);
 
             LocalDateTime completedAt = LocalDateTime.now();
             job.setStatus(ExportJob.STATUS_DONE);
-            String filterTag = !filters.isEmpty() ? "_FILTERED" : "";
-            job.setFileName("TAG_NUMBER_AUDIT_TRAIL" + filterTag + "_"
+            String filterTag = TagNumberFilterBuilder.hasActiveConditions(conditions) ? "_FILTERED" : "";
+            job.setFileName((auditTrail ? "TAG_NUMBER_AUDIT_TRAIL" : "TAG_NUMBERS") + filterTag + "_"
                     + completedAt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")) + ".xlsx");
             job.setFilePath(outFile.getAbsolutePath());
-            job.setRowsWritten(rowsWritten);
-            job.setSheetCount(1);
+            job.setSheetCount(sheetCount);
             job.setCompletedAt(completedAt);
             exportJobRepository.save(job);
-            logger.info("TAG Number audit trail export job {} complete — {} audit row(s), {} export row(s)",
-                    jobId, rows.size(), rowsWritten);
+            logger.info("{} export job {} complete — {} record(s), {} export row(s)",
+                    what, jobId, totalRecords, job.getRowsWritten());
         } catch (Exception ex) {
-            logger.error("TAG Number audit trail export job {} failed", jobId, ex);
+            logger.error("{} export job {} failed", what, jobId, ex);
             job.setStatus(ExportJob.STATUS_FAILED);
             job.setErrorMessage(ex.getMessage());
             job.setCompletedAt(LocalDateTime.now());
             exportJobRepository.save(job);
+            if (outFile != null && outFile.exists()) {
+                outFile.delete();
+            }
         }
     }
 
-    private int buildTagNumberAuditTrailExcelToFile(List<Map<String, Object>> rows, File outFile) throws IOException {
-        try (SXSSFWorkbook workbook = new SXSSFWorkbook(DEFAULT_FETCH_SIZE)) {
-            CellStyle headerStyle = workbook.createCellStyle();
-            Font headerFont = workbook.createFont();
-            headerFont.setBold(true);
-            headerFont.setColor(IndexedColors.BLACK.getIndex());
-            headerStyle.setFont(headerFont);
-
-            Sheet sheet = workbook.createSheet("TAG Number Audit Trail");
-            Row headerRow = sheet.createRow(0);
-            for (int i = 0; i < TAG_NUMBER_AUDIT_TRAIL_EXPORT_HEADERS.length; i++) {
-                Cell cell = headerRow.createCell(i);
-                cell.setCellValue(TAG_NUMBER_AUDIT_TRAIL_EXPORT_HEADERS[i]);
-                cell.setCellStyle(headerStyle);
+    /** One row per TAG Number. Returns the sheet count. */
+    private int writeTagNumberWorkbook(String sql, List<Object> params, File outFile, ExportJob job) throws Exception {
+        SXSSFWorkbook workbook = new SXSSFWorkbook(DEFAULT_FETCH_SIZE);
+        try {
+            TagExportSheets sheets = new TagExportSheets(workbook, "TAG Numbers", TAG_NUMBER_EXPORT_HEADERS, job);
+            streamRows(sql, params, rs -> {
+                Row row = sheets.nextRow();
+                for (int i = 0; i < TAG_NUMBER_EXPORT_FIELDS.size(); i++) {
+                    String field = TAG_NUMBER_EXPORT_FIELDS.get(i);
+                    Cell cell = row.createCell(i);
+                    if (field.equals("recordNo")) {
+                        cell.setCellValue(rs.getLong(field));
+                    } else {
+                        String value = rs.getString(field);
+                        cell.setCellValue(value != null ? value : "");
+                    }
+                }
+            });
+            sheets.finish();
+            try (FileOutputStream fos = new FileOutputStream(outFile)) {
+                workbook.write(fos);
             }
+            return sheets.sheetCount;
+        } finally {
+            workbook.dispose();
+        }
+    }
 
-            int rowNum = 1;
-            for (Map<String, Object> auditRow : rows) {
+    /** One row per changed field of each audit entry, like the UPL Audit Trail export. Returns the sheet count. */
+    private int writeTagNumberAuditTrailWorkbook(String sql, List<Object> params, File outFile, ExportJob job) throws Exception {
+        List<String> fieldOrder = new ArrayList<>(TAG_NUMBER_FIELD_LABELS.keySet());
+        SXSSFWorkbook workbook = new SXSSFWorkbook(DEFAULT_FETCH_SIZE);
+        try {
+            TagExportSheets sheets = new TagExportSheets(workbook, "TAG Number Audit Trail",
+                    TAG_NUMBER_AUDIT_TRAIL_EXPORT_HEADERS, job);
+            streamRows(sql, params, rs -> {
                 List<String[]> fieldRows = new ArrayList<>();
-                Object fieldChanges = auditRow.get("fieldChanges");
-                if (fieldChanges != null && !fieldChanges.toString().isEmpty()) {
+                String fieldChanges = rs.getString("fieldChanges");
+                if (fieldChanges != null && !fieldChanges.isEmpty()) {
                     try {
-                        JsonObject diff = new JsonParser().parse(fieldChanges.toString()).getAsJsonObject();
+                        JsonObject diff = JsonParser.parseString(fieldChanges).getAsJsonObject();
                         List<Map.Entry<String, JsonElement>> entries = new ArrayList<>(diff.entrySet());
-                        List<String> fieldOrder = new ArrayList<>(TAG_NUMBER_FIELD_LABELS.keySet());
                         entries.sort((a, b) -> Integer.compare(
                                 fieldOrder.contains(a.getKey()) ? fieldOrder.indexOf(a.getKey()) : fieldOrder.size(),
                                 fieldOrder.contains(b.getKey()) ? fieldOrder.indexOf(b.getKey()) : fieldOrder.size()));
                         for (Map.Entry<String, JsonElement> entry : entries) {
                             JsonObject pair = entry.getValue().getAsJsonObject();
-                            fieldRows.add(new String[]{
+                            fieldRows.add(new String[] {
                                     TAG_NUMBER_FIELD_LABELS.getOrDefault(entry.getKey(), entry.getKey()),
                                     jsonValueToDisplayString(pair.get("old")),
                                     jsonValueToDisplayString(pair.get("new")),
                             });
                         }
                     } catch (Exception ex) {
-                        logger.warn("Could not parse fieldChanges for TAG Number audit row {}", auditRow.get("recordId"), ex);
+                        logger.warn("Could not parse fieldChanges for TAG Number audit row {}", rs.getString("recordId"), ex);
                     }
                 }
                 if (fieldRows.isEmpty()) {
-                    fieldRows.add(new String[]{"", "", ""});
+                    fieldRows.add(new String[] {"", "", ""});
                 }
                 for (String[] fieldChange : fieldRows) {
-                    Row row = sheet.createRow(rowNum++);
-                    row.createCell(0).setCellValue(cellToString(auditRow.get("recordId")));
-                    row.createCell(1).setCellValue(cellToString(auditRow.get("tagRecordNo")));
-                    row.createCell(2).setCellValue(cellToString(auditRow.get("changeType")));
-                    row.createCell(3).setCellValue(cellToString(auditRow.get("tagNumber")));
-                    row.createCell(4).setCellValue(cellToString(auditRow.get("vendorNumber")));
-                    row.createCell(5).setCellValue(cellToString(auditRow.get("vendorName")));
+                    Row row = sheets.nextRow();
+                    row.createCell(0).setCellValue(rs.getLong("recordId"));
+                    row.createCell(1).setCellValue(rs.getLong("tagRecordNo"));
+                    row.createCell(2).setCellValue(nullToEmpty(rs.getString("changeType")));
+                    row.createCell(3).setCellValue(nullToEmpty(rs.getString("tagNumber")));
+                    row.createCell(4).setCellValue(nullToEmpty(rs.getString("vendorNumber")));
+                    row.createCell(5).setCellValue(nullToEmpty(rs.getString("vendorName")));
                     row.createCell(6).setCellValue(fieldChange[0]);
                     row.createCell(7).setCellValue(fieldChange[1]);
                     row.createCell(8).setCellValue(fieldChange[2]);
-                    row.createCell(9).setCellValue(cellToString(auditRow.get("changedByName")));
-                    row.createCell(10).setCellValue(cellToString(auditRow.get("changedAt")));
+                    row.createCell(9).setCellValue(nullToEmpty(rs.getString("changedByName")));
+                    row.createCell(10).setCellValue(nullToEmpty(rs.getString("changedAt")));
+                    row.createCell(11).setCellValue(nullToEmpty(rs.getString("batchId")));
                 }
-            }
-
+            });
+            sheets.finish();
             try (FileOutputStream fos = new FileOutputStream(outFile)) {
                 workbook.write(fos);
             }
+            return sheets.sheetCount;
+        } finally {
             workbook.dispose();
-            return rowNum - 1;
         }
+    }
+
+    /** Sheet + row bookkeeping for the TAG exports: header rows, sheet rollover, job progress. */
+    private final class TagExportSheets {
+        private final SXSSFWorkbook workbook;
+        private final String baseName;
+        private final List<String> headers;
+        private final CellStyle headerStyle;
+        private final ExportJob job;
+        private Sheet sheet;
+        private int rowIdx;
+        int sheetCount;
+        long rowsWritten;
+
+        TagExportSheets(SXSSFWorkbook workbook, String baseName, List<String> headers, ExportJob job) {
+            this.workbook = workbook;
+            this.baseName = baseName;
+            this.headers = headers;
+            this.headerStyle = buildHeaderStyle(workbook);
+            this.job = job;
+            newSheet();
+        }
+
+        private void newSheet() {
+            sheetCount++;
+            sheet = workbook.createSheet(sheetCount == 1 ? baseName : baseName + " " + sheetCount);
+            writeHeaderRow(sheet, headers, headerStyle);
+            rowIdx = 1;
+        }
+
+        Row nextRow() {
+            if (rowIdx > MAX_ROWS_PER_SHEET) {
+                newSheet();
+            }
+            rowsWritten++;
+            if (rowsWritten % PROGRESS_UPDATE_EVERY_N_ROWS == 0) {
+                job.setRowsWritten(rowsWritten);
+                job.setSheetCount(sheetCount);
+                exportJobRepository.save(job);
+            }
+            return sheet.createRow(rowIdx++);
+        }
+
+        void finish() {
+            job.setRowsWritten(rowsWritten);
+            job.setSheetCount(sheetCount);
+        }
+    }
+
+    @FunctionalInterface
+    private interface ResultSetRowWriter {
+        void write(ResultSet rs) throws SQLException;
+    }
+
+    /**
+     * Runs sql on its own read-only connection with MySQL row streaming (fetch size
+     * Integer.MIN_VALUE), handing each row to writer, and always ends the transaction - same
+     * connection handling as runAcceptanceReportExportJob.
+     */
+    private void streamRows(String sql, List<Object> params, ResultSetRowWriter writer) throws SQLException {
+        try (Connection conn = dataSource.getConnection()) {
+            conn.setReadOnly(true);
+            conn.setAutoCommit(false);
+            boolean committed = false;
+            try {
+                try (PreparedStatement ps = conn.prepareStatement(sql, ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY)) {
+                    ps.setFetchSize(Integer.MIN_VALUE); // MySQL true streaming
+                    int idx = 1;
+                    for (Object p : params) {
+                        ps.setObject(idx++, p);
+                    }
+                    try (ResultSet rs = ps.executeQuery()) {
+                        while (rs.next()) {
+                            writer.write(rs);
+                        }
+                    }
+                }
+                conn.commit();
+                committed = true;
+            } finally {
+                if (!committed) {
+                    try {
+                        conn.rollback();
+                    } catch (Exception rollbackEx) {
+                        logger.warn("Rollback failed for TAG Number export: {}", rollbackEx.getMessage());
+                    }
+                }
+            }
+        }
+    }
+
+    private static String nullToEmpty(String value) {
+        return value != null ? value : "";
     }
 
     private String cellToString(Object value) {

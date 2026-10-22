@@ -9,17 +9,18 @@ import javax.persistence.Id;
 import javax.persistence.Table;
 
 /**
- * A TAG Number registered for one vendor (Configurations > Acceptance Workflow > TAG Numbers).
- * Unique per (tagNumber, vendorNumber) among non-deleted rows, compared case-sensitively - see
- * sql/tag_number_schema.sql. Status is one of STATUS_ACTIVE / STATUS_INACTIVE / STATUS_DELETED;
- * a delete is soft (status 'Deleted') and such rows never reach the UI.
+ * A TAG Number (Configurations > Acceptance Workflow > TAG Numbers), registered to one vendor.
+ * The TAG Number alone is unique among non-deleted rows, compared case-insensitively ('ABC' and
+ * 'abc' are the same TAG) - see sql/tag_number_schema.sql. Status is STATUS_UNUSED (free to go on
+ * an acceptance request), STATUS_USED, or STATUS_DELETED; a delete is soft and such rows never
+ * reach the UI.
  */
 @Entity
 @Table(name = "tb_TagNumber")
 public class TagNumber {
 
-    public static final String STATUS_ACTIVE = "Active";
-    public static final String STATUS_INACTIVE = "Inactive";
+    public static final String STATUS_USED = "Used";
+    public static final String STATUS_UNUSED = "Unused";
     public static final String STATUS_DELETED = "Deleted";
 
     @Id

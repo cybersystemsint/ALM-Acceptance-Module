@@ -2015,8 +2015,9 @@ public class APIController {
             }
 
             List<String> excludedDccStatuses = Arrays.asList("incomplete", "rejected", "returned");
-            // Tag numbers are trimmed and compared case-sensitively: "ABC" and "abc" are different tags.
-            Set<String> incomingTagNumbers = new LinkedHashSet<>();
+            // Tag numbers are trimmed and compared case-insensitively: "ABC" and "abc" are the same tag.
+            // incomingTagNumbers keeps the first spelling of each tag, keyed by its lower-case form.
+            Map<String, String> incomingTagNumbers = new LinkedHashMap<>();
             Set<String> duplicateTagsInRequest = new LinkedHashSet<>();
             Set<Long> currentDccRecordNos = new HashSet<>();
 
@@ -2032,7 +2033,7 @@ public class APIController {
                     if (tagNumber.isEmpty()) {
                         continue;
                     }
-                    if (!incomingTagNumbers.add(tagNumber)) {
+                    if (incomingTagNumbers.putIfAbsent(tagNumber.toLowerCase(Locale.ROOT), tagNumber) != null) {
                         duplicateTagsInRequest.add(tagNumber);
                     }
                 }
@@ -2041,12 +2042,12 @@ public class APIController {
             Set<String> duplicateTagNumbers = new LinkedHashSet<>();
             if (!incomingTagNumbers.isEmpty()) {
                 List<DCCLineItem> tagConflicts = dcclnrepo.findActiveTagConflicts(
-                        new ArrayList<>(incomingTagNumbers),
+                        new ArrayList<>(incomingTagNumbers.values()),
                         excludedDccStatuses);
                 for (DCCLineItem conflict : tagConflicts) {
-                    // The DB collation may match case-insensitively; only an exact (trimmed) match is a conflict.
-                    String conflictTag = conflict.getTagNumber() == null ? "" : conflict.getTagNumber().trim();
-                    if (!incomingTagNumbers.contains(conflictTag)) {
+                    String conflictKey = conflict.getTagNumber() == null ? "" : conflict.getTagNumber().trim().toLowerCase(Locale.ROOT);
+                    String conflictTag = incomingTagNumbers.get(conflictKey);
+                    if (conflictTag == null) {
                         continue;
                     }
                     if (conflict.getDccId() != null && !conflict.getDccId().isBlank()) {
@@ -2064,10 +2065,16 @@ public class APIController {
 
             // TAG Number registry (Configurations > Acceptance Workflow > TAG Numbers): when a request
             // is submitted - a new one, a saved draft, or a 'returned' one being resubmitted - every
-            // TAG on it must be registered as 'Active' in tb_TagNumber with vendorNumber equal to the
-            // submitted vendorNumber. Exact, case-sensitive match. TAGs already reported as used on
-            // another active request aren't repeated here.
+            // TAG on it must be registered in tb_TagNumber to the submitted vendorNumber and still be
+            // 'Unused' (case-insensitive match). A TAG already on this same request may be 'Used' -
+            // it was marked so when this request was first submitted. TAGs already reported as used
+            // on another active request aren't repeated here. After the save, the TAGs are marked
+            // 'Used' (see the save loop below).
+            Set<String> duplicateTagKeys = new HashSet<>();
+            duplicateTagNumbers.forEach(t -> duplicateTagKeys.add(t.toLowerCase(Locale.ROOT)));
             Set<String> unregisteredTagNumbers = new LinkedHashSet<>();
+            Set<String> otherVendorTagNumbers = new LinkedHashSet<>();
+            Set<String> usedTagNumbers = new LinkedHashSet<>();
             String unregisteredTagVendor = "";
             for (int i = 0; i < jsonArray.length(); i++) {
                 JSONObject header = jsonArray.getJSONObject(i);
@@ -2087,7 +2094,7 @@ public class APIController {
                 JSONArray lineItems = header.getJSONArray("lineItems");
                 for (int j = 0; j < lineItems.length(); j++) {
                     String tagNumber = lineItems.getJSONObject(j).optString("tagNumber", "").trim();
-                    if (!tagNumber.isEmpty() && !duplicateTagNumbers.contains(tagNumber)) {
+                    if (!tagNumber.isEmpty() && !duplicateTagKeys.contains(tagNumber.toLowerCase(Locale.ROOT))) {
                         headerTags.add(tagNumber);
                     }
                 }
@@ -2098,8 +2105,20 @@ public class APIController {
                 if (vendorNumber.isEmpty() && existingDcc != null && existingDcc.getVendorNumber() != null) {
                     vendorNumber = existingDcc.getVendorNumber().trim();
                 }
+                List<String> tagsAlreadyOnRequest = new ArrayList<>();
+                if (existingDcc != null) {
+                    for (DCCLineItem line : dcclnrepo.findByDccId(String.valueOf(headerRecordNo))) {
+                        if (line.getTagNumber() != null && !line.getTagNumber().trim().isEmpty()) {
+                            tagsAlreadyOnRequest.add(line.getTagNumber().trim());
+                        }
+                    }
+                }
                 unregisteredTagVendor = vendorNumber;
-                unregisteredTagNumbers.addAll(tagNumberService.findTagsNotActiveForVendor(vendorNumber, headerTags));
+                TagNumberService.RequestTagCheck tagCheck =
+                        tagNumberService.checkTagsForRequest(vendorNumber, headerTags, tagsAlreadyOnRequest);
+                unregisteredTagNumbers.addAll(tagCheck.notRegistered);
+                otherVendorTagNumbers.addAll(tagCheck.otherVendor);
+                usedTagNumbers.addAll(tagCheck.alreadyUsed);
             }
 
             List<String> errorMessages = new ArrayList<>();
@@ -2225,10 +2244,20 @@ public class APIController {
 
             if (!unregisteredTagNumbers.isEmpty()) {
                 errorMessages.add("Tag number(s) " + String.join(", ", unregisteredTagNumbers)
-                        + " are not registered as Active for vendor "
-                        + (unregisteredTagVendor.isEmpty() ? "(unknown)" : unregisteredTagVendor)
-                        + ". Tag numbers must be added under Configurations > Acceptance Workflow > TAG Numbers"
-                        + " (exact, case-sensitive match) before they can be used.");
+                        + " are not registered. Tag numbers must be added under Configurations > Acceptance"
+                        + " Workflow > TAG Numbers before they can be used.");
+            }
+
+            if (!otherVendorTagNumbers.isEmpty()) {
+                errorMessages.add("Tag number(s) " + String.join(", ", otherVendorTagNumbers)
+                        + " are registered to a different vendor than "
+                        + (unregisteredTagVendor.isEmpty() ? "this request's vendor" : "vendor " + unregisteredTagVendor)
+                        + ".");
+            }
+
+            if (!usedTagNumbers.isEmpty()) {
+                errorMessages.add("Tag number(s) " + String.join(", ", usedTagNumbers)
+                        + " are already marked as Used. Only Unused tag numbers can be used on an acceptance request.");
             }
 
             // ===== NEW VALIDATION: submitted batch quantity vs live UPL Pending Quantity =====
@@ -2398,6 +2427,23 @@ public class APIController {
                     // Continue with post-processing for remaining/updated line items
                     String headerRegion = jsonObject.optString("region", "").trim();
                     postdccln(poNumber, newRecordNo, status, createdBy, createdByName, vendorName, headerRegion, dcc_line_data.toString());
+
+                    // Submitted (not just saved as a draft): its TAG Numbers are now Used.
+                    if ("inprocess".equalsIgnoreCase(status == null ? "" : status.trim())) {
+                        Set<String> submittedTags = new LinkedHashSet<>();
+                        for (int x = 0; x < dcc_line_data.length(); x++) {
+                            String tag = dcc_line_data.getJSONObject(x).optString("tagNumber", "").trim();
+                            if (!tag.isEmpty()) {
+                                submittedTags.add(tag);
+                            }
+                        }
+                        try {
+                            tagNumberService.markTagsUsed(submittedTags, newRecordNo, createdBy, createdByName);
+                        } catch (Exception e) {
+                            logger.error("Acceptance request {} saved, but marking its TAG Numbers {} as Used failed",
+                                    newRecordNo, submittedTags, e);
+                        }
+                    }
                 }
                 // if (result.contains("Success")) {
                 //     postdccln(poNumber, newRecordNo, status, createdBy, createdByName, vendorName, dcc_line_data.toString());
