@@ -142,6 +142,11 @@ public class ResubmissionEmailService {
         String base = actionPhrase + " Acceptance# " + request.acceptanceRequestRecordNo + "/PO# " + request.poNumber;
         String idPart;
 
+        if (request.approverDefinedChain) {
+            // Others: a request's lines can be on many sites, so no single Site ID is shown
+            return base;
+        }
+
         if ("transmission".equalsIgnoreCase(request.scopeDomain)) {
             // Fetch Link ID from first line item
             List<LineItem> lineItems = findLineItems(request.acceptanceRequestRecordNo);
@@ -729,7 +734,7 @@ public class ResubmissionEmailService {
 
     private static final String HEADER_SELECT =
             "SELECT r.recordNo, r.recordDateTime, r.acceptanceRequestRecordNo, r.poNumber, r.vendorName, r.requestedBy, r.status, "
-            + "s.scope AS scopeName, s.domain AS scopeDomain "
+            + "s.scope AS scopeName, s.domain AS scopeDomain, s.approverDefinedChain AS approverDefinedChain "
             + "FROM tb_Category_Approval_Requests r LEFT JOIN tb_Scope s ON s.recordNo = r.scope ";
 
     private Header findHeader(int recordNo) {
@@ -753,6 +758,7 @@ public class ResubmissionEmailService {
         h.status = rs.getString("status");
         h.scopeName = rs.getString("scopeName");
         h.scopeDomain = rs.getString("scopeDomain");
+        h.approverDefinedChain = rs.getBoolean("approverDefinedChain");
         return h;
     }
 
@@ -878,6 +884,7 @@ public class ResubmissionEmailService {
         String status;
         String scopeName;
         String scopeDomain;
+        boolean approverDefinedChain;
     }
 
     private static class Task {
