@@ -17,13 +17,17 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 /**
- * The email sent to the approver who requested more information once the
- * vendor resubmits. Ported from WorkFlow-Management so the email keeps the
- * structure it had there (ScopeApprovalService.reInitializeRequestForInfo,
- * constructResubmissionEmail and formatEmailSubject; ActionHistoryService for
- * the Action History table): subject, summary, Request Lines and Action
- * History. Data is read with plain SQL so the logic stays line-for-line with
- * the original; keep the two in step if either template changes.
+ * The approval workflow emails ALM-Acceptance-Module sends, ported from
+ * WorkFlow-Management so they keep the structure they had there
+ * (ScopeApprovalService.constructFirstApproversEmail, constructResubmissionEmail
+ * and formatEmailSubject; ActionHistoryService for the Action History table):
+ * subject, summary, Request Lines and Action History.
+ *   - sendFirstApproverEmail: to the first approver of a new acceptance request,
+ *     or of a returned one resubmitted (it gets a fresh approval chain).
+ *   - sendResubmissionEmail: to the approver who requested more information,
+ *     once the vendor resubmits.
+ * Data is read with plain SQL so the logic stays line-for-line with the
+ * original; keep the two in step if either template changes.
  *
  * Sent through EmailService.sendWorkflowEmail, which posts to the same
  * notification endpoint WorkFlow-Management uses, so it is logged in
@@ -61,6 +65,55 @@ public class ResubmissionEmailService {
         }
     }
 
+    /**
+     * Builds and sends the email to the first approver of an acceptance
+     * request's approval chain for scopeRecordNo (the newest approval request
+     * of that scope). definesChain adds the note for the Level 1 approver of an
+     * approver-defined chain scope (Others). Called after the request has
+     * committed; never throws, so a mail problem can't affect the vendor.
+     */
+    public void sendFirstApproverEmail(int acceptanceRequestRecordNo, int scopeRecordNo, int approverUserId, boolean definesChain) {
+        try {
+            String[] email = buildFirstApproverEmail(acceptanceRequestRecordNo, scopeRecordNo, approverUserId, definesChain);
+            if (email == null) {
+                return;
+            }
+            emailService.sendWorkflowEmail(email[0], email[1], email[2]);
+            logger.info("| Sent approval notification email to initial approver: {}", email[0]);
+        } catch (Exception e) {
+            logger.error("| Failed to send approval notification email for acceptance request " + acceptanceRequestRecordNo
+                    + " to approver " + approverUserId + ": " + e, e);
+        }
+    }
+
+    /** {to, subject, body}, or null when there is nobody to send it to. */
+    String[] buildFirstApproverEmail(int acceptanceRequestRecordNo, int scopeRecordNo, int approverUserId, boolean definesChain) {
+        List<Header> rows = jdbcTemplate.query(HEADER_SELECT + "WHERE r.acceptanceRequestRecordNo = ? AND r.scope = ? "
+                + "ORDER BY r.recordNo DESC LIMIT 1", (rs, i) -> header(rs), acceptanceRequestRecordNo, scopeRecordNo);
+        if (rows.isEmpty()) {
+            logger.error("| Approval notification email not sent: no approval request for acceptance request {} and scope {}",
+                    acceptanceRequestRecordNo, scopeRecordNo);
+            return null;
+        }
+        Header request = rows.get(0);
+        UserRow approver = findUserById(approverUserId);
+        if (approver == null || approver.email == null || approver.email.isBlank()) {
+            logger.warn("| Approval notification email not sent for acceptance request {}: no email address for approver {}",
+                    acceptanceRequestRecordNo, approverUserId);
+            return null;
+        }
+
+        String emailSubject = formatEmailSubject("Action Required: Approval", request);
+        List<LineItem> lineItems = findLineItems(request.acceptanceRequestRecordNo);
+        List<ActionHistoryRow> actionHistory = getActionHistoryRows(request.acceptanceRequestRecordNo);
+        String closing = definesChain
+                ? "<p>You will be asked to define the approval chain for this request: choose who approves after you, then save the chain before approving.</p>"
+                : "";
+        String emailBody = constructApproverEmail(request, approver, lineItems, actionHistory,
+                "You have a pending approval request for:", closing);
+        return new String[] {approver.email, emailSubject, emailBody};
+    }
+
     /** {to, subject, body}, or null when there is nobody to send it to. */
     String[] buildResubmissionEmail(int approvalRequestRecordNo, int approverUserId) {
         Header request = findHeader(approvalRequestRecordNo);
@@ -78,7 +131,8 @@ public class ResubmissionEmailService {
         String emailSubject = formatEmailSubject("Action Required: Approval ", request);
         List<LineItem> lineItems = findLineItems(request.acceptanceRequestRecordNo);
         List<ActionHistoryRow> actionHistory = getActionHistoryRows(request.acceptanceRequestRecordNo);
-        String emailBody = constructResubmissionEmail(request, approver, lineItems, actionHistory);
+        String emailBody = constructApproverEmail(request, approver, lineItems, actionHistory,
+                "The vendor has resubmitted the acceptance request with additional information. It is now ready for your approval:", "");
         return new String[] {approver.email, emailSubject, emailBody};
     }
 
@@ -87,6 +141,11 @@ public class ResubmissionEmailService {
     private String formatEmailSubject(String actionPhrase, Header request) {
         String base = actionPhrase + " Acceptance# " + request.acceptanceRequestRecordNo + "/PO# " + request.poNumber;
         String idPart;
+
+        if (request.approverDefinedChain) {
+            // Others: a request's lines can be on many sites, so no single Site ID is shown
+            return base;
+        }
 
         if ("transmission".equalsIgnoreCase(request.scopeDomain)) {
             // Fetch Link ID from first line item
@@ -106,8 +165,13 @@ public class ResubmissionEmailService {
         return base + idPart;
     }
 
-    private String constructResubmissionEmail(Header request, UserRow approver, List<LineItem> lineItems,
-            List<ActionHistoryRow> actionHistory) {
+    /**
+     * constructFirstApproversEmail / constructResubmissionEmail: the two differ
+     * only in their opening line. extraParagraphs (HTML, may be empty) goes
+     * just before the closing request to approve.
+     */
+    private String constructApproverEmail(Header request, UserRow approver, List<LineItem> lineItems,
+            List<ActionHistoryRow> actionHistory, String openingLine, String extraParagraphs) {
         StringBuilder historyTable = new StringBuilder();
         StringBuilder lineItemsTable = new StringBuilder();
 
@@ -187,7 +251,7 @@ public class ResubmissionEmailService {
         </head>
         <body>
             <p>Dear %s,</p>
-            <p>The vendor has resubmitted the acceptance request with additional information. It is now ready for your approval:</p>
+            <p>%s</p>
             <ul>
                 <li><strong>Request Number:</strong> %d</li>
                 <li><strong>Vendor Name:</strong> %s</li>
@@ -226,19 +290,21 @@ public class ResubmissionEmailService {
                 %s
             </table>
             <hr/>
-            <p>Please review and approve at your earliest convenience.</p>
+            %s<p>Please review and approve at your earliest convenience.</p>
             <p class="footer">Warning: This is an automated email. Please do not reply or forward.</p>
         </body>
         </html>
         """,
             approver.fullName,
+            openingLine,
             request.acceptanceRequestRecordNo,
             request.vendorName,
             requestedByFullName,
             (request.scopeName != null ? request.scopeName : "-"),
             request.poNumber,
             lineItemsTable,
-            historyTable
+            historyTable,
+            extraParagraphs
         );
     }
 
@@ -668,7 +734,7 @@ public class ResubmissionEmailService {
 
     private static final String HEADER_SELECT =
             "SELECT r.recordNo, r.recordDateTime, r.acceptanceRequestRecordNo, r.poNumber, r.vendorName, r.requestedBy, r.status, "
-            + "s.scope AS scopeName, s.domain AS scopeDomain "
+            + "s.scope AS scopeName, s.domain AS scopeDomain, s.approverDefinedChain AS approverDefinedChain "
             + "FROM tb_Category_Approval_Requests r LEFT JOIN tb_Scope s ON s.recordNo = r.scope ";
 
     private Header findHeader(int recordNo) {
@@ -692,6 +758,7 @@ public class ResubmissionEmailService {
         h.status = rs.getString("status");
         h.scopeName = rs.getString("scopeName");
         h.scopeDomain = rs.getString("scopeDomain");
+        h.approverDefinedChain = rs.getBoolean("approverDefinedChain");
         return h;
     }
 
@@ -817,6 +884,7 @@ public class ResubmissionEmailService {
         String status;
         String scopeName;
         String scopeDomain;
+        boolean approverDefinedChain;
     }
 
     private static class Task {
