@@ -265,17 +265,23 @@ public class CategoryApprovalInitializationService {
             return false;
         }
 
-        tbScopeApprovalLevels resolvedLevelOne = resolveLevelOneApprovalLevel(approvalLevels, vendorName, scopeRecordNo, regionNames);
-        boolean atLeastOneCreated = false;
-        boolean readyForApprovalAssigned = false;
-
         // Approver-defined chain scopes (Others): only Level 1 comes from config.
         // Config levels above 1 are never turned into tasks - the Level 1
         // approver defines the rest (WorkFlow-Management ApprovalChainService),
-        // and an earlier chain of this request is reapplied below.
+        // and an earlier chain of this request is reapplied below. Their Level 1
+        // is configured without regions or vendors (WorkFlow-Management
+        // ScopeController) and covers every request of the scope, so it's used
+        // whatever the regions of the request's sites; its one task is labelled
+        // with the request's first region.
         boolean approverDefinedChain = scopeRepo.findById((long) scopeRecordNo)
                 .map(tbScope::isApproverDefinedChain)
                 .orElse(false);
+        tbScopeApprovalLevels resolvedLevelOne = approverDefinedChain
+                ? approverDefinedChainLevelOne(approvalLevels, scopeRecordNo)
+                : resolveLevelOneApprovalLevel(approvalLevels, vendorName, scopeRecordNo, regionNames);
+        boolean atLeastOneCreated = false;
+        boolean readyForApprovalAssigned = false;
+
         List<tbScopeApprovalLevels> levelsToCreate = approverDefinedChain ? List.of(resolvedLevelOne) : approvalLevels;
         Map<Long, tb_Region> levelOneRegions = new LinkedHashMap<>();
 
@@ -292,12 +298,21 @@ public class CategoryApprovalInitializationService {
 
             List<tbScopeApprovalLevelRegions> approvalRegions = scopeApprovalLevelRegionsRepo
                     .findByScopeIdAndApprovalLevelId(scopeRecordNo, (int) level.getRecordNo());
-            if (approvalRegions.isEmpty()) {
+            if (approvalRegions.isEmpty() && !approverDefinedChain) {
                 logger.warn("No regions configured for approval level {} and scope {}", level.getLevel(), scopeRecordNo);
                 continue;
             }
 
+            boolean levelTaskCreated = false;
             for (String regionName : regionNames) {
+                // Approver-defined chain (Others): one task per level, labelled with the first
+                // region. Its lines can be on sites in many regions (all passed in here), but
+                // Level 1 is a single approver for all of them - a task per region would only
+                // make them approve the same request once per region, and the chain saved later
+                // is created per Level 1 region too.
+                if (approverDefinedChain && levelTaskCreated) {
+                    break;
+                }
                 if (regionName == null || regionName.trim().isEmpty()) {
                     continue;
                 }
@@ -306,7 +321,7 @@ public class CategoryApprovalInitializationService {
                     throw new RuntimeException("Region not found: " + regionName.trim());
                 }
 
-                boolean regionConfiguredForLevel = approvalRegions.stream()
+                boolean regionConfiguredForLevel = approverDefinedChain || approvalRegions.stream()
                         .anyMatch(r -> r.getRegionId() == region.getRecordNo());
                 if (!regionConfiguredForLevel) {
                     logger.info("Region {} is not associated with approval level {}", regionName, level.getLevel());
@@ -339,6 +354,7 @@ public class CategoryApprovalInitializationService {
                         effectiveApprover.getUserId(), level.getLevel(), region.getRecordNo());
 
                 atLeastOneCreated = true;
+                levelTaskCreated = true;
                 if (assignReadyForApproval) {
                     readyForApprovalAssigned = true;
                 }
@@ -480,6 +496,15 @@ public class CategoryApprovalInitializationService {
                 .orElseThrow(() -> new RuntimeException("Error! No generic level-1 approval config exists for scope "
                         + scopeRecordNo + ", region(s) " + String.join(", ", regionNames)
                         + " without vendor-specific suppliers."));
+    }
+
+    /** The scope's one active configured Level 1 (Others): regions and vendors play no part. */
+    private tbScopeApprovalLevels approverDefinedChainLevelOne(List<tbScopeApprovalLevels> approvalLevels, int scopeRecordNo) {
+        return approvalLevels.stream()
+                .filter(level -> level.getLevel() != null && level.getLevel() == 1)
+                .min(Comparator.comparingLong(tbScopeApprovalLevels::getRecordNo))
+                .orElseThrow(() -> new RuntimeException("No Level 1 approver is configured for scope " + scopeRecordNo
+                        + ". Add one under Configurations > Acceptance Workflow > Approval Levels."));
     }
 
     private boolean levelCoversAllRegions(tbScopeApprovalLevels level, int scopeRecordNo, List<String> regionNames) {
