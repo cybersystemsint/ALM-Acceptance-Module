@@ -2677,7 +2677,8 @@ public class APIController {
 
             Set<String> uniqueItemCategoryCodes = new LinkedHashSet<>(ItemCategoryCodes);
             List<String> regionNamesForApproval = Arrays.asList(workflowRegion.split(","));
-            List<User> firstApproversToNotify = new ArrayList<>();
+            // {first approver, scope recordNo} of each approval chain created below.
+            List<Object[]> firstApproversToNotify = new ArrayList<>();
 
             if (status.equalsIgnoreCase("incomplete")) {
                 // Draft/incomplete submissions never got an approval chain
@@ -2717,24 +2718,20 @@ public class APIController {
                     Optional<User> firstApprover = categoryApprovalInitializationService.initializeApproval(
                             Integer.parseInt(recordId), vendorName, createdByName, (int) scopeRecord.getRecordNo(),
                             createdBy, regionNamesForApproval, "tb_DCC", poLineDecription, poNumber);
-                    firstApprover.ifPresent(firstApproversToNotify::add);
+                    firstApprover.ifPresent(approver -> firstApproversToNotify.add(
+                            new Object[] { approver, (int) scopeRecord.getRecordNo() }));
                 }
 
                 if (TransactionSynchronizationManager.isSynchronizationActive()) {
                     TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                         @Override
                         public void afterCommit() {
-                            for (User approver : firstApproversToNotify) {
-                                try {
-                                    if (approver.getEmailAddress() != null && !approver.getEmailAddress().isBlank()) {
-                                        emailService.sendEmail(approver.getEmailAddress(),
-                                                "Action Required: Approval - PO # " + poNumber,
-                                                "A new acceptance request (PO # " + poNumber + ") requires your approval.",
-                                                null, null, approver.getUsername(), null, null, null, null);
-                                    }
-                                } catch (Exception mailEx) {
-                                    logger.error("| Failed to send approval notification email to " + approver.getEmailAddress() + ": " + mailEx);
-                                }
+                            // Same email WorkFlow-Management sent (request details, line items,
+                            // action history), logged in tb_Email_Logs.
+                            for (Object[] notify : firstApproversToNotify) {
+                                User approver = (User) notify[0];
+                                resubmissionEmailService.sendFirstApproverEmail(Integer.parseInt(recordId),
+                                        (Integer) notify[1], approver.getUserId(), false);
                             }
                         }
                     });
