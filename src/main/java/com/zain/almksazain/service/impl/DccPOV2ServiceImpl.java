@@ -105,19 +105,47 @@ public CompletableFuture<ExportPageResult> getExportDataPage(DccPORequest reques
          boolean unboundedFetch, boolean forceFullDetails) {
 
     // ── Approver pre-filter ────────────────────────────────────────────────
+    // The pending approver can come from the logged-in user (pendingApprovers), the
+    // filter dialog (filterBy) or the grid's column filter (columnName/searchQuery).
+    // All of them are resolved here, BEFORE paging: filtering an already-fetched page
+    // in memory only kept that page's matches and left totalRecords unfiltered.
     Set<Long> allowedIds = null;
     long approverFilteredTotal = -1L;
+    String columnName = req.getColumnName();
+    String searchQuery = req.getSearchQuery();
 
+    List<String> approverNames = new ArrayList<>();
     if (hasValue(req.getPendingApprovers())) {
-        List<Long> matched = approvalsRepository
-                .findDccIdsByPendingApproverName(req.getPendingApprovers().trim());
-        if (matched.isEmpty()) {
-            logger.info("No DCCs for pending approver '{}'", req.getPendingApprovers());
+        approverNames.add(req.getPendingApprovers().trim());
+    }
+    if (req.getFilterBy() != null) {
+        for (DccPORequest.FilterCriteria f : req.getFilterBy()) {
+            if (isPendingApproverColumn(f.getColumn()) && hasValue(f.getValue())) {
+                approverNames.add(f.getValue().trim());
+            }
+        }
+    }
+    if (isPendingApproverColumn(columnName) && hasValue(searchQuery)) {
+        approverNames.add(searchQuery.trim());
+        columnName = null;   // not a DCC column; DccSpecification would ignore it anyway
+        searchQuery = null;
+    }
+
+    for (String approverName : approverNames) {
+        List<Long> matched = approvalsRepository.findDccIdsByPendingApproverName(approverName);
+        if (allowedIds == null) {
+            allowedIds = new HashSet<>(matched);
+        } else {
+            allowedIds.retainAll(matched);   // several approver filters must all hold
+        }
+        if (allowedIds.isEmpty()) {
+            logger.info("No DCCs for pending approver(s) {}", approverNames);
             return FetchContext.empty();
         }
-        allowedIds = new HashSet<>(matched);
-        approverFilteredTotal = matched.size();  // exact count, not a separate DB call
-        logger.info("Approver pre-filter matched {} DCC IDs", allowedIds.size());
+    }
+    if (allowedIds != null) {
+        approverFilteredTotal = allowedIds.size();
+        logger.info("Approver pre-filter {} matched {} DCC IDs", approverNames, allowedIds.size());
     }
 
     // ── Build filterMap ────────────────────────────────────────────────────
@@ -136,8 +164,8 @@ public CompletableFuture<ExportPageResult> getExportDataPage(DccPORequest reques
     DccSpecification spec = new DccSpecification(
             req.getSupplierId(),
             null,                      // pendingApprovers handled above
-            req.getColumnName(),
-            req.getSearchQuery(),
+            columnName,
+            searchQuery,
             req.getOperator(),
             allowedIds,                // null == no restriction; non-null == hard IN filter
             filterMap,
@@ -155,11 +183,9 @@ public CompletableFuture<ExportPageResult> getExportDataPage(DccPORequest reques
     }
 
     List<DCC> dccList = dccPage.getContent();
-    // When allowedIds is active, totalFiltered = allowedIds.size() (already exact).
-    // Otherwise use the DB count.
-    long totalFiltered = (approverFilteredTotal >= 0)
-            ? approverFilteredTotal
-            : (unboundedFetch ? dccList.size() : dccPage.getTotalElements());
+    // Always the DB count: allowedIds.size() over-counts when other filters (PO number,
+    // status, ...) are combined with the approver filter.
+    long totalFiltered = unboundedFetch ? dccList.size() : dccPage.getTotalElements();
 
     logger.info("DB returned {} DCC records (totalFiltered={})", dccList.size(), totalFiltered);
 
@@ -336,15 +362,8 @@ public CompletableFuture<ExportPageResult> getExportDataPage(DccPORequest reques
             String op  = fc.getOperator();
 
             switch (col) {
-                case "pendingapprovers":
-                case "pendingapprover":
-                    // Only apply in-memory if an explicit filterBy criterion was sent
-                    // (not the top-level pendingApprovers field — that's already DB-filtered)
-                    rows = rows.stream()
-                            .filter(dto -> dto.getPendingApprovers() != null
-                                    && applyOp(dto.getPendingApprovers(), val, op))
-                            .collect(Collectors.toList());
-                    break;
+                // pendingApprovers filterBy entries are applied before paging in
+                // buildFetchContext (allowedIds), so they're not repeated here.
                 case "approvalcount":
                     try {
                         Long expected = Long.parseLong(val);
@@ -959,6 +978,11 @@ public CompletableFuture<ExportPageResult> getExportDataPage(DccPORequest reques
     }
 
     private boolean hasValue(String s) { return s != null && !s.trim().isEmpty(); }
+
+    private boolean isPendingApproverColumn(String column) {
+        return column != null && (column.equalsIgnoreCase("pendingApprovers")
+                || column.equalsIgnoreCase("pendingApprover"));
+    }
 
     // ─── FETCH CONTEXT ────────────────────────────────────────────────────────
 
