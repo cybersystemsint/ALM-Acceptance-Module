@@ -1871,7 +1871,7 @@ SELECT ln.recordNo, ln.dccId,
        ROW_NUMBER() OVER (PARTITION BY ln.dccId ORDER BY ln.recordNo) AS seq,
        ln.lineNumber, ln.uplLineNumber, ln.locationName AS oldLocation, d.poNumber AS dccPoNumber
 FROM   tb_DCC_LN ln JOIN tb_DCC d ON d.recordNo = ln.dccId
-WHERE  ln.dccId IN ('9522', '9523', '9524', '9525', '9526', '9527', '9528', '9529', '9530', '9531', '9532', '9533', '9534', '9535', '9536', '9537', '9538', '9539', '9540', '9541', '9542', '9543', '9544', '9545', '9546', '9547', '9548', '9549');
+WHERE  ln.dccId IN ('9522');
 
 -- Per-request checks.
 CREATE TEMPORARY TABLE tmp_pms_check (PRIMARY KEY (dccId)) AS
