@@ -191,6 +191,9 @@ public class APIController {
     ResubmissionEmailService resubmissionEmailService;
 
     @Autowired
+    org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
+
+    @Autowired
     tbPassiveInventoryRepo passiveRepo;
 
     @Autowired
@@ -1297,6 +1300,26 @@ public class APIController {
         if (remarks != null && remarks.length() > DCC_LINE_REMARKS_MAX_LENGTH) {
             String lineLabel = polineitem + (upllineitem != null && !upllineitem.isEmpty() ? "+" + upllineitem : "");
             overLongRemarksLines.add(lineLabel + " (" + remarks.length() + " characters)");
+        }
+    }
+
+    /**
+     * Line numbers of this PO that the Oracle import (alm_zain_ksa_imports OracleScheduler) has
+     * flagged as removed from Oracle. Empty when there are none - or when tb_PurchaseOrder has no
+     * removedFromOracle column yet (sql/tb_PurchaseOrder_removed_from_oracle.sql not applied), so
+     * submissions keep working either way.
+     */
+    private Set<String> poLinesRemovedFromOracle(String poNumber) {
+        if (poNumber.isEmpty()) {
+            return Collections.emptySet();
+        }
+        try {
+            return new HashSet<>(jdbcTemplate.queryForList(
+                    "SELECT CAST(lineNumber AS CHAR) FROM tb_PurchaseOrder WHERE poNumber = ? AND removedFromOracle = 1",
+                    String.class, poNumber));
+        } catch (org.springframework.jdbc.BadSqlGrammarException e) {
+            logger.warn("| tb_PurchaseOrder.removedFromOracle not available; skipping the removed-from-Oracle check: " + e.getMessage());
+            return Collections.emptySet();
         }
     }
 
@@ -2443,6 +2466,32 @@ public class APIController {
             }
             // ===== END NEW VALIDATION =====
 
+            // A PO line the Oracle import has flagged as no longer in Oracle can't be submitted
+            // (drafts can still be saved, so the vendor can remove the line).
+            for (int i = 0; i < jsonArray.length(); i++) {
+                JSONObject header = jsonArray.getJSONObject(i);
+                if (!"inprocess".equalsIgnoreCase(header.optString("status", "").trim())) {
+                    continue;
+                }
+                Set<String> removedLines = poLinesRemovedFromOracle(header.optString("poNumber", "").trim());
+                if (removedLines.isEmpty()) {
+                    continue;
+                }
+                Set<String> submittedRemovedLines = new LinkedHashSet<>();
+                JSONArray lineItems = header.getJSONArray("lineItems");
+                for (int j = 0; j < lineItems.length(); j++) {
+                    String poLine = lineItems.getJSONObject(j).optString("poLineNumber", "").trim();
+                    if (removedLines.contains(poLine)) {
+                        submittedRemovedLines.add(poLine);
+                    }
+                }
+                if (!submittedRemovedLines.isEmpty()) {
+                    errorMessages.add("PO line(s) " + String.join(", ", submittedRemovedLines) + " of PO "
+                            + header.optString("poNumber", "") + " no longer exist in Oracle and can't be used"
+                            + " for an acceptance request. Please remove them.");
+                }
+            }
+
             // If any errors found, return all in one response
             if (!errorMessages.isEmpty()) {
                 return response("Error", String.join("\n", errorMessages));
@@ -3034,6 +3083,8 @@ public class APIController {
 
             } else {
                 eddccLineItem.setUoM("Each");//20250919 james
+                // Non-UPL: acceptance qty is the delivered qty (same rule as DCCService.updatePoAcceptanceQty)
+                eddccLineItem.setPoAcceptanceQty(delivered);
             }
 
             eddccLineItem.setPoId(poNumber);
@@ -3107,6 +3158,9 @@ public class APIController {
 
                 //SAVE THE NEW COLUMN  KWA DB 20250625
                 dccLineItem.setPoAcceptanceQty(poacceptanceQty);
+            } else {
+                // Non-UPL: acceptance qty is the delivered qty (same rule as DCCService.updatePoAcceptanceQty)
+                dccLineItem.setPoAcceptanceQty(delivered);
             }
 
             if (jsonObject.has("uplLineItemCode")) {
