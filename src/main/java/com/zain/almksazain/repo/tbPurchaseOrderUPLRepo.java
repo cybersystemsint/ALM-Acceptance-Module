@@ -5,6 +5,7 @@
 package com.zain.almksazain.repo;
 
 import com.zain.almksazain.model.tb_PurchaseOrderUPL;
+import java.util.Collection;
 import java.util.List;
 import java.util.Set;
 
@@ -50,6 +51,9 @@ public interface tbPurchaseOrderUPLRepo extends JpaRepository<tb_PurchaseOrderUP
     );
     List<tb_PurchaseOrderUPL> findByPoNumberInAndPoLineNumberInAndUplLineIn(
     Set<String> poNumbers, Set<String> lineNumbers, Set<String> uplLines);
+    // Same lookup restricted to one status, so a DELETED row can't shadow the ACTIVE price.
+    List<tb_PurchaseOrderUPL> findByPoNumberInAndPoLineNumberInAndUplLineInAndStatus(
+            Collection<String> poNumbers, Collection<String> poLineNumbers, Collection<String> uplLines, String status);
 //    //NEW CODE
 //    List<tb_PurchaseOrderUPL> findByPoNumber(String poNumber);
 
