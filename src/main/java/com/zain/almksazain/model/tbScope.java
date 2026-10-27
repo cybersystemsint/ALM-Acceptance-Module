@@ -26,6 +26,9 @@ public class tbScope implements Serializable {
     public Integer status;
     public String createdBy;
     public String updatedBy;
+    // On for scopes (Others) whose Level 1 approver defines the later levels
+    // per request - see CategoryApprovalInitializationService.
+    public Boolean approverDefinedChain;
 
     public long getRecordNo() {
         return recordNo;
@@ -67,4 +70,11 @@ public class tbScope implements Serializable {
         this.updatedBy = updatedBy;
     }
 
+    public boolean isApproverDefinedChain() {
+        return Boolean.TRUE.equals(approverDefinedChain);
+    }
+
+    public void setApproverDefinedChain(Boolean approverDefinedChain) {
+        this.approverDefinedChain = approverDefinedChain;
+    }
 }
