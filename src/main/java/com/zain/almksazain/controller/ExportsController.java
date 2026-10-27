@@ -249,17 +249,17 @@ public class ExportsController {
                 + "upl.uplLineItemCode AS uplPartNumber, "
                 + "upl.uplLineDescription AS uplItemDescription, "
                 + "LN2.actualItemCode  AS actualPartNumber, "
-                + "upl.uplItemSerialized AS uplItemSerializedStatus, "
+                + "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.uplItemSerialized ELSE HD.vendorSerialNumberYN END) AS uplItemSerializedStatus, "
                 + "LN2.serialNumber    AS serialNumber, "
                 + "LN2.tagNumber       AS tagNumber, "
                 + "LN2.linkId          AS linkId, "
-                + "upl.activeOrPassive AS activeOrPassive, "
-                + "upl.zainItemCategoryCode AS uplItemCategoryCode, "
-                + "upl.zainItemCategoryDescription AS uplItemCategoryCodeDescription, "
-                + "upl.uplLineUnitPrice AS uplLineUnitPrice, "
+                + "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.activeOrPassive ELSE HD.activeOrPassive END) AS activeOrPassive, "
+                + "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.zainItemCategoryCode ELSE HD.itemCategoryInventory END) AS uplItemCategoryCode, "
+                + "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.zainItemCategoryDescription ELSE HD.inventoryCategoryDescription END) AS uplItemCategoryCodeDescription, "
+                + "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.uplLineUnitPrice ELSE HD.unitPriceInPoCurrency END) AS uplLineUnitPrice, "
                 + "LN2.deliveredQty    AS acceptanceUplQty, "
                 + "LN2.poAcceptanceQty AS acceptancePoQty, "
-                + "(upl.uplLineUnitPrice * LN2.deliveredQty) AS totalAcceptanceAmount, "
+                + "((CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.uplLineUnitPrice ELSE HD.unitPriceInPoCurrency END) * LN2.deliveredQty) AS totalAcceptanceAmount, "
                 + "HD.vendorName       AS vendorName, "
                 + "DATE_FORMAT(CAST(DCC.createdDate AS DATE),'%e-%b-%Y')  AS createdDate, "
                 + "DATE_FORMAT(CAST(DCC.approvedDate AS DATE),'%e-%b-%Y') AS approvalDate, "
@@ -1508,19 +1508,19 @@ public class ExportsController {
         map.put("uplPartNumber",                  "upl.uplLineItemCode");
         map.put("uplItemDescription",             "upl.uplLineDescription");
         map.put("actualPartNumber",               "LN2.actualItemCode");
-        map.put("uplItemSerializedStatus",        "upl.uplItemSerialized");
+        map.put("uplItemSerializedStatus",        "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.uplItemSerialized ELSE HD.vendorSerialNumberYN END)");
         map.put("serialNumber",                   "LN2.serialNumber");
-        map.put("uplItemCategoryCode",            "upl.zainItemCategoryCode");
-        map.put("uplItemCategoryCodeDescription", "upl.zainItemCategoryDescription");
+        map.put("uplItemCategoryCode",            "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.zainItemCategoryCode ELSE HD.itemCategoryInventory END)");
+        map.put("uplItemCategoryCodeDescription", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.zainItemCategoryDescription ELSE HD.inventoryCategoryDescription END)");
         map.put("unitPrice",                      "upl.poLineUnitPrice");
         map.put("acceptanceUplQty",               "LN2.deliveredQty");
         map.put("acceptancePoQty",                "LN2.poAcceptanceQty");
-        map.put("totalAcceptanceAmount",          "(upl.uplLineUnitPrice * LN2.deliveredQty)");
+        map.put("totalAcceptanceAmount",          "((CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.uplLineUnitPrice ELSE HD.unitPriceInPoCurrency END) * LN2.deliveredQty)");
         map.put("vendorName",                     "HD.vendorName");
         map.put("recordNo",                       "DCC.recordNo");
         map.put("tagNumber",                      "LN2.tagNumber");
         map.put("linkId",                         "LN2.linkId");
-        map.put("activeOrPassive",                "upl.activeOrPassive");
+        map.put("activeOrPassive",                "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.activeOrPassive ELSE HD.activeOrPassive END)");
         map.put("createdDate",                    "DATE_FORMAT(CAST(DCC.createdDate AS DATE),'%e-%b-%Y')");
         map.put("approvalDate",                   "DATE_FORMAT(CAST(DCC.approvedDate AS DATE),'%e-%b-%Y')");
         map.put("scopeOfWork",                    "LN2.scopeOfWork");

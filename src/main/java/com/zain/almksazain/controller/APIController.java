@@ -2849,6 +2849,8 @@ public class APIController {
 
             } else {
                 eddccLineItem.setUoM("Each");//20250919 james
+                // Non-UPL: acceptance qty is the delivered qty (same rule as DCCService.updatePoAcceptanceQty)
+                eddccLineItem.setPoAcceptanceQty(delivered);
             }
 
             eddccLineItem.setPoId(poNumber);
@@ -2922,6 +2924,9 @@ public class APIController {
 
                 //SAVE THE NEW COLUMN  KWA DB 20250625
                 dccLineItem.setPoAcceptanceQty(poacceptanceQty);
+            } else {
+                // Non-UPL: acceptance qty is the delivered qty (same rule as DCCService.updatePoAcceptanceQty)
+                dccLineItem.setPoAcceptanceQty(delivered);
             }
 
             if (jsonObject.has("uplLineItemCode")) {

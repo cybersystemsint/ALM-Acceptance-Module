@@ -165,9 +165,10 @@ public class AgingReportService {
             if (item.getLineNumber() != null) lineNumbers.add(item.getLineNumber());
             if (item.getUplLineNumber() != null) uplLineNumbers.add(item.getUplLineNumber());
         }
+        // ACTIVE only: a PO+line+UPL-line can also have a DELETED row at an old price
         List<tb_PurchaseOrderUPL> uplList = purchaseOrderUPLRepository
-                .findByPoNumberInAndPoLineNumberInAndUplLineIn(
-                        new ArrayList<>(poNumbers), new ArrayList<>(lineNumbers), new ArrayList<>(uplLineNumbers));
+                .findByPoNumberInAndPoLineNumberInAndUplLineInAndStatus(
+                        poNumbers, lineNumbers, uplLineNumbers, "ACTIVE");
         Map<String, tb_PurchaseOrderUPL> uplMap = new HashMap<>();
         for (tb_PurchaseOrderUPL upl : uplList) {
             String key = upl.getPoNumber() + "|" + upl.getPoLineNumber() + "|" + upl.getUplLine();
@@ -176,11 +177,16 @@ public class AgingReportService {
 
         // --- BATCH FETCH Purchase Orders for projectName filtering (new) ---
         Map<String, tbPurchaseOrder> purchaseOrderMap = new HashMap<>();
+        // PO line unit price in SAR, used to value lines that have no UPL (e.g. DIA scope)
+        Map<String, Double> poLineUnitPriceSar = new HashMap<>();
         if (!poNumbers.isEmpty()) {
             List<tbPurchaseOrder> poList = tbPurchaseOrderRepository.findByPoNumberIn(new ArrayList<>(poNumbers));
             for (tbPurchaseOrder po : poList) {
                 if (po != null && po.poNumber != null) {
                     purchaseOrderMap.put(po.poNumber, po);
+                    if (po.lineNumber != null) {
+                        poLineUnitPriceSar.putIfAbsent(po.poNumber + "|" + po.lineNumber, po.unitPriceInSAR);
+                    }
                 }
             }
         }
@@ -203,6 +209,12 @@ public class AgingReportService {
                     BigDecimal unitPrice = BigDecimal.valueOf(upl.getUplLineUnitPrice());
                     totalUnitPrice = totalUnitPrice.add(unitPrice.multiply(deliveredQty));
                     if (currency == null && upl.getCurrency() != null) currency = upl.getCurrency();
+                } else {
+                    Double poUnitPriceSar = poLineUnitPriceSar.get(dcc.getPoNumber() + "|" + line.getLineNumber());
+                    if (poUnitPriceSar != null) {
+                        totalUnitPrice = totalUnitPrice.add(BigDecimal.valueOf(poUnitPriceSar).multiply(deliveredQty));
+                        if (currency == null) currency = "SAR";
+                    }
                 }
             }
             totalUnitPrice = totalUnitPrice.setScale(5, java.math.RoundingMode.HALF_UP);
