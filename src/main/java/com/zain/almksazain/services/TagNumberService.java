@@ -457,6 +457,9 @@ public class TagNumberService {
      * case-insensitively, and its tagNumber index keeps this to index lookups.
      */
     private Map<String, Integer> countActiveReferences(Collection<String> tagNumbers) {
+        // Plain JDBC doesn't see pending JPA changes in this transaction (e.g. the last line
+        // item a resubmit re-tagged), so write them out first or a dropped TAG still looks in use.
+        tagNumberRepo.flush();
         Map<String, Integer> counts = new HashMap<>();
         for (List<String> chunk : chunks(tagNumbers)) {
             String sql = "SELECT ln.tagNumber AS tagNumber, COUNT(*) AS cnt FROM tb_DCC_LN ln "
