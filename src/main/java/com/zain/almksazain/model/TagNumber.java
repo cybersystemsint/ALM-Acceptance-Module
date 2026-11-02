@@ -35,6 +35,9 @@ public class TagNumber {
 
     private String status;
 
+    /** Optional free text (VARCHAR(500)); null when empty. */
+    private String comment;
+
     private String createdBy;
 
     private LocalDateTime createdDate;
@@ -81,6 +84,14 @@ public class TagNumber {
 
     public void setStatus(String status) {
         this.status = status;
+    }
+
+    public String getComment() {
+        return comment;
+    }
+
+    public void setComment(String comment) {
+        this.comment = comment;
     }
 
     public String getCreatedBy() {

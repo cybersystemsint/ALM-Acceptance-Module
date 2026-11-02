@@ -40,7 +40,8 @@ import com.zain.almksazain.specs.TagNumberFilterBuilder;
  * TagNumberValidationException listing every error is thrown before anything is saved (same
  * "no partial uploads" rule as the UPL bulk upload). TAG Numbers are trimmed and compared
  * case-insensitively, and a TAG Number can exist only once among non-deleted rows, whatever its
- * vendor. A TAG used on an active acceptance request can't be edited or deleted.
+ * vendor. A TAG used on an active acceptance request can't be edited (except for its Comment) or
+ * deleted.
  */
 @Service
 public class TagNumberService {
@@ -49,6 +50,9 @@ public class TagNumberService {
 
     /** Matches tb_TagNumber.tagNumber / tb_DCC_LN.tagNumber (VARCHAR(50)). */
     public static final int MAX_TAG_LENGTH = 50;
+
+    /** Matches tb_TagNumber.comment (VARCHAR(500)). */
+    public static final int MAX_COMMENT_LENGTH = 500;
 
     /** Keeps IN (...) lists short on large bulk uploads. */
     private static final int IN_CHUNK = 500;
@@ -69,13 +73,15 @@ public class TagNumberService {
 
     /**
      * One TAG to save: recordNo set means update that row, null means create. rowNumber is the
-     * spreadsheet row on a bulk upload (null for the form).
+     * spreadsheet row on a bulk upload (null for the form). comment null means "not given" (an
+     * update keeps the stored comment - e.g. a file without a Comment column); "" clears it.
      */
     public static class TagNumberItem {
         public Integer recordNo;
         public String tagNumber;
         public String vendorNumber;
         public String status;
+        public String comment;
         public Integer rowNumber;
     }
 
@@ -102,6 +108,7 @@ public class TagNumberService {
         String tag;
         String vendor;
         String status;
+        String comment; // null when empty
         TagNumber existing; // null for a create
         Map<String, Object[]> changes;
     }
@@ -162,9 +169,15 @@ public class TagNumberService {
             String vendor = trim(item.vendorNumber);
             String status = normalizeStatus(item.status,
                     existing != null ? existing.getStatus() : TagNumber.STATUS_UNUSED);
+            String comment = item.comment == null
+                    ? (existing != null ? existing.getComment() : null)
+                    : emptyToNull(trim(item.comment));
             rowErrors.addAll(validateTagAndVendor(tag, vendor, vendorNames));
             if (status == null) {
                 rowErrors.add("Status must be Used or Unused.");
+            }
+            if (comment != null && comment.length() > MAX_COMMENT_LENGTH) {
+                rowErrors.add("Comment is longer than " + MAX_COMMENT_LENGTH + " characters.");
             }
             if (!rowErrors.isEmpty()) {
                 rowErrors.forEach(e -> errors.add(row + e));
@@ -184,6 +197,7 @@ public class TagNumberService {
             p.tag = tag;
             p.vendor = vendor;
             p.status = status;
+            p.comment = comment;
             p.existing = existing;
             planned.add(p);
         }
@@ -218,6 +232,7 @@ public class TagNumberService {
             diff(p.changes, "vendorNumber", p.existing.getVendorNumber(), p.vendor);
             diff(p.changes, "vendorName", p.existing.getVendorName(), vendorNames.get(p.vendor));
             diff(p.changes, "status", p.existing.getStatus(), p.status);
+            diff(p.changes, "comment", p.existing.getComment(), p.comment);
             if (p.changes.isEmpty()) {
                 if (rejectUnchanged) {
                     errors.add(p.row + "No changes to save.");
@@ -227,15 +242,22 @@ public class TagNumberService {
                 updates.add(p);
             }
         }
-        if (!updates.isEmpty()) {
+        // A comment-only change is allowed even while the TAG is locked: it doesn't touch the request.
+        List<Planned> lockable = new ArrayList<>();
+        for (Planned p : updates) {
+            if (!p.changes.keySet().equals(Collections.singleton("comment"))) {
+                lockable.add(p);
+            }
+        }
+        if (!lockable.isEmpty()) {
             Set<String> tags = new LinkedHashSet<>();
-            updates.forEach(p -> tags.add(p.existing.getTagNumber()));
+            lockable.forEach(p -> tags.add(p.existing.getTagNumber()));
             Map<String, Integer> refs = countActiveReferences(tags);
-            for (Planned p : updates) {
+            for (Planned p : lockable) {
                 int count = refs.getOrDefault(tagKey(p.existing.getTagNumber()), 0);
                 if (count > 0) {
                     errors.add(p.row + "TAG Number '" + p.existing.getTagNumber() + "' is used on " + count
-                            + " active acceptance request line(s) and cannot be edited.");
+                            + " active acceptance request line(s) and cannot be edited (only its Comment can be changed).");
                 }
             }
         }
@@ -255,6 +277,7 @@ public class TagNumberService {
                     t.setVendorNumber(p.vendor);
                     t.setVendorName(vendorNames.get(p.vendor));
                     t.setStatus(p.status);
+                    t.setComment(p.comment);
                     t.setCreatedBy(userName);
                     t.setCreatedDate(now);
                     // lastUpdatedBy/lastUpdatedDate stay empty until the row is actually updated or deleted.
@@ -265,6 +288,9 @@ public class TagNumberService {
                     changes.put("vendorNumber", new Object[] { null, t.getVendorNumber() });
                     changes.put("vendorName", new Object[] { null, t.getVendorName() });
                     changes.put("status", new Object[] { null, t.getStatus() });
+                    if (t.getComment() != null) {
+                        changes.put("comment", new Object[] { null, t.getComment() });
+                    }
                     log(t, TagNumberAuditLog.CHANGE_CREATE, changes, batchId, userId, userName);
                     result.created++;
                 } else if (!p.changes.isEmpty()) {
@@ -273,6 +299,7 @@ public class TagNumberService {
                     t.setVendorNumber(p.vendor);
                     t.setVendorName(vendorNames.get(p.vendor));
                     t.setStatus(p.status);
+                    t.setComment(p.comment);
                     t.setLastUpdatedBy(userName);
                     t.setLastUpdatedDate(now);
                     t = tagNumberRepo.saveAndFlush(t);
@@ -558,5 +585,9 @@ public class TagNumberService {
 
     private static String trim(String value) {
         return value == null ? "" : value.trim();
+    }
+
+    private static String emptyToNull(String value) {
+        return value.isEmpty() ? null : value;
     }
 }

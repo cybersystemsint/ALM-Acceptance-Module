@@ -2524,10 +2524,10 @@ public class ExportsController {
     // Same first four headers as the bulk upload template, so an export can be edited and
     // re-uploaded to update TAG Numbers by Record No.
     private static final List<String> TAG_NUMBER_EXPORT_HEADERS = Arrays.asList(
-            "Record No", "TAG Number", "Vendor Number", "Status", "Vendor Name", "Request No",
+            "Record No", "TAG Number", "Vendor Number", "Status", "Comment", "Vendor Name", "Request No",
             "Created By", "Created Date", "Last Updated By", "Last Updated Date");
     private static final List<String> TAG_NUMBER_EXPORT_FIELDS = Arrays.asList(
-            "recordNo", "tagNumber", "vendorNumber", "status", "vendorName", "requestNo",
+            "recordNo", "tagNumber", "vendorNumber", "status", "comment", "vendorName", "requestNo",
             "createdBy", "createdDate", "lastUpdatedBy", "lastUpdatedDate");
 
     private static final List<String> TAG_NUMBER_AUDIT_TRAIL_EXPORT_HEADERS = Arrays.asList(
@@ -2541,6 +2541,7 @@ public class ExportsController {
         TAG_NUMBER_FIELD_LABELS.put("vendorNumber", "Vendor Number");
         TAG_NUMBER_FIELD_LABELS.put("vendorName", "Vendor Name");
         TAG_NUMBER_FIELD_LABELS.put("status", "Status");
+        TAG_NUMBER_FIELD_LABELS.put("comment", "Comment");
         TAG_NUMBER_FIELD_LABELS.put("requestNo", "Request No");
     }
 

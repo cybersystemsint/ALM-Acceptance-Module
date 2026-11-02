@@ -72,7 +72,7 @@ public class TagNumberController {
     }
 
     /**
-     * The one-by-one form. Body: {createdById, createdByName, items: [{tagNumber, vendorNumber, status?}]};
+     * The one-by-one form. Body: {createdById, createdByName, items: [{tagNumber, vendorNumber, status?, comment?}]};
      * vendorName is looked up from tb_Supplier.
      */
     @PostMapping(value = "/tagNumbers/create", produces = "application/json")
@@ -85,7 +85,8 @@ public class TagNumberController {
 
     /**
      * Bulk upload. Body: {uploadedById, uploadedByName, items: [{recordNo?, tagNumber, vendorNumber,
-     * status?, rowNumber}]}: rows with a recordNo update that TAG, rows without one create a new TAG.
+     * status?, comment?, rowNumber}]}: rows with a recordNo update that TAG, rows without one create a
+     * new TAG. A row without a comment key (file has no Comment column) keeps the stored comment.
      * All rows are saved or none are.
      */
     @PostMapping(value = "/tagNumbers/upload", produces = "application/json")
@@ -94,7 +95,7 @@ public class TagNumberController {
         return save(items(body.get("items")), toInteger(body.get("uploadedById")), str(body.get("uploadedByName")), false);
     }
 
-    /** Body: {recordNo, tagNumber, vendorNumber, status, updatedById, updatedByName}. */
+    /** Body: {recordNo, tagNumber, vendorNumber, status, comment?, updatedById, updatedByName}. */
     @PostMapping(value = "/tagNumbers/update", produces = "application/json")
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
     public ResponseEntity<Map<String, Object>> updateTagNumber(@RequestBody Map<String, Object> body) {
@@ -106,6 +107,7 @@ public class TagNumberController {
         item.tagNumber = str(body.get("tagNumber"));
         item.vendorNumber = str(body.get("vendorNumber"));
         item.status = str(body.get("status"));
+        item.comment = comment(body);
         return save(Collections.singletonList(item), toInteger(body.get("updatedById")),
                 str(body.get("updatedByName")), true);
     }
@@ -266,6 +268,7 @@ public class TagNumberController {
                 item.tagNumber = str(m.get("tagNumber"));
                 item.vendorNumber = str(m.get("vendorNumber"));
                 item.status = str(m.get("status"));
+                item.comment = comment(m);
                 item.rowNumber = toInteger(m.get("rowNumber"));
                 items.add(item);
             }
@@ -322,6 +325,15 @@ public class TagNumberController {
             }
         }
         return String.valueOf(value);
+    }
+
+    /** null when there's no comment key (keep the stored comment); "" when it's sent empty or null (clear it). */
+    private static String comment(Map<?, ?> m) {
+        if (!m.containsKey("comment")) {
+            return null;
+        }
+        String value = str(m.get("comment"));
+        return value == null ? "" : value;
     }
 
     private static Integer toInteger(Object value) {

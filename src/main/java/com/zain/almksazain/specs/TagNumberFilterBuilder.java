@@ -102,6 +102,7 @@ public final class TagNumberFilterBuilder {
         TAG_NUMBER_COLUMNS.put("vendorNumber", Column.text("t.vendorNumber"));
         TAG_NUMBER_COLUMNS.put("vendorName", Column.text("t.vendorName"));
         TAG_NUMBER_COLUMNS.put("status", Column.exact("t.status"));
+        TAG_NUMBER_COLUMNS.put("comment", Column.text("t.comment"));
         TAG_NUMBER_COLUMNS.put("requestNo", new Column(null, Kind.REQUEST_NO, "equals", REQUEST_NO_SORT_SQL));
         TAG_NUMBER_COLUMNS.put("createdBy", Column.text("t.createdBy"));
         TAG_NUMBER_COLUMNS.put("createdDate", Column.date("t.createdDate"));
@@ -110,13 +111,13 @@ public final class TagNumberFilterBuilder {
     }
 
     public static final String TAG_NUMBER_SELECT = "SELECT t.recordNo AS recordNo, t.tagNumber AS tagNumber, "
-            + "t.vendorNumber AS vendorNumber, t.vendorName AS vendorName, t.status AS status, "
+            + "t.vendorNumber AS vendorNumber, t.vendorName AS vendorName, t.status AS status, t.comment AS comment, "
             + REQUEST_NO_SQL + " AS requestNo, " + ACTIVE_REQUEST_COUNT_SQL + " AS activeRequestCount, "
             + "t.createdBy AS createdBy, t.createdDate AS createdDate, t.lastUpdatedBy AS lastUpdatedBy, "
             + "t.lastUpdatedDate AS lastUpdatedDate ";
     // Same columns minus activeRequestCount, which only drives the page's Edit/Delete buttons.
     public static final String TAG_NUMBER_EXPORT_SELECT = "SELECT t.recordNo AS recordNo, t.tagNumber AS tagNumber, "
-            + "t.vendorNumber AS vendorNumber, t.vendorName AS vendorName, t.status AS status, "
+            + "t.vendorNumber AS vendorNumber, t.vendorName AS vendorName, t.status AS status, t.comment AS comment, "
             + REQUEST_NO_SQL + " AS requestNo, t.createdBy AS createdBy, t.createdDate AS createdDate, "
             + "t.lastUpdatedBy AS lastUpdatedBy, t.lastUpdatedDate AS lastUpdatedDate ";
     // Deleted TAGs never reach the UI.
