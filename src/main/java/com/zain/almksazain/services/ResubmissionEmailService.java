@@ -5,8 +5,10 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -210,6 +212,7 @@ public class ResubmissionEmailService {
                 <td>%s</td>
                 <td>%s</td>
                 <td>%s</td>
+                <td>%s</td>
             </tr>
         """,
                 i + 1,
@@ -220,6 +223,7 @@ public class ResubmissionEmailService {
                 safeValue(item.uoM),
                 formatDoubleValue(item.deliveredQty),
                 safeValue(item.serialNumber),
+                safeValue(item.tagNumber),
                 safeValue(item.locationName),
                 safeValue(item.scopeOfWork),
                 safeValue(item.remarks)
@@ -260,11 +264,12 @@ public class ResubmissionEmailService {
                     <th>#</th>
                     <th>PO Line #</th>
                     <th>UPL Line #</th>
-                    <th>UPL ItemCode</th>
+                    <th>ItemCode</th>
                     <th>Description</th>
                     <th>UOM</th>
                     <th>Delivery QTY</th>
                     <th>Serial</th>
+                    <th>TAG Number</th>
                     <th>Location</th>
                     <th>Scope Of Work</th>
                     <th>Remarks</th>
@@ -812,7 +817,7 @@ public class ResubmissionEmailService {
     }
 
     private List<LineItem> findLineItems(int acceptanceRequestRecordNo) {
-        return jdbcTemplate.query(
+        List<LineItem> lineItems = jdbcTemplate.query(
                 "SELECT * FROM tb_DCC_LN WHERE dccId = (SELECT recordNo FROM tb_DCC WHERE recordNo = ?) ORDER BY recordNo",
                 (rs, i) -> {
                     LineItem l = new LineItem();
@@ -827,9 +832,80 @@ public class ResubmissionEmailService {
                     l.scopeOfWork = rs.getString("scopeOfWork");
                     l.remarks = rs.getString("remarks");
                     l.linkId = rs.getString("linkId");
+                    l.tagNumber = rs.getString("tagNumber");
+                    l.poId = rs.getString("poId");
                     return l;
                 },
                 acceptanceRequestRecordNo);
+        try {
+            fillNonUplLinesFromPurchaseOrder(lineItems);
+        } catch (Exception e) {
+            // The email still goes out, just with whatever tb_DCC_LN holds for these lines.
+            logger.error("Failed to load PO details for non-UPL lines of request {}: {}", acceptanceRequestRecordNo, e.getMessage(), e);
+        }
+        return lineItems;
+    }
+
+    /** UOM shown for a non-UPL line when tb_PurchaseOrder has no uom (column or value). */
+    private static final String DEFAULT_NON_UPL_UOM = "Each";
+
+    /**
+     * Same as WorkFlow-Management TbDccService.fillNonUplLinesFromPurchaseOrder: non-UPL lines
+     * (no uplLineNumber) carry no item code, description or UOM in tb_DCC_LN, so they are taken
+     * from their PO line - itemCode = tb_PurchaseOrder.itemPartNumber, uplItemDescription =
+     * poLineDescription and UoM = tb_PurchaseOrder.uom when that column exists and is not empty,
+     * else 'Each'.
+     */
+    private void fillNonUplLinesFromPurchaseOrder(List<LineItem> lineItems) {
+        Map<String, List<LineItem>> nonUplByPo = new LinkedHashMap<>();
+        for (LineItem item : lineItems) {
+            if (isBlank(item.uplLineNumber) && !isBlank(item.poId) && !isBlank(item.lineNumber)) {
+                nonUplByPo.computeIfAbsent(item.poId.trim(), k -> new ArrayList<>()).add(item);
+            }
+        }
+        if (nonUplByPo.isEmpty()) {
+            return;
+        }
+
+        Integer uomColumns = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() "
+                        + "AND TABLE_NAME = 'tb_PurchaseOrder' AND COLUMN_NAME = 'uom'", Integer.class);
+        String select = "SELECT lineNumber, itemPartNumber, poLineDescription"
+                + (uomColumns != null && uomColumns > 0 ? ", uom" : "")
+                + " FROM tb_PurchaseOrder WHERE poNumber = ? AND lineNumber IN (%s)";
+
+        for (Map.Entry<String, List<LineItem>> po : nonUplByPo.entrySet()) {
+            List<String> lineNumbers = new ArrayList<>();
+            for (LineItem item : po.getValue()) {
+                String lineNumber = item.lineNumber.trim();
+                if (!lineNumbers.contains(lineNumber)) lineNumbers.add(lineNumber);
+            }
+            List<Object> params = new ArrayList<>();
+            params.add(po.getKey());
+            params.addAll(lineNumbers);
+
+            Map<String, Map<String, Object>> poLines = new HashMap<>();
+            jdbcTemplate.queryForList(String.format(select, String.join(",", Collections.nCopies(lineNumbers.size(), "?"))), params.toArray())
+                    .forEach(row -> poLines.putIfAbsent(String.valueOf(row.get("lineNumber")), row));
+
+            for (LineItem item : po.getValue()) {
+                Map<String, Object> poLine = poLines.get(item.lineNumber.trim());
+                String uom = poLine == null ? null : text(poLine.get("uom"));
+                item.uoM = isBlank(uom) ? DEFAULT_NON_UPL_UOM : uom;
+                if (poLine != null) {
+                    item.itemCode = text(poLine.get("itemPartNumber"));
+                    item.uplItemDescription = text(poLine.get("poLineDescription"));
+                }
+            }
+        }
+    }
+
+    private static String text(Object value) {
+        return value == null ? null : value.toString().trim();
+    }
+
+    private static boolean isBlank(String value) {
+        return value == null || value.trim().isEmpty();
     }
 
     private String fetchSiteLocation(int acceptanceRequestRecordNo) {
@@ -923,6 +999,8 @@ public class ResubmissionEmailService {
         String scopeOfWork;
         String remarks;
         String linkId;
+        String tagNumber;
+        String poId;
     }
 
     static class ActionHistoryRow {
