@@ -29,6 +29,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 import javax.servlet.http.HttpServletResponse;
 import javax.sql.DataSource;
@@ -2068,6 +2069,18 @@ public class ExportsController {
             resp.put("errorMessage", "userId is required");
             return ResponseEntity.badRequest().body(resp);
         }
+        // Optional: the IDs the grid shows once its "Filter By" conditions are applied, so the
+        // file matches the screen. Absent = no filters = everything assigned to this approver.
+        Set<Long> recordIds = null;
+        if (body.get("recordIds") instanceof List) {
+            recordIds = new HashSet<>();
+            for (Object id : (List<?>) body.get("recordIds")) {
+                if (id != null) {
+                    recordIds.add(Long.valueOf(String.valueOf(id)));
+                }
+            }
+        }
+        final Set<Long> filteredRecordIds = recordIds;
 
         String jobId = UUID.randomUUID().toString();
         ExportJob job = new ExportJob();
@@ -2079,7 +2092,7 @@ public class ExportsController {
         job.setCreatedAt(LocalDateTime.now());
         exportJobRepository.save(job);
 
-        CompletableFuture.runAsync(() -> runWithExportGuard(() -> runUplChangeRequestExportJob(jobId, userId)));
+        CompletableFuture.runAsync(() -> runWithExportGuard(() -> runUplChangeRequestExportJob(jobId, userId, filteredRecordIds)));
 
         Map<String, String> resp = new HashMap<>();
         resp.put("jobId", jobId);
@@ -2125,7 +2138,8 @@ public class ExportsController {
         return ResponseEntity.ok().headers(headers).body(new FileSystemResource(file));
     }
 
-    private void runUplChangeRequestExportJob(String jobId, Integer userId) {
+    /** @param recordIds when not null, only these of the approver's assigned requests are exported */
+    private void runUplChangeRequestExportJob(String jobId, Integer userId, Set<Long> recordIds) {
         ExportJob job = exportJobRepository.findById(jobId).orElse(null);
         if (job == null) {
             logger.error("UPL change request export job {} disappeared before it could start", jobId);
@@ -2136,10 +2150,18 @@ public class ExportsController {
 
         try {
             List<UplChangeRequest> requests = uplChangeRequestService.findAssignedToApprover(userId);
+            if (recordIds != null) {
+                // Still limited to the approver's own assignments, whatever IDs the client sends.
+                requests = requests.stream()
+                        .filter(r -> recordIds.contains(r.getRecordId()))
+                        .collect(Collectors.toList());
+            }
 
             if (requests.isEmpty()) {
                 job.setStatus(ExportJob.STATUS_FAILED);
-                job.setErrorMessage("No change requests are currently assigned to you for approval.");
+                job.setErrorMessage(recordIds != null
+                        ? "No change requests assigned to you match the filters."
+                        : "No change requests are currently assigned to you for approval.");
                 job.setCompletedAt(LocalDateTime.now());
                 exportJobRepository.save(job);
                 return;
@@ -2159,7 +2181,7 @@ public class ExportsController {
 
             LocalDateTime completedAt = LocalDateTime.now();
             job.setStatus(ExportJob.STATUS_DONE);
-            job.setFileName("UPL_APPROVALS_"
+            job.setFileName("UPL_APPROVALS" + (recordIds != null ? "_FILTERED" : "") + "_"
                     + completedAt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")) + ".xlsx");
             job.setFilePath(outFile.getAbsolutePath());
             job.setRowsWritten(rowsWritten);
