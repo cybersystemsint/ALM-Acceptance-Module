@@ -282,7 +282,7 @@ public class ReportsController {
         searchableColumns.put("serialNumber", "LN2.serialNumber");
         searchableColumns.put("uplItemCategoryCode", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.zainItemCategoryCode ELSE HD.itemCategoryInventory END)");
         searchableColumns.put("uplItemCategoryCodeDescription", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.zainItemCategoryDescription ELSE HD.inventoryCategoryDescription END)");
-        searchableColumns.put("unitPrice", "upl.poLineUnitPrice");
+        searchableColumns.put("unitPrice", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineUnitPrice ELSE HD.unitPriceInPoCurrency END)");
         searchableColumns.put("acceptanceUplQty", "LN2.deliveredQty");
         searchableColumns.put("acceptancePoQty", "LN2.poAcceptanceQty");
         searchableColumns.put("totalAcceptanceAmount", "((CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.uplLineUnitPrice ELSE HD.unitPriceInPoCurrency END) * LN2.deliveredQty)");
@@ -508,7 +508,7 @@ public class ReportsController {
                 "CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineDescription ELSE HD.poLineDescription END AS poLineDescription, " +
                 "CASE WHEN HD.serialControl = 'NO CONTROL' THEN 'NO' ELSE 'YES' END AS poItemSerializedStatus, " +
                 "'SAR' AS currency, " +
-                "upl.poLineUnitPrice AS unitPrice, " +
+                "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineUnitPrice ELSE HD.unitPriceInPoCurrency END) AS unitPrice, " +
                 "LN2.recordNo AS dccLnRecordNo, " +
                 "LN2.locationName AS siteId, " +
                 "siteType.siteTypeName AS siteTypeName, " +
@@ -526,7 +526,7 @@ public class ReportsController {
                 "LN2.serialNumber AS serialNumber, " +
                 "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.zainItemCategoryCode ELSE HD.itemCategoryInventory END) AS uplItemCategoryCode, " +
                 "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.zainItemCategoryDescription ELSE HD.inventoryCategoryDescription END) AS uplItemCategoryCodeDescription, " +
-                "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.uplLineUnitPrice ELSE HD.unitPriceInPoCurrency END) AS uplLineUnitPrice, " +
+                "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.uplLineUnitPrice ELSE NULL END) AS uplLineUnitPrice, " +
                 "LN2.deliveredQty AS acceptanceUplQty, " +
                 "LN2.poAcceptanceQty AS acceptancePoQty, " +
                 "((CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.uplLineUnitPrice ELSE HD.unitPriceInPoCurrency END) * LN2.deliveredQty) AS totalAcceptanceAmount, " +

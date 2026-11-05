@@ -239,7 +239,7 @@ public class ExportsController {
                 + "CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineDescription ELSE HD.poLineDescription END AS poLineDescription, "
                 + "CASE WHEN HD.serialControl = 'NO CONTROL' THEN 'NO' ELSE 'YES' END AS poItemSerializedStatus, "
                 + "'SAR'               AS currency, "
-                + "upl.poLineUnitPrice AS unitPrice, "
+                + "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineUnitPrice ELSE HD.unitPriceInPoCurrency END) AS unitPrice, "
                 + "LN2.locationName    AS siteId, "
                 + "rg.regionName       AS region, "
                 + "siteType.siteTypeName AS siteTypeName, "
@@ -256,7 +256,7 @@ public class ExportsController {
                 + "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.activeOrPassive ELSE HD.activeOrPassive END) AS activeOrPassive, "
                 + "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.zainItemCategoryCode ELSE HD.itemCategoryInventory END) AS uplItemCategoryCode, "
                 + "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.zainItemCategoryDescription ELSE HD.inventoryCategoryDescription END) AS uplItemCategoryCodeDescription, "
-                + "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.uplLineUnitPrice ELSE HD.unitPriceInPoCurrency END) AS uplLineUnitPrice, "
+                + "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.uplLineUnitPrice ELSE NULL END) AS uplLineUnitPrice, "
                 + "LN2.deliveredQty    AS acceptanceUplQty, "
                 + "LN2.poAcceptanceQty AS acceptancePoQty, "
                 + "((CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.uplLineUnitPrice ELSE HD.unitPriceInPoCurrency END) * LN2.deliveredQty) AS totalAcceptanceAmount, "
@@ -394,7 +394,7 @@ public class ExportsController {
         if (success) {
             job.setStatus(ExportJob.STATUS_DONE);
             String filterTag = acceptanceReportHasFilters(obj, poNumber, columnName, searchQuery) ? "_FILTERED" : "";
-            job.setFileName("ACCEPTANCE_REQUEST_REPORT" + filterTag + "_"
+            job.setFileName("RECEIVING_REPORT" + filterTag + "_"
                     + completedAt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")) + ".xlsx");
             job.setFilePath(outFile.getAbsolutePath());
         } else {
@@ -1512,7 +1512,7 @@ public class ExportsController {
         map.put("serialNumber",                   "LN2.serialNumber");
         map.put("uplItemCategoryCode",            "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.zainItemCategoryCode ELSE HD.itemCategoryInventory END)");
         map.put("uplItemCategoryCodeDescription", "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.zainItemCategoryDescription ELSE HD.inventoryCategoryDescription END)");
-        map.put("unitPrice",                      "upl.poLineUnitPrice");
+        map.put("unitPrice",                      "(CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.poLineUnitPrice ELSE HD.unitPriceInPoCurrency END)");
         map.put("acceptanceUplQty",               "LN2.deliveredQty");
         map.put("acceptancePoQty",                "LN2.poAcceptanceQty");
         map.put("totalAcceptanceAmount",          "((CASE WHEN LENGTH(LN2.uplLineNumber) > 0 THEN upl.uplLineUnitPrice ELSE HD.unitPriceInPoCurrency END) * LN2.deliveredQty)");
@@ -1655,12 +1655,12 @@ public class ExportsController {
                 "PO Type",                       "PO Number",                      "Release Number",
                 "PO Line Number",                "PO Part Number",                 "PO Line Description",
                 "PO Item Serialized Status",     "Currency",                       "PO Line Unit Price",
-                "Site ID",                       "Region",                         "Site Type Name",
+                "Site ID",                       "Region",                         "Site Type",
                 "Project Name",                  "In Service Date",                "UPL Line Number",
                 "UPL Part Number",               "UPL Item Description",           "Actual Part Number",
                 "UPL Item Serialized Status",    "Serial Number",                  "Tag Number",
-                "Link ID",                       "Active / Passive",               "UPL Item Category Code",
-                "UPL Item Category Description", "UPL Line Unit Price",            "Acceptance UPL Qty",
+                "Link ID",                       "Active / Passive",               "Item Category Code",
+                "Item Category Description",     "UPL Line Unit Price",            "Acceptance UPL Qty",
                 "Acceptance PO Qty",             "Total Acceptance Amount",        "Vendor Name",
                 "Created Date",                  "Approval Date",                  "Scope of Work"
         );
