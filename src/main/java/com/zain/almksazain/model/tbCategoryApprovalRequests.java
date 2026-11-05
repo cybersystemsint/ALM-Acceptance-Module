@@ -7,6 +7,7 @@ package com.zain.almksazain.model;
 import java.io.Serializable;
 import java.sql.Date;
 import java.sql.Timestamp;
+import java.time.LocalDateTime;
 import javax.persistence.Entity;
 import javax.persistence.GeneratedValue;
 import javax.persistence.GenerationType;
@@ -54,6 +55,18 @@ public class tbCategoryApprovalRequests implements Serializable {
     private boolean received;
 
     private Date approvedDate;
+
+    // Approver-defined chain state (approverDefinedChain scopes only, NULL
+    // otherwise): CHAIN_AWAITING until the Level 1 approver saves the chain in
+    // WorkFlow-Management, CHAIN_CONFIRMED once saved or reapplied.
+    private String chainStatus;
+
+    private Integer chainConfirmedBy;
+
+    private LocalDateTime chainConfirmedAt;
+
+    public static final String CHAIN_AWAITING = "awaiting";
+    public static final String CHAIN_CONFIRMED = "confirmed";
 
     public int getRecordNo() {
         return recordNo;
@@ -174,4 +187,27 @@ public class tbCategoryApprovalRequests implements Serializable {
         this.approvedDate = approvedDate;
     }
 
+    public String getChainStatus() {
+        return chainStatus;
+    }
+
+    public void setChainStatus(String chainStatus) {
+        this.chainStatus = chainStatus;
+    }
+
+    public Integer getChainConfirmedBy() {
+        return chainConfirmedBy;
+    }
+
+    public void setChainConfirmedBy(Integer chainConfirmedBy) {
+        this.chainConfirmedBy = chainConfirmedBy;
+    }
+
+    public LocalDateTime getChainConfirmedAt() {
+        return chainConfirmedAt;
+    }
+
+    public void setChainConfirmedAt(LocalDateTime chainConfirmedAt) {
+        this.chainConfirmedAt = chainConfirmedAt;
+    }
 }
