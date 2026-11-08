@@ -14,7 +14,6 @@ import com.zain.almksazain.model.tbScopeApprovalLevels;
 import com.zain.almksazain.model.DCCLineItem;
 import com.zain.almksazain.model.dccstatus;
 import com.zain.almksazain.model.supplierdata;
-import com.zain.almksazain.model.tbSerialNumber;
 import com.zain.almksazain.model.DCC;
 import com.zain.almksazain.model.polndata;
 import com.zain.almksazain.model.upldata;
@@ -24,6 +23,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonSyntaxException;
 import com.zain.almksazain.services.DCCService;
+import com.zain.almksazain.services.SerialNumberService;
 import com.zain.almksazain.services.TagNumberService;
 import com.zain.almzainksa.helper.helper;
 import com.zain.almksazain.model.FileRecord;
@@ -56,7 +56,6 @@ import com.zain.almksazain.repo.tbScopeApprovalLevelsRepo;
 import com.zain.almksazain.repo.tbScopeRepo;
 import com.zain.almksazain.repo.tbNodeRepo;
 import com.zain.almksazain.repo.tbPassiveInventoryRepo;
-import com.zain.almksazain.repo.tbSerialNumberRepo;
 import com.zain.almksazain.repo.UplChangeRequestRepo;
 import com.zain.almksazain.model.UplChangeRequestStatus;
 import com.zain.almksazain.model.UplActionType;
@@ -170,7 +169,7 @@ public class APIController {
     tbScopeRepo scopeRepo;
 
     @Autowired
-    tbSerialNumberRepo serialNumberRepo;
+    SerialNumberService serialNumberService;
 
     @Autowired
     tbNodeRepo nodeRepo;
@@ -1227,6 +1226,34 @@ public class APIController {
     }
 
     /**
+     * Rejects a line whose serial number has already been received, by the Validation Rule of its
+     * Active tb_SerialNumber rows (SerialNumberService#isAlreadyReceived): 'SerialNumber' matches
+     * the serial number alone; 'SerialNumber + ItemCode' matches it with the line's actual item code
+     * when it has one, else its item code. Non-UPL lines send their Item Part Number as item code;
+     * an older screen that sends it blank still has itemPartNumber, which stands in for it.
+     * A match is added to receivedSerials as "serial (PO line, UPL line, the item code it matched)"
+     * for the "already been received" error.
+     */
+    private void checkReceivedSerialNumber(String serialNumber, String itemCode, String actualItemCode,
+            String itemPartNumber, String poLineNumber, String uplLineNumber, List<String> receivedSerials) {
+        String serial = serialNumber == null ? "" : serialNumber.trim();
+        if (serial.isEmpty()) {
+            return;
+        }
+        String actual = actualItemCode == null ? "" : actualItemCode.trim();
+        String item = itemCode == null ? "" : itemCode.trim();
+        if (item.isEmpty() && itemPartNumber != null) {
+            item = itemPartNumber.trim();
+        }
+        boolean useActual = !actual.isEmpty();
+        if (serialNumberService.isAlreadyReceived(serial, useActual ? actual : item)) {
+            String upl = uplLineNumber == null ? "" : uplLineNumber.trim();
+            receivedSerials.add(serial + " (PO line " + poLineNumber + (upl.isEmpty() ? "" : ", UPL line " + upl)
+                    + (useActual ? ", actual item code " + actual : ", item code " + item) + ")");
+        }
+    }
+
+    /**
      * Active, serialized line: its serial and part number must be in the Active Inventory
      * (tb_Node, as vw_Active_Inventory) at the line's own site - the same check the form makes
      * against the site's inventory before submitting. Not in the inventory at all goes to
@@ -1441,8 +1468,7 @@ public class APIController {
 
             List<String> missingSerialsforUPLBased = new ArrayList<>();
             List<String> missingApprovalLevel = new ArrayList<>();
-            List<String> existingSerialNumbers = new ArrayList<>();
-            List<String> existingActualSerialNumbers = new ArrayList<>();
+            List<String> receivedSerials = new ArrayList<>();
             List<String> missingSerialsforNONUPLBased = new ArrayList<>();
             List<String> extraValuesPassed = new ArrayList<>();
             List<String> oldDateService = new ArrayList<>();
@@ -1458,9 +1484,9 @@ public class APIController {
             List<String> alreadyCreatedDCCwithactualItemCode = new ArrayList<>();
             List<String> missingItemCode = new ArrayList<>();
             List<String> scopevalidation = new ArrayList<>();
-            List<String> serialnumberItemCode = new ArrayList<>();
-            List<String> serialnumberActualItemCode = new ArrayList<>();
             List<String> acceptanceQuantity = new ArrayList<>();
+            // Non-UPL PO lines whose quantity has been checked - see checkNonUplPendingQuantity().
+            Set<String> pendingQtyCheckedPoLines = new HashSet<>();
             Set<String> mismatchedScopeUplLines = new LinkedHashSet<>();
             Set<String> mismatchedScopeNonUplLines = new LinkedHashSet<>();
             // locationName must not be blank, must exist in tb_Site, and (once it does) its regionId
@@ -1493,6 +1519,7 @@ public class APIController {
             for (int i = 0; i < jsonArray.length(); i++) {
                 JSONObject validatejsonObject = jsonArray.getJSONObject(i);
                 recordNoValidate = Integer.parseInt(validatejsonObject.getString("recordNo"));
+                pendingQtyCheckedPoLines.clear(); // each request in a batch is checked on its own
                 if (recordNoValidate == 0) {
                     String acceptancestatus = validatejsonObject.getString("status");
                     String poNum = validatejsonObject.getString("poNumber");
@@ -1504,6 +1531,8 @@ public class APIController {
                     // Prior DCC value per (PO line, UPL) must be added once; repeating the same PO/UPL on
                     // multiple serialized rows would otherwise multiply Totalraised by the row count.
                     Set<String> priorRaisedCountedForPoLineUpl = new HashSet<>();
+                    // UPL lines this request submits per PO line, named in the quantity error.
+                    Map<String, Set<String>> submittedUplLinesPerPoLine = new HashMap<>();
 
                     //INTERNAL UAT
                     for (int h = 0; h < dcclineRequest.length(); h++) {
@@ -1518,6 +1547,7 @@ public class APIController {
                             double lineTotal = uplLineUnitPrice * deliveredQty;
                             double deliveredlineTotal = 0;
                             uplTotalsPerLine.put(validatelineNumber, uplTotalsPerLine.getOrDefault(validatelineNumber, 0.0) + lineTotal);
+                            submittedUplLinesPerPoLine.computeIfAbsent(validatelineNumber, k -> new TreeSet<>()).add(validateuplline);
 
                             List<String> allowedStatuses = Arrays.asList("approved-received", "inprocess", "approved", "returned", "request-info");
                             List<Integer> validRecordNos = dccrepo.findByPoNumberAndStatus(poNumber, allowedStatuses);
@@ -1599,24 +1629,10 @@ public class APIController {
                         LocalDateTime dateInService = LocalDateTime.parse(dateInServiceString, formatter);
                         LocalDateTime sixMonthsAgo = LocalDateTime.now().minus(6, ChronoUnit.MONTHS);
 
-                        if (serialNumber.length() > 1 && itemCode.length() > 1) {
-                            if (actualItemCode.length() == 0) {
-                                List<tbSerialNumber> validateSerial = serialNumberRepo.findBySerialNumberAndItemCode(serialNumber, itemCode);
-                                if (!validateSerial.isEmpty()) {
-                                    existingSerialNumbers.add(serialNumber);
-                                    serialnumberItemCode.add(itemCode);
-                                }
-                            }
-                        }
-                        if (serialNumber.length() > 1 && itemCode.length() > 1) {
-                            if (!actualItemCode.isBlank()) {
-                                List<tbSerialNumber> validateSerial = serialNumberRepo.findBySerialNumberAndItemCode(serialNumber, actualItemCode);
-                                if (!validateSerial.isEmpty()) {
-                                    existingActualSerialNumbers.add(serialNumber);
-                                    serialnumberActualItemCode.add(actualItemCode);
-                                }
-                            }
-                        }
+                        // Already received (tb_SerialNumber) - UPL and non-UPL lines alike.
+                        checkReceivedSerialNumber(serialNumber, itemCode, actualItemCode,
+                                dcclinejsonObject.optString("itemPartNumber", ""),
+                                polineitem, upllineitem, receivedSerials);
 
                         if (dateInService.isBefore(sixMonthsAgo)) {
                             oldDateService.add(upllineitem);
@@ -1707,7 +1723,10 @@ public class APIController {
                                         totalPending = totalraisedacceptance / poTotalprice;
                                         System.out.println("PO Total (poUnitPrice * poLinePrice): " + poTotalprice);
                                         if (totalPending > poOrderQty) {
-                                            acceptanceQuantity.add(String.valueOf(totalraisedacceptance));
+                                            acceptanceQuantity.add("PO " + poNumber + " Line " + poLineNumber + " UPL "
+                                                    + String.join(", ", submittedUplLinesPerPoLine.getOrDefault(poLineNumber, Collections.emptySet()))
+                                                    + ": the total value raised on the PO line, including this request ("
+                                                    + formatQty(uplTotal) + "), is " + formatQty(totalraisedacceptance));
                                         }
                                     }
                                 }
@@ -1716,9 +1735,6 @@ public class APIController {
                         } else {
                             tbPurchaseOrder podetails = PurchaseOrderRepo.findTopByPoNumberAndLineNumber(poNumber, polineitem);
                             String serialcontrol = podetails != null ? String.valueOf(podetails.getSerialControl()) : "";
-                            Double poqtyNew = podetails != null ? podetails.getPoQtyNew() : 0;
-                            Double quantityDueNew = podetails != null ? podetails.getQuantityDueNew() : 0;
-                            Double quantityDueOld = podetails != null ? podetails.getQuantityDueOld() : 0;
 
                             String itemCategoryInventory = podetails != null ? podetails.getItemCategoryInventory() : null;
                             if (podetails == null || itemCategoryInventory == null || itemCategoryInventory.isBlank()) {
@@ -1744,45 +1760,15 @@ public class APIController {
                                 }
                             }
 
-                            if (!serialcontrol.equalsIgnoreCase("NO CONTROL")) {
-                                if (serialNumber.isBlank()) {
-                                    missingSerialsforNONUPLBased.add(polineitem);
-                                } else {
-                                    List<tbSerialNumber> validateSerialNumberforPo = serialNumberRepo.findBySerialNumber(serialNumber);
-                                    if (!validateSerialNumberforPo.isEmpty()) {
-                                        existingSerialNumbers.add(serialNumber);
-                                        serialnumberItemCode.add(actualItemCode.length() > 1 ? actualItemCode : itemCode);
-                                    }
-                                }
+                            // Whether this serial number was already received is checked for every
+                            // line above (checkReceivedSerialNumber); here only that one is given.
+                            if (!serialcontrol.equalsIgnoreCase("NO CONTROL") && serialNumber.isBlank()) {
+                                missingSerialsforNONUPLBased.add(polineitem);
                             }
                             //HERE WE ARE ADDING A VALIDATION TO CHECK THERE IS A RAISED REQUEST
                             //AND DO THE SUM OF THE DELIVERED QUANTITIES
-                            //  COMMMENTING THIS OUT FOR INTERNAL UAT
-                            List<String> allowedStatuses = Arrays.asList("approved-received", "inprocess", "approved", "returned", "request-info");
-                            List<Integer> validRecordNos = dccrepo.findByPoNumberAndStatus(poNumber, allowedStatuses);
-                            logger.info("Matching RecordNos: " + validRecordNos);
-
-                            if (!validRecordNos.isEmpty()) {
-
-                                List<String> dccIdStrings = validRecordNos.stream()
-                                        .map(String::valueOf)
-                                        .collect(Collectors.toList());
-                                logger.info("Matching dccIdStrings: " + dccIdStrings);
-                                Double totalDeliveredQty = dcclnrepo.sumDeliveredQtyByDccIdsAndPoLineInfo(
-                                        dccIdStrings, poNumber, polineitem, "");
-
-                                logger.info("Total Delivered Qty for given PoNumber/Line/ " + totalDeliveredQty);
-
-                                if (poqtyNew > 0) {
-                                    if ((passedQty + totalDeliveredQty) > quantityDueNew) {
-                                        acceptanceQuantity.add(String.valueOf(totalDeliveredQty));
-                                    }
-                                } else {
-                                    if ((passedQty + totalDeliveredQty) > quantityDueOld) {
-                                        acceptanceQuantity.add(String.valueOf(totalDeliveredQty));
-                                    }
-                                }
-                            }
+                            checkNonUplPendingQuantity(poNumber, polineitem, podetails, dcclineRequest, null,
+                                    pendingQtyCheckedPoLines, acceptanceQuantity);
 
                         }
                         if (serialNumber.length() > 1 && itemCode.length() > 1) {
@@ -1897,26 +1883,10 @@ public class APIController {
                         serialNumber = dcclineUpdatejsonObject.getString("serialNumber");
                         upllineitem = dcclineUpdatejsonObject.getString("uplLineNumber");
                         polineitem = dcclineUpdatejsonObject.getString("poLineNumber");
-                        //VALIDATE USING ITEM CODE AND SERIAL NUMBER FOR ALREADY RECEIVED REQUESTS
-                        if (serialNumber.length() > 1 && UpdateItemCode.length() > 1) {
-                            if (UpdateActualItemCode.length() == 0) {
-                                List<tbSerialNumber> validateSerial = serialNumberRepo.findBySerialNumberAndItemCode(serialNumber, UpdateItemCode);
-                                if (!validateSerial.isEmpty()) {
-                                    existingSerialNumbers.add(serialNumber);
-                                    serialnumberItemCode.add(UpdateItemCode);
-                                }
-                            }
-                        }
-                        //VALIDATE USING ACTUAL ITEM CODE AND SERILAL NUMBER FOR ALREADY RECEIVED REQUESTS
-                        if (serialNumber.length() > 1 && UpdateItemCode.length() > 1) {
-                            if (!UpdateActualItemCode.isBlank()) {
-                                List<tbSerialNumber> validateSerial = serialNumberRepo.findBySerialNumberAndItemCode(serialNumber, UpdateActualItemCode);
-                                if (!validateSerial.isEmpty()) {
-                                    existingActualSerialNumbers.add(serialNumber);
-                                    serialnumberActualItemCode.add(UpdateActualItemCode);
-                                }
-                            }
-                        }
+                        // Already received (tb_SerialNumber) - UPL and non-UPL lines alike.
+                        checkReceivedSerialNumber(serialNumber, UpdateItemCode, UpdateActualItemCode,
+                                dcclineUpdatejsonObject.optString("itemPartNumber", ""),
+                                polineitem, upllineitem, receivedSerials);
 
 //                        if (serialNumber.length() > 1 && UpdateActualItemCode.length() > 1) {
 //                            List<tbSerialNumber> validateSerial = serialNumberRepo.findBySerialNumberAndItemCode(serialNumber, UpdateActualItemCode);
@@ -2033,46 +2003,14 @@ public class APIController {
                                 }
                             }
 
-                            if (!serialcontrol.equalsIgnoreCase("NO CONTROL")) {
-                                if (serialNumber.isBlank()) {
-                                    missingSerialsforNONUPLBased.add(polineitem);
-                                } else {
-                                    List<tbSerialNumber> validateSerialNumberforPo = serialNumberRepo.findBySerialNumber(serialNumber);
-                                    if (!validateSerialNumberforPo.isEmpty()) {
-                                        existingSerialNumbers.add(serialNumber);
-                                        serialnumberItemCode.add(UpdateActualItemCode.length() > 1 ? UpdateActualItemCode : UpdateItemCode);
-                                    }
-                                }
+                            // Whether this serial number was already received is checked for every
+                            // line above (checkReceivedSerialNumber); here only that one is given.
+                            if (!serialcontrol.equalsIgnoreCase("NO CONTROL") && serialNumber.isBlank()) {
+                                missingSerialsforNONUPLBased.add(polineitem);
                             }
-                            Double poqtyNew = podetails != null ? podetails.getPoQtyNew() : 0;
-                            Double quantityDueNew = podetails != null ? podetails.getQuantityDueNew() : 0;
-                            Double quantityDueOld = podetails != null ? podetails.getQuantityDueOld() : 0;
-
-                            //COMMMENTING THIS OUT FOR INTERNAL UAT
-                            List<String> allowedStatuses = Arrays.asList("approved-received", "inprocess", "approved", "returned", "request-info");
-                            List<Integer> validRecordNos = dccrepo.findByPoNumberAndStatus(poNumber, allowedStatuses);
-                            logger.info("Matching RecordNos: " + validRecordNos);
-                            if (!validRecordNos.isEmpty()) {
-                                List<String> dccIdStrings = validRecordNos.stream()
-                                        .map(String::valueOf)
-                                        .collect(Collectors.toList());
-                                logger.info("Matching dccIdStrings: " + dccIdStrings);
-                                Double totalDeliveredQty = dcclnrepo.sumDeliveredQtyByDccIdsAndPoLineInfo(
-                                        dccIdStrings, poNumber, polineitem, "");
-
-                                logger.info("Total Delivered Qty for given PoNumber/Line/ " + totalDeliveredQty);
-
-                                if (poqtyNew > 0) {
-                                    if ((passedQty + totalDeliveredQty) > quantityDueNew) {
-                                        acceptanceQuantity.add(String.valueOf(totalDeliveredQty));
-                                        // acceptanceQuantity.add(totalDeliveredQty);
-                                    }
-                                } else {
-                                    if ((passedQty + totalDeliveredQty) > quantityDueOld) {
-                                        acceptanceQuantity.add(String.valueOf(totalDeliveredQty));
-                                    }
-                                }
-                            }
+                            // The request's own stored lines are replaced by this payload, so they don't count.
+                            checkNonUplPendingQuantity(poNumber, polineitem, podetails, dcclineRequestItems,
+                                    String.valueOf(recordNoValidate), pendingQtyCheckedPoLines, acceptanceQuantity);
                         }
                         if (serialNumber.length() > 1 && UpdateItemCode.length() > 1 && UpdateActualItemCode.length() < 1) {
                             validateDCCLineList = dcclnrepo.findBySerialNumberAndItemCode(serialNumber, UpdateItemCode);
@@ -2251,12 +2189,10 @@ public class APIController {
 //                errorMessages.add("You can only raise an acceptance request for one unique location. The passed locations are " + String.join(", ", uniquelocation));
 //            }
 
-            if (!existingSerialNumbers.isEmpty()) {
-                errorMessages.add("The following serial Numbers  " + String.join(", ", existingSerialNumbers) + " with item codes " + String.join(", ", serialnumberItemCode) + " have already been received. Kindly raise an acceptance request for a different serial Number ");
-            }
-
-            if (!existingActualSerialNumbers.isEmpty()) {
-                errorMessages.add("The following serial Numbers  " + String.join(", ", existingActualSerialNumbers) + " with actual item codes " + String.join(", ", serialnumberActualItemCode) + " have already been received. Kindly raise an acceptance request for a different serial Number ");
+            if (!receivedSerials.isEmpty()) {
+                errorMessages.add("The following serial numbers have already been received: "
+                        + String.join(", ", receivedSerials)
+                        + ". Kindly raise an acceptance request for a different serial number.");
             }
 
             if (!missingSerialsforNONUPLBased.isEmpty()) {
@@ -2358,7 +2294,8 @@ public class APIController {
 
             //commenting for UAT
             if (!acceptanceQuantity.isEmpty()) {
-                errorMessages.add("The delivery quantity entered for this acceptance request will exceed the po Pending quantity. The total po delivered quantity is  " + acceptanceQuantity + " . ");
+                errorMessages.add("The delivery quantity entered for this acceptance request will exceed the po Pending quantity for:\n"
+                        + String.join("\n", acceptanceQuantity));
             }
 
             if (!duplicateTagsInRequest.isEmpty()) {
@@ -2887,6 +2824,44 @@ public class APIController {
             response.put("supplierId", supplierId);
             response.put("supplierName", supplierName);
             return response("Error", jsonArrayresponse.toString());
+        }
+    }
+
+    /**
+     * Non-UPL PO line quantity check, done once per PO line: what the other open acceptance
+     * requests on the PO already raised for the line, plus every row of this request on that line,
+     * must not exceed the line's due quantity. excludeDccId is the request being resubmitted - its
+     * stored lines are replaced by the payload - or null on a create.
+     */
+    private void checkNonUplPendingQuantity(String poNumber, String poLineNumber, tbPurchaseOrder podetails,
+            JSONArray lineItems, String excludeDccId, Set<String> checkedPoLines, List<String> acceptanceQuantity) {
+        if (!checkedPoLines.add(poNumber + "|" + poLineNumber)) {
+            return;
+        }
+        double requestedQty = 0;
+        for (int i = 0; i < lineItems.length(); i++) {
+            JSONObject line = lineItems.getJSONObject(i);
+            if (line.optString("uplLineNumber", "").isEmpty() && poLineNumber.equals(line.optString("poLineNumber"))) {
+                requestedQty += Double.parseDouble(line.getString("deliveredQty"));
+            }
+        }
+
+        List<String> allowedStatuses = Arrays.asList("approved-received", "inprocess", "approved", "returned", "request-info");
+        List<String> dccIdStrings = dccrepo.findByPoNumberAndStatus(poNumber, allowedStatuses).stream()
+                .map(String::valueOf)
+                .filter(id -> !id.equals(excludeDccId))
+                .collect(Collectors.toList());
+        double raisedQty = dccIdStrings.isEmpty() ? 0
+                : dcclnrepo.sumDeliveredQtyByDccIdsAndPoLineInfo(dccIdStrings, poNumber, poLineNumber, "");
+
+        double quantityDue = podetails == null ? 0
+                : podetails.getPoQtyNew() > 0 ? podetails.getQuantityDueNew() : podetails.getQuantityDueOld();
+        logger.info("PO " + poNumber + " line " + poLineNumber + ": raised " + raisedQty
+                + " + requested " + requestedQty + " vs due " + quantityDue);
+        if (raisedQty + requestedQty > quantityDue) {
+            acceptanceQuantity.add("PO " + poNumber + " Line " + poLineNumber + ": requested " + formatQty(requestedQty)
+                    + " exceeds pending " + formatQty(Math.max(quantityDue - raisedQty, 0))
+                    + " (already raised " + formatQty(raisedQty) + ")");
         }
     }
 
