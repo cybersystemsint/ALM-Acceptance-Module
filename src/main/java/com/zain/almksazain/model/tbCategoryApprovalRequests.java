@@ -6,10 +6,13 @@ package com.zain.almksazain.model;
 
 import java.io.Serializable;
 import java.sql.Date;
+import java.sql.Timestamp;
+import java.time.LocalDateTime;
 import javax.persistence.Entity;
 import javax.persistence.GeneratedValue;
 import javax.persistence.GenerationType;
 import javax.persistence.Id;
+import javax.persistence.PrePersist;
 import javax.persistence.Table;
 
 /**
@@ -24,7 +27,10 @@ public class tbCategoryApprovalRequests implements Serializable {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private int recordNo;
 
-    private Date recordDateTime;
+    // Full timestamp, not java.sql.Date: the grids pick the latest request per
+    // DCC by ordering on this column, so a date-only value (midnight) sorts a
+    // same-day resubmission behind the request it replaced.
+    private Timestamp recordDateTime;
 
     private int acceptanceRequestRecordNo;
 
@@ -50,6 +56,18 @@ public class tbCategoryApprovalRequests implements Serializable {
 
     private Date approvedDate;
 
+    // Approver-defined chain state (approverDefinedChain scopes only, NULL
+    // otherwise): CHAIN_AWAITING until the Level 1 approver saves the chain in
+    // WorkFlow-Management, CHAIN_CONFIRMED once saved or reapplied.
+    private String chainStatus;
+
+    private Integer chainConfirmedBy;
+
+    private LocalDateTime chainConfirmedAt;
+
+    public static final String CHAIN_AWAITING = "awaiting";
+    public static final String CHAIN_CONFIRMED = "confirmed";
+
     public int getRecordNo() {
         return recordNo;
     }
@@ -58,12 +76,19 @@ public class tbCategoryApprovalRequests implements Serializable {
         this.recordNo = recordNo;
     }
 
-    public Date getRecordDateTime() {
+    public Timestamp getRecordDateTime() {
         return recordDateTime;
     }
 
-    public void setRecordDateTime(Date recordDateTime) {
+    public void setRecordDateTime(Timestamp recordDateTime) {
         this.recordDateTime = recordDateTime;
+    }
+
+    @PrePersist
+    protected void onCreate() {
+        if (recordDateTime == null) {
+            recordDateTime = new Timestamp(System.currentTimeMillis());
+        }
     }
 
     public int getAcceptanceRequestRecordNo() {
@@ -162,4 +187,27 @@ public class tbCategoryApprovalRequests implements Serializable {
         this.approvedDate = approvedDate;
     }
 
+    public String getChainStatus() {
+        return chainStatus;
+    }
+
+    public void setChainStatus(String chainStatus) {
+        this.chainStatus = chainStatus;
+    }
+
+    public Integer getChainConfirmedBy() {
+        return chainConfirmedBy;
+    }
+
+    public void setChainConfirmedBy(Integer chainConfirmedBy) {
+        this.chainConfirmedBy = chainConfirmedBy;
+    }
+
+    public LocalDateTime getChainConfirmedAt() {
+        return chainConfirmedAt;
+    }
+
+    public void setChainConfirmedAt(LocalDateTime chainConfirmedAt) {
+        this.chainConfirmedAt = chainConfirmedAt;
+    }
 }
