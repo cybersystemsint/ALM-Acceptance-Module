@@ -32,6 +32,10 @@ public class tbScopeApprovalLevels implements Serializable {
     public Integer status;
     public String createdBy;
     public String updatedBy;
+    // NULL for admin config. Set on the request-scoped levels a Level 1 approver
+    // defines for an approverDefinedChain scope: those rows belong to that one
+    // Acceptance Request (tb_DCC.recordNo) and are never config.
+    public Integer acceptanceRequestRecordNo;
 
     public long getRecordNo() {
         return recordNo;
@@ -113,4 +117,11 @@ public class tbScopeApprovalLevels implements Serializable {
         this.updatedBy = updatedBy;
     }
 
+    public Integer getAcceptanceRequestRecordNo() {
+        return acceptanceRequestRecordNo;
+    }
+
+    public void setAcceptanceRequestRecordNo(Integer acceptanceRequestRecordNo) {
+        this.acceptanceRequestRecordNo = acceptanceRequestRecordNo;
+    }
 }
