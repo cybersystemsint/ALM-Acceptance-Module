@@ -1,8 +1,13 @@
 package com.zain.almksazain.services;
 
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.Statement;
+import java.sql.Timestamp;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -19,8 +24,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.PessimisticLockingFailureException;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.support.GeneratedKeyHolder;
+import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -75,6 +85,9 @@ public class SerialNumberService {
     /** Keeps IN (...) lists short on large bulk uploads. */
     private static final int IN_CHUNK = 500;
 
+    /** Rows per multi-row INSERT. */
+    private static final int INSERT_CHUNK = 1000;
+
     /** At most this many conflicting Record Nos are listed in one error. */
     private static final int MAX_LISTED_CONFLICTS = 5;
 
@@ -86,6 +99,9 @@ public class SerialNumberService {
 
     @Autowired
     private supplierrepo supplierRepo;
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -430,33 +446,23 @@ public class SerialNumberService {
         String batchId = writes > 1 ? UUID.randomUUID().toString() : null;
         LocalDateTime now = LocalDateTime.now();
         String user = userColumn(userName);
+        if (writes > 0) {
+            resetAutoIncrementOnRollback();
+        }
+        List<SerialNumber> updated = new ArrayList<>();
+        List<Object[]> auditRows = new ArrayList<>();
+        List<Planned> creates = new ArrayList<>();
         for (Planned p : planned) {
             if (p.existing == null) {
-                SerialNumber s = new SerialNumber();
-                s.setRecordDatetime(now);
-                apply(s, p);
-                s.setCreatedBy(user);
-                // updatedBy/updatedDatetime stay empty until the row is actually updated or deleted.
-                s = serialNumberRepo.saveAndFlush(s);
-
-                Map<String, Object[]> changes = new LinkedHashMap<>();
-                putIfSet(changes, "serialNumber", s.getSerialNumber());
-                putIfSet(changes, "itemCode", s.getItemCode());
-                putIfSet(changes, "organizationCode", s.getOrganizationCode());
-                putIfSet(changes, "organizationName", s.getOrganizationName());
-                putIfSet(changes, "invoice", s.getInvoice());
-                putIfSet(changes, "validationRule", s.getValidationRule());
-                putIfSet(changes, "comment", s.getComment());
-                putIfSet(changes, "status", s.getStatus());
-                log(s, SerialNumberAuditLog.CHANGE_CREATE, changes, batchId, userId, userName);
-                result.created++;
+                creates.add(p);
             } else if (!p.changes.isEmpty()) {
                 SerialNumber s = p.existing;
                 apply(s, p);
                 s.setUpdatedBy(user);
                 s.setUpdatedDatetime(now);
-                s = serialNumberRepo.saveAndFlush(s);
-                log(s, SerialNumberAuditLog.CHANGE_UPDATE, p.changes, batchId, userId, userName);
+                updated.add(s);
+                auditRows.add(auditRow(s.getRecordNo(), SerialNumberAuditLog.CHANGE_UPDATE, s.getSerialNumber(),
+                        s.getItemCode(), p.changes, batchId, userId, userName));
                 result.updated++;
             }
         }
@@ -467,11 +473,38 @@ public class SerialNumberService {
             s.setValidationRule(r.rule);
             s.setUpdatedBy(user);
             s.setUpdatedDatetime(now);
-            serialNumberRepo.save(s);
-            log(s, SerialNumberAuditLog.CHANGE_UPDATE, changes, batchId, userId, userName);
+            updated.add(s);
+            auditRows.add(auditRow(s.getRecordNo(), SerialNumberAuditLog.CHANGE_UPDATE, s.getSerialNumber(),
+                    s.getItemCode(), changes, batchId, userId, userName));
             result.ruleUpdatedOthers++;
         }
-        serialNumberRepo.flush();
+        if (!updated.isEmpty()) {
+            serialNumberRepo.saveAll(updated);
+            serialNumberRepo.flush();
+        }
+
+        // New rows go in as multi-row INSERTs: one JPA save per row made a large upload take so
+        // long it failed part-way.
+        if (!creates.isEmpty()) {
+            List<Integer> newRecordNos = insertSerialNumbers(creates, user, now);
+            for (int i = 0; i < creates.size(); i++) {
+                Planned p = creates.get(i);
+                // updatedBy/updatedDatetime stay empty until the row is actually updated or deleted.
+                Map<String, Object[]> changes = new LinkedHashMap<>();
+                putIfSet(changes, "serialNumber", p.serial);
+                putIfSet(changes, "itemCode", p.itemCode);
+                putIfSet(changes, "organizationCode", p.organizationCode);
+                putIfSet(changes, "organizationName", p.organizationName);
+                putIfSet(changes, "invoice", p.invoice);
+                putIfSet(changes, "validationRule", p.rule);
+                putIfSet(changes, "comment", p.comment);
+                putIfSet(changes, "status", p.status);
+                auditRows.add(auditRow(newRecordNos.get(i), SerialNumberAuditLog.CHANGE_CREATE, p.serial, p.itemCode,
+                        changes, batchId, userId, userName));
+                result.created++;
+            }
+        }
+        insertAuditRows(auditRows);
         return result;
     }
 
@@ -550,6 +583,89 @@ public class SerialNumberService {
     // ============================================================
     // Helpers
     // ============================================================
+
+    /**
+     * Inserts the new rows, INSERT_CHUNK per statement, and returns their Record Nos in the same
+     * order. A serial number can have several rows, so the ids come from the statement's generated
+     * keys (consecutive for a multi-row INSERT), not from looking the rows up again.
+     */
+    private List<Integer> insertSerialNumbers(List<Planned> creates, String user, LocalDateTime now) {
+        Timestamp recordDatetime = Timestamp.valueOf(now);
+        List<Integer> recordNos = new ArrayList<>();
+        for (int i = 0; i < creates.size(); i += INSERT_CHUNK) {
+            List<Planned> chunk = creates.subList(i, Math.min(i + INSERT_CHUNK, creates.size()));
+            String sql = "INSERT INTO tb_SerialNumber (recordDatetime, serialNumber, itemCode, organizationCode, organizationName, invoice, validationRule, comment, status, createdBy) VALUES "
+                    + String.join(",", Collections.nCopies(chunk.size(), "(?,?,?,?,?,?,?,?,?,?)"));
+            List<Object> args = new ArrayList<>();
+            for (Planned p : chunk) {
+                Collections.addAll(args, recordDatetime, p.serial, p.itemCode, p.organizationCode, p.organizationName,
+                        p.invoice, p.rule, p.comment, p.status, user);
+            }
+            KeyHolder keys = new GeneratedKeyHolder();
+            jdbcTemplate.update(con -> {
+                PreparedStatement ps = con.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS);
+                for (int a = 0; a < args.size(); a++) {
+                    ps.setObject(a + 1, args.get(a));
+                }
+                return ps;
+            }, keys);
+            if (keys.getKeyList().size() != chunk.size()) {
+                throw new IllegalStateException("Expected " + chunk.size() + " new Serial Number ids, got "
+                        + keys.getKeyList().size());
+            }
+            for (Map<String, Object> key : keys.getKeyList()) {
+                recordNos.add(((Number) key.values().iterator().next()).intValue());
+            }
+        }
+        return recordNos;
+    }
+
+    private Object[] auditRow(Integer serialRecordNo, String changeType, String serial, String itemCode,
+            Map<String, Object[]> changes, String batchId, Integer userId, String userName) {
+        return new Object[] { batchId, serialRecordNo, changeType, serial, itemCode, fieldChangesJson(changes), userId,
+                userName };
+    }
+
+    private void insertAuditRows(List<Object[]> rows) {
+        for (int i = 0; i < rows.size(); i += INSERT_CHUNK) {
+            List<Object[]> chunk = rows.subList(i, Math.min(i + INSERT_CHUNK, rows.size()));
+            String sql = "INSERT INTO tb_SerialNumber_Audit_Log (batchId, serialRecordNo, changeType, serialNumber, itemCode, fieldChanges, changedBy, changedByName) VALUES "
+                    + String.join(",", Collections.nCopies(chunk.size(), "(?,?,?,?,?,?,?,?)"));
+            List<Object> args = new ArrayList<>();
+            chunk.forEach(row -> Collections.addAll(args, row));
+            jdbcTemplate.update(sql, args.toArray());
+        }
+    }
+
+    /**
+     * InnoDB never hands back AUTO_INCREMENT values taken by a rolled-back insert, so a failed save
+     * would leave a gap in the Record Nos. Once this transaction rolls back, move both counters back
+     * to the highest stored id + 1 (MySQL won't set it below that, so rows saved meanwhile - e.g. by
+     * the Oracle load - are safe).
+     */
+    private void resetAutoIncrementOnRollback() {
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                if (status != STATUS_ROLLED_BACK) {
+                    return;
+                }
+                // A fresh connection: the rolled-back one is still bound to this thread.
+                try (Connection con = jdbcTemplate.getDataSource().getConnection();
+                        Statement st = con.createStatement()) {
+                    st.execute("SET SESSION lock_wait_timeout = 5");
+                    try {
+                        st.execute("ALTER TABLE tb_SerialNumber AUTO_INCREMENT = 1");
+                        st.execute("ALTER TABLE tb_SerialNumber_Audit_Log AUTO_INCREMENT = 1");
+                    } finally {
+                        st.execute("SET SESSION lock_wait_timeout = DEFAULT");
+                    }
+                } catch (Exception e) {
+                    logger.warn("Could not reset the Serial Number AUTO_INCREMENT counters after a rollback", e);
+                }
+            }
+        });
+    }
 
     private List<SerialNumber> lockNonDeleted(Collection<String> serialNumbers) {
         List<SerialNumber> rows = new ArrayList<>();
@@ -685,6 +801,20 @@ public class SerialNumberService {
 
     private void log(SerialNumber s, String changeType, Map<String, Object[]> changes, String batchId,
             Integer userId, String userName) {
+        SerialNumberAuditLog entry = new SerialNumberAuditLog();
+        entry.setBatchId(batchId);
+        entry.setSerialRecordNo(s.getRecordNo());
+        entry.setChangeType(changeType);
+        entry.setSerialNumber(s.getSerialNumber());
+        entry.setItemCode(s.getItemCode());
+        entry.setFieldChanges(fieldChangesJson(changes));
+        entry.setChangedBy(userId);
+        entry.setChangedByName(userName);
+        auditLogRepo.save(entry);
+    }
+
+    /** {"field": {"old": .., "new": ..}} as stored in tb_SerialNumber_Audit_Log.fieldChanges. */
+    private String fieldChangesJson(Map<String, Object[]> changes) {
         Map<String, Map<String, Object>> json = new LinkedHashMap<>();
         changes.forEach((field, values) -> {
             Map<String, Object> pair = new LinkedHashMap<>();
@@ -692,20 +822,11 @@ public class SerialNumberService {
             pair.put("new", values[1]);
             json.put(field, pair);
         });
-        SerialNumberAuditLog entry = new SerialNumberAuditLog();
-        entry.setBatchId(batchId);
-        entry.setSerialRecordNo(s.getRecordNo());
-        entry.setChangeType(changeType);
-        entry.setSerialNumber(s.getSerialNumber());
-        entry.setItemCode(s.getItemCode());
         try {
-            entry.setFieldChanges(objectMapper.writeValueAsString(json));
+            return objectMapper.writeValueAsString(json);
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Could not serialise Serial Number changes", e);
         }
-        entry.setChangedBy(userId);
-        entry.setChangedByName(userName);
-        auditLogRepo.save(entry);
     }
 
     private static String trim(String value) {

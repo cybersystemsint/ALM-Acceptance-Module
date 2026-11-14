@@ -1,5 +1,8 @@
 package com.zain.almksazain.services;
 
+import java.sql.Connection;
+import java.sql.Statement;
+import java.sql.Timestamp;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -22,6 +25,8 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -269,31 +274,14 @@ public class TagNumberService {
         long writes = planned.stream().filter(p -> p.existing == null || !p.changes.isEmpty()).count();
         String batchId = writes > 1 ? UUID.randomUUID().toString() : null;
         LocalDateTime now = LocalDateTime.now();
+        if (writes > 0) {
+            resetAutoIncrementOnRollback();
+        }
         try {
+            List<TagNumber> updated = new ArrayList<>();
+            List<Object[]> auditRows = new ArrayList<>();
             for (Planned p : planned) {
-                if (p.existing == null) {
-                    TagNumber t = new TagNumber();
-                    t.setTagNumber(p.tag);
-                    t.setVendorNumber(p.vendor);
-                    t.setVendorName(vendorNames.get(p.vendor));
-                    t.setStatus(p.status);
-                    t.setComment(p.comment);
-                    t.setCreatedBy(userName);
-                    t.setCreatedDate(now);
-                    // lastUpdatedBy/lastUpdatedDate stay empty until the row is actually updated or deleted.
-                    t = tagNumberRepo.saveAndFlush(t);
-
-                    Map<String, Object[]> changes = new LinkedHashMap<>();
-                    changes.put("tagNumber", new Object[] { null, t.getTagNumber() });
-                    changes.put("vendorNumber", new Object[] { null, t.getVendorNumber() });
-                    changes.put("vendorName", new Object[] { null, t.getVendorName() });
-                    changes.put("status", new Object[] { null, t.getStatus() });
-                    if (t.getComment() != null) {
-                        changes.put("comment", new Object[] { null, t.getComment() });
-                    }
-                    log(t, TagNumberAuditLog.CHANGE_CREATE, changes, batchId, userId, userName);
-                    result.created++;
-                } else if (!p.changes.isEmpty()) {
+                if (p.existing != null && !p.changes.isEmpty()) {
                     TagNumber t = p.existing;
                     t.setTagNumber(p.tag);
                     t.setVendorNumber(p.vendor);
@@ -302,11 +290,43 @@ public class TagNumberService {
                     t.setComment(p.comment);
                     t.setLastUpdatedBy(userName);
                     t.setLastUpdatedDate(now);
-                    t = tagNumberRepo.saveAndFlush(t);
-                    log(t, TagNumberAuditLog.CHANGE_UPDATE, p.changes, batchId, userId, userName);
+                    updated.add(t);
+                    auditRows.add(auditRow(t.getRecordNo(), TagNumberAuditLog.CHANGE_UPDATE, p.tag, p.vendor,
+                            t.getVendorName(), p.changes, batchId, userId, userName));
                     result.updated++;
                 }
             }
+            if (!updated.isEmpty()) {
+                tagNumberRepo.saveAll(updated);
+                tagNumberRepo.flush();
+            }
+
+            // New rows go in as multi-row INSERTs: one JPA save per row made a 100k-row upload take
+            // so long it failed part-way.
+            List<Planned> creates = new ArrayList<>();
+            for (Planned p : planned) {
+                if (p.existing == null) {
+                    creates.add(p);
+                }
+            }
+            if (!creates.isEmpty()) {
+                insertTags(creates, vendorNames, userName, now);
+                Map<String, Integer> recordNoByTag = recordNosByTag(creates);
+                for (Planned p : creates) {
+                    Map<String, Object[]> changes = new LinkedHashMap<>();
+                    changes.put("tagNumber", new Object[] { null, p.tag });
+                    changes.put("vendorNumber", new Object[] { null, p.vendor });
+                    changes.put("vendorName", new Object[] { null, vendorNames.get(p.vendor) });
+                    changes.put("status", new Object[] { null, p.status });
+                    if (p.comment != null) {
+                        changes.put("comment", new Object[] { null, p.comment });
+                    }
+                    auditRows.add(auditRow(recordNoByTag.get(tagKey(p.tag)), TagNumberAuditLog.CHANGE_CREATE, p.tag,
+                            p.vendor, vendorNames.get(p.vendor), changes, batchId, userId, userName));
+                    result.created++;
+                }
+            }
+            insertAuditRows(auditRows);
         } catch (DataIntegrityViolationException ex) {
             // Someone else saved the same TAG between our check and the write.
             logger.warn("TAG Number save hit the unique key", ex);
@@ -470,6 +490,86 @@ public class TagNumberService {
     // Helpers
     // ============================================================
 
+    private static final int INSERT_CHUNK = 1000;
+
+    private void insertTags(List<Planned> creates, Map<String, String> vendorNames, String userName,
+            LocalDateTime now) {
+        Timestamp createdDate = Timestamp.valueOf(now);
+        for (int i = 0; i < creates.size(); i += INSERT_CHUNK) {
+            List<Planned> chunk = creates.subList(i, Math.min(i + INSERT_CHUNK, creates.size()));
+            // lastUpdatedBy/lastUpdatedDate stay empty until the row is actually updated or deleted.
+            String sql = "INSERT INTO tb_TagNumber (tagNumber, vendorNumber, vendorName, status, comment, createdBy, createdDate) VALUES "
+                    + String.join(",", Collections.nCopies(chunk.size(), "(?,?,?,?,?,?,?)"));
+            List<Object> args = new ArrayList<>();
+            for (Planned p : chunk) {
+                Collections.addAll(args, p.tag, p.vendor, vendorNames.get(p.vendor), p.status, p.comment,
+                        userName, createdDate);
+            }
+            jdbcTemplate.update(sql, args.toArray());
+        }
+    }
+
+    /** recordNo of each just-created TAG, keyed by tagKey (a TAG has one non-deleted row). */
+    private Map<String, Integer> recordNosByTag(List<Planned> creates) {
+        Set<String> tags = new LinkedHashSet<>();
+        creates.forEach(p -> tags.add(p.tag));
+        Map<String, Integer> ids = new HashMap<>();
+        for (List<String> chunk : chunks(tags)) {
+            String sql = "SELECT recordNo, tagNumber FROM tb_TagNumber WHERE status <> '" + TagNumber.STATUS_DELETED
+                    + "' AND tagNumber IN (" + String.join(",", Collections.nCopies(chunk.size(), "?")) + ")";
+            jdbcTemplate.query(sql, rs -> {
+                ids.put(tagKey(rs.getString("tagNumber")), rs.getInt("recordNo"));
+            }, chunk.toArray());
+        }
+        return ids;
+    }
+
+    private Object[] auditRow(Integer tagRecordNo, String changeType, String tag, String vendor, String vendorName,
+            Map<String, Object[]> changes, String batchId, Integer userId, String userName) {
+        return new Object[] { batchId, tagRecordNo, changeType, tag, vendor, vendorName, fieldChangesJson(changes),
+                userId, userName };
+    }
+
+    private void insertAuditRows(List<Object[]> rows) {
+        for (int i = 0; i < rows.size(); i += INSERT_CHUNK) {
+            List<Object[]> chunk = rows.subList(i, Math.min(i + INSERT_CHUNK, rows.size()));
+            String sql = "INSERT INTO tb_TagNumber_Audit_Log (batchId, tagRecordNo, changeType, tagNumber, vendorNumber, vendorName, fieldChanges, changedBy, changedByName) VALUES "
+                    + String.join(",", Collections.nCopies(chunk.size(), "(?,?,?,?,?,?,?,?,?)"));
+            List<Object> args = new ArrayList<>();
+            chunk.forEach(row -> Collections.addAll(args, row));
+            jdbcTemplate.update(sql, args.toArray());
+        }
+    }
+
+    /**
+     * InnoDB never hands back AUTO_INCREMENT values taken by a rolled-back insert, so a failed save
+     * would leave a gap in the Record Nos. Once this transaction rolls back, move both counters back
+     * to the highest stored id + 1 (MySQL won't set it below that, so rows saved meanwhile are safe).
+     */
+    private void resetAutoIncrementOnRollback() {
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                if (status != STATUS_ROLLED_BACK) {
+                    return;
+                }
+                // A fresh connection: the rolled-back one is still bound to this thread.
+                try (Connection con = jdbcTemplate.getDataSource().getConnection();
+                        Statement st = con.createStatement()) {
+                    st.execute("SET SESSION lock_wait_timeout = 5");
+                    try {
+                        st.execute("ALTER TABLE tb_TagNumber AUTO_INCREMENT = 1");
+                        st.execute("ALTER TABLE tb_TagNumber_Audit_Log AUTO_INCREMENT = 1");
+                    } finally {
+                        st.execute("SET SESSION lock_wait_timeout = DEFAULT");
+                    }
+                } catch (Exception e) {
+                    logger.warn("Could not reset the TAG Number AUTO_INCREMENT counters after a rollback", e);
+                }
+            }
+        });
+    }
+
     private List<TagNumber> findNonDeleted(Collection<String> tagNumbers) {
         List<TagNumber> rows = new ArrayList<>();
         for (List<String> chunk : chunks(tagNumbers)) {
@@ -559,13 +659,6 @@ public class TagNumberService {
 
     private void log(TagNumber t, String changeType, Map<String, Object[]> changes, String batchId,
             Integer userId, String userName) {
-        Map<String, Map<String, Object>> json = new LinkedHashMap<>();
-        changes.forEach((field, values) -> {
-            Map<String, Object> pair = new LinkedHashMap<>();
-            pair.put("old", values[0]);
-            pair.put("new", values[1]);
-            json.put(field, pair);
-        });
         TagNumberAuditLog entry = new TagNumberAuditLog();
         entry.setBatchId(batchId);
         entry.setTagRecordNo(t.getRecordNo());
@@ -573,14 +666,26 @@ public class TagNumberService {
         entry.setTagNumber(t.getTagNumber());
         entry.setVendorNumber(t.getVendorNumber());
         entry.setVendorName(t.getVendorName());
-        try {
-            entry.setFieldChanges(objectMapper.writeValueAsString(json));
-        } catch (JsonProcessingException e) {
-            throw new IllegalStateException("Could not serialise TAG Number changes", e);
-        }
+        entry.setFieldChanges(fieldChangesJson(changes));
         entry.setChangedBy(userId);
         entry.setChangedByName(userName);
         auditLogRepo.save(entry);
+    }
+
+    /** {"field": {"old": .., "new": ..}} as stored in tb_TagNumber_Audit_Log.fieldChanges. */
+    private String fieldChangesJson(Map<String, Object[]> changes) {
+        Map<String, Map<String, Object>> json = new LinkedHashMap<>();
+        changes.forEach((field, values) -> {
+            Map<String, Object> pair = new LinkedHashMap<>();
+            pair.put("old", values[0]);
+            pair.put("new", values[1]);
+            json.put(field, pair);
+        });
+        try {
+            return objectMapper.writeValueAsString(json);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Could not serialise TAG Number changes", e);
+        }
     }
 
     private static String trim(String value) {
