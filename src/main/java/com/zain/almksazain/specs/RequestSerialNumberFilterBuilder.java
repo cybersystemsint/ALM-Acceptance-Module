@@ -13,7 +13,7 @@ import com.zain.almksazain.specs.TagNumberFilterBuilder.Column;
  * operators and date handling as the other Received Serials and TAG Number pages).
  *
  * One row per acceptance request line (ln) that carries a serial number, on a request (d) that
- * is not rejected or returned. Request No is the request, Organization Code its vendor number and
+ * is not rejected or returned. Request No is the request, Request Status its tb_DCC.status, Organization Code its vendor number and
  * Organization Name that vendor's tb_Supplier name (the request's own vendorName when the vendor
  * is gone). Item Code is the line's item code, else its actual item code, else - non-UPL lines
  * store neither - its PO line's part number.
@@ -42,6 +42,7 @@ public final class RequestSerialNumberFilterBuilder {
         COLUMNS.put("organizationCode", Column.text("d.vendorNumber"));
         COLUMNS.put("organizationName", Column.text(ORGANIZATION_NAME_SQL));
         COLUMNS.put("requestNo", Column.number("CAST(ln.dccId AS UNSIGNED)"));
+        COLUMNS.put("requestStatus", Column.text("d.status"));
         COLUMNS.put("validationRule", Column.exact("ln.validationRule"));
         COLUMNS.put("status", Column.exact("ln.serialStatus"));
         COLUMNS.put("comment", Column.text("ln.serialComment"));
@@ -59,7 +60,7 @@ public final class RequestSerialNumberFilterBuilder {
 
     public static final String SELECT = "SELECT ln.recordNo AS recordNo, ln.serialNumber AS serialNumber, "
             + ITEM_CODE_SQL + " AS itemCode, d.vendorNumber AS organizationCode, "
-            + ORGANIZATION_NAME_SQL + " AS organizationName, ln.dccId AS requestNo, "
+            + ORGANIZATION_NAME_SQL + " AS organizationName, ln.dccId AS requestNo, d.status AS requestStatus, "
             + "ln.validationRule AS validationRule, ln.serialStatus AS status, ln.serialComment AS comment, "
             + "d.createdBy AS createdBy, ln.updatedBy AS updatedBy, d.createdDate AS recordDatetime, "
             + "ln.updatedDatetime AS updatedDatetime ";
