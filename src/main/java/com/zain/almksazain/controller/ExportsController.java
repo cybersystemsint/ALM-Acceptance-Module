@@ -2896,10 +2896,10 @@ public class ExportsController {
             "validationRule", "comment", "status", "createdBy", "recordDatetime", "updatedBy", "updatedDatetime");
     private static final List<String> REQUEST_SERIAL_NUMBER_EXPORT_HEADERS = Arrays.asList(
             "Record Number", "Serial Number", "Item Code", "Organization Code", "Organization Name", "Request No",
-            "Validation Rule", "Status", "Comments", "Created By", "Created DateTime", "Updated By", "Updated DateTime");
+            "Request Status", "Validation Rule", "Status", "Comments", "Created By", "Created DateTime", "Updated By", "Updated DateTime");
     private static final List<String> REQUEST_SERIAL_NUMBER_EXPORT_FIELDS = Arrays.asList(
             "recordNo", "serialNumber", "itemCode", "organizationCode", "organizationName", "requestNo",
-            "validationRule", "status", "comment", "createdBy", "recordDatetime", "updatedBy", "updatedDatetime");
+            "requestStatus", "validationRule", "status", "comment", "createdBy", "recordDatetime", "updatedBy", "updatedDatetime");
 
     // LinkedHashMap: also the display order - MySQL's JSON column doesn't keep fieldChanges' key order.
     private static final Map<String, String> SERIAL_NUMBER_FIELD_LABELS = new LinkedHashMap<>();
