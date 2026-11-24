@@ -77,6 +77,7 @@ import com.zain.almksazain.services.PurchaseOrderExportService;
 import com.zain.almksazain.services.UplChangeRequestService;
 import com.zain.almksazain.specs.PoFilterBuilder;
 import com.zain.almksazain.specs.QueryFilterBuilder;
+import com.zain.almksazain.specs.RequestSerialNumberFilterBuilder;
 import com.zain.almksazain.specs.SerialNumberFilterBuilder;
 import com.zain.almksazain.specs.TagNumberFilterBuilder;
 import com.zain.almksazain.specs.UplFilterBuilder;
@@ -2875,30 +2876,30 @@ public class ExportsController {
     }
 
     // ============================================================================
-    // Serial Numbers + Serial Number Audit Trail Exports — job-based (start/status/download)
+    // Received Serials Exports — job-based (start/status/download)
     // ============================================================================
-    // Export what the "Serial Numbers" (/serialNumbers) and "Serial Number Audit Trail"
-    // (/serialNumberAuditTrail) pages show, filtered by the same request body through
-    // SerialNumberFilterBuilder. The Serial Numbers file holds the tb_SerialNumber rows first,
-    // then the serial numbers of approved-received acceptance requests (Source column), each
-    // newest first - the page's default order. Same streaming and sheet rollover as the TAG exports.
+    // Export what the two tabs of the Received Serials page (/serialNumbers) and the two tabs of
+    // its audit trail (/serialNumberAuditTrail) show, filtered by the same request body:
+    // "Received Outside ALM" (tb_SerialNumber - SerialNumberFilterBuilder) and "Raised in
+    // Acceptance Requests" (tb_DCC_LN - RequestSerialNumberFilterBuilder), newest first - the
+    // pages' default order. Same streaming and sheet rollover as the TAG exports.
 
     private static final int MAX_SERIAL_NUMBER_EXPORT_RECORDS = 1_000_000;
 
-    // Same first nine headers as the bulk upload template, so an export can be edited and
-    // re-uploaded to update Serial Numbers by Record No (the upload skips Acceptance Request rows).
+    // Same headers as each tab's bulk upload template (plus the read-only columns), so an export
+    // can be edited and uploaded back.
     private static final List<String> SERIAL_NUMBER_EXPORT_HEADERS = Arrays.asList(
             "Record No", "Serial Number", "Item Code", "Organization Code", "Organization Name", "Invoice",
-            "Validation Rule", "Comment", "Status", "Source", "Request No", "Created By", "Created DateTime",
-            "Updated By", "Updated DateTime");
+            "Validation Rule", "Comment", "Status", "Created By", "Created DateTime", "Updated By", "Updated DateTime");
     private static final List<String> SERIAL_NUMBER_EXPORT_FIELDS = Arrays.asList(
             "recordNo", "serialNumber", "itemCode", "organizationCode", "organizationName", "invoice",
-            "validationRule", "comment", "status", "source", "requestNo", "createdBy", "recordDatetime",
-            "updatedBy", "updatedDatetime");
-
-    private static final List<String> SERIAL_NUMBER_AUDIT_TRAIL_EXPORT_HEADERS = Arrays.asList(
-            "Audit ID", "Serial Record No", "Type", "Serial Number", "Item Code",
-            "Field", "Old Value", "New Value", "Changed By", "Changed At", "Batch");
+            "validationRule", "comment", "status", "createdBy", "recordDatetime", "updatedBy", "updatedDatetime");
+    private static final List<String> REQUEST_SERIAL_NUMBER_EXPORT_HEADERS = Arrays.asList(
+            "Record Number", "Serial Number", "Item Code", "Organization Code", "Organization Name", "Request No",
+            "Validation Rule", "Status", "Comments", "Created By", "Created DateTime", "Updated By", "Updated DateTime");
+    private static final List<String> REQUEST_SERIAL_NUMBER_EXPORT_FIELDS = Arrays.asList(
+            "recordNo", "serialNumber", "itemCode", "organizationCode", "organizationName", "requestNo",
+            "validationRule", "status", "comment", "createdBy", "recordDatetime", "updatedBy", "updatedDatetime");
 
     // LinkedHashMap: also the display order - MySQL's JSON column doesn't keep fieldChanges' key order.
     private static final Map<String, String> SERIAL_NUMBER_FIELD_LABELS = new LinkedHashMap<>();
@@ -2912,14 +2913,78 @@ public class ExportsController {
         SERIAL_NUMBER_FIELD_LABELS.put("comment", "Comment");
         SERIAL_NUMBER_FIELD_LABELS.put("status", "Status");
     }
+    private static final Map<String, String> REQUEST_SERIAL_NUMBER_FIELD_LABELS = new LinkedHashMap<>();
+    static {
+        REQUEST_SERIAL_NUMBER_FIELD_LABELS.put("serialNumber", "Serial Number");
+        REQUEST_SERIAL_NUMBER_FIELD_LABELS.put("itemCode", "Item Code");
+        REQUEST_SERIAL_NUMBER_FIELD_LABELS.put("actualItemCode", "Actual Item Code");
+        REQUEST_SERIAL_NUMBER_FIELD_LABELS.put("validationRule", "Validation Rule");
+        REQUEST_SERIAL_NUMBER_FIELD_LABELS.put("status", "Status");
+        REQUEST_SERIAL_NUMBER_FIELD_LABELS.put("comment", "Comments");
+    }
+
+    /**
+     * One exportable Received Serials grid. A grid export writes `fields` under `headers`; an
+     * audit trail export (fieldLabels set) writes one row per changed field, after the
+     * `headers`-labelled `fields` that identify the entry.
+     */
+    private static final class SerialExport {
+        final String what;
+        final String sheetName;
+        final String filePrefix;
+        final Map<String, TagNumberFilterBuilder.Column> columns;
+        final String select;
+        final String from;
+        final String orderSql;
+        final List<String> headers;
+        final List<String> fields;
+        final Map<String, String> fieldLabels;
+
+        SerialExport(String what, String sheetName, String filePrefix, Map<String, TagNumberFilterBuilder.Column> columns,
+                String select, String from, String orderSql, List<String> headers, List<String> fields,
+                Map<String, String> fieldLabels) {
+            this.what = what;
+            this.sheetName = sheetName;
+            this.filePrefix = filePrefix;
+            this.columns = columns;
+            this.select = select;
+            this.from = from;
+            this.orderSql = orderSql;
+            this.headers = headers;
+            this.fields = fields;
+            this.fieldLabels = fieldLabels;
+        }
+
+        boolean auditTrail() {
+            return fieldLabels != null;
+        }
+    }
+
+    private static final SerialExport SERIAL_NUMBERS_EXPORT = new SerialExport("Serial Number",
+            "Serial Numbers", "SERIAL_NUMBERS", SerialNumberFilterBuilder.SERIAL_COLUMNS,
+            SerialNumberFilterBuilder.SERIAL_SELECT, SerialNumberFilterBuilder.SERIAL_FROM,
+            SerialNumberFilterBuilder.DEFAULT_ORDER_SQL, SERIAL_NUMBER_EXPORT_HEADERS, SERIAL_NUMBER_EXPORT_FIELDS, null);
+    private static final SerialExport SERIAL_NUMBER_AUDIT_TRAIL_EXPORT = new SerialExport("Serial Number audit trail",
+            "Serial Number Audit Trail", "SERIAL_NUMBER_AUDIT_TRAIL", SerialNumberFilterBuilder.AUDIT_TRAIL_COLUMNS,
+            SerialNumberFilterBuilder.AUDIT_TRAIL_SELECT, SerialNumberFilterBuilder.AUDIT_TRAIL_FROM, "a.recordId",
+            Arrays.asList("Audit ID", "Serial Record No"), Arrays.asList("recordId", "serialRecordNo"),
+            SERIAL_NUMBER_FIELD_LABELS);
+    private static final SerialExport REQUEST_SERIAL_NUMBERS_EXPORT = new SerialExport("Acceptance request serial number",
+            "Acceptance Request Serials", "ACCEPTANCE_REQUEST_SERIAL_NUMBERS", RequestSerialNumberFilterBuilder.COLUMNS,
+            RequestSerialNumberFilterBuilder.SELECT, RequestSerialNumberFilterBuilder.FROM,
+            RequestSerialNumberFilterBuilder.DEFAULT_ORDER_SQL, REQUEST_SERIAL_NUMBER_EXPORT_HEADERS,
+            REQUEST_SERIAL_NUMBER_EXPORT_FIELDS, null);
+    private static final SerialExport REQUEST_SERIAL_NUMBER_AUDIT_TRAIL_EXPORT = new SerialExport(
+            "Acceptance request serial number audit trail", "Acceptance Request Serials Audit",
+            "ACCEPTANCE_REQUEST_SERIAL_NUMBER_AUDIT_TRAIL", RequestSerialNumberFilterBuilder.AUDIT_TRAIL_COLUMNS,
+            RequestSerialNumberFilterBuilder.AUDIT_TRAIL_SELECT, RequestSerialNumberFilterBuilder.AUDIT_TRAIL_FROM,
+            "a.recordId", Arrays.asList("Audit ID", "Record Number", "Request No"),
+            Arrays.asList("recordId", "lineRecordNo", "requestNo"), REQUEST_SERIAL_NUMBER_FIELD_LABELS);
 
     @PostMapping(value = "/serialNumbers/filter/export", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<Map<String, String>> startSerialNumberExport(
             @RequestBody(required = false) Map<String, Object> body) {
-        String jobId = newExportJob("serialNumbers");
-        Map<String, Object> effectiveBody = body != null ? body : new HashMap<>();
-        CompletableFuture.runAsync(() -> runWithExportGuard(() -> runSerialNumberExportJob(jobId, effectiveBody, false)));
-        return ResponseEntity.accepted().body(Collections.singletonMap("jobId", jobId));
+        return startSerialExport("serialNumbers", SERIAL_NUMBERS_EXPORT, body);
     }
 
     @GetMapping(value = "/serialNumbers/filter/export/{jobId}/status")
@@ -2935,10 +3000,7 @@ public class ExportsController {
     @PostMapping(value = "/serialNumberAuditTrailFilter/export", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<Map<String, String>> startSerialNumberAuditTrailExport(
             @RequestBody(required = false) Map<String, Object> body) {
-        String jobId = newExportJob("serialNumberAuditTrail");
-        Map<String, Object> effectiveBody = body != null ? body : new HashMap<>();
-        CompletableFuture.runAsync(() -> runWithExportGuard(() -> runSerialNumberExportJob(jobId, effectiveBody, true)));
-        return ResponseEntity.accepted().body(Collections.singletonMap("jobId", jobId));
+        return startSerialExport("serialNumberAuditTrail", SERIAL_NUMBER_AUDIT_TRAIL_EXPORT, body);
     }
 
     @GetMapping(value = "/serialNumberAuditTrailFilter/export/{jobId}/status")
@@ -2951,12 +3013,50 @@ public class ExportsController {
         return downloadUplAuditTrailExport(jobId);
     }
 
-    /** auditTrail false = the Serial Numbers page, true = the Serial Number Audit Trail page. */
-    private void runSerialNumberExportJob(String jobId, Map<String, Object> body, boolean auditTrail) {
-        String what = auditTrail ? "Serial Number audit trail" : "Serial Number";
+    @PostMapping(value = "/requestSerialNumbers/filter/export", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<Map<String, String>> startRequestSerialNumberExport(
+            @RequestBody(required = false) Map<String, Object> body) {
+        return startSerialExport("requestSerialNumbers", REQUEST_SERIAL_NUMBERS_EXPORT, body);
+    }
+
+    @GetMapping(value = "/requestSerialNumbers/filter/export/{jobId}/status")
+    public ResponseEntity<?> getRequestSerialNumberExportStatus(@PathVariable String jobId) {
+        return getUplAuditTrailExportStatus(jobId);
+    }
+
+    @GetMapping(value = "/requestSerialNumbers/filter/export/{jobId}/download")
+    public ResponseEntity<?> downloadRequestSerialNumberExport(@PathVariable String jobId) {
+        return downloadUplAuditTrailExport(jobId);
+    }
+
+    @PostMapping(value = "/requestSerialNumberAuditTrailFilter/export", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<Map<String, String>> startRequestSerialNumberAuditTrailExport(
+            @RequestBody(required = false) Map<String, Object> body) {
+        return startSerialExport("requestSerialNumberAuditTrail", REQUEST_SERIAL_NUMBER_AUDIT_TRAIL_EXPORT, body);
+    }
+
+    @GetMapping(value = "/requestSerialNumberAuditTrailFilter/export/{jobId}/status")
+    public ResponseEntity<?> getRequestSerialNumberAuditTrailExportStatus(@PathVariable String jobId) {
+        return getUplAuditTrailExportStatus(jobId);
+    }
+
+    @GetMapping(value = "/requestSerialNumberAuditTrailFilter/export/{jobId}/download")
+    public ResponseEntity<?> downloadRequestSerialNumberAuditTrailExport(@PathVariable String jobId) {
+        return downloadUplAuditTrailExport(jobId);
+    }
+
+    private ResponseEntity<Map<String, String>> startSerialExport(String jobType, SerialExport export,
+            Map<String, Object> body) {
+        String jobId = newExportJob(jobType);
+        Map<String, Object> effectiveBody = body != null ? body : new HashMap<>();
+        CompletableFuture.runAsync(() -> runWithExportGuard(() -> runSerialNumberExportJob(jobId, effectiveBody, export)));
+        return ResponseEntity.accepted().body(Collections.singletonMap("jobId", jobId));
+    }
+
+    private void runSerialNumberExportJob(String jobId, Map<String, Object> body, SerialExport export) {
         ExportJob job = exportJobRepository.findById(jobId).orElse(null);
         if (job == null) {
-            logger.error("{} export job {} disappeared before it could start", what, jobId);
+            logger.error("{} export job {} disappeared before it could start", export.what, jobId);
             return;
         }
         job.setStatus(ExportJob.STATUS_RUNNING);
@@ -2964,27 +3064,13 @@ public class ExportsController {
 
         File outFile = null;
         try {
-            // Serial Numbers: two sources (where); audit trail: one (auditWhere/auditParams).
-            SerialNumberFilterBuilder.Where where = null;
-            String auditWhere = null;
-            List<Object> auditParams = new ArrayList<>();
-            boolean filtered;
-            long totalRecords;
-            if (auditTrail) {
-                List<TagNumberFilterBuilder.Condition> conditions = TagNumberFilterBuilder.parseConditions(body,
-                        SerialNumberFilterBuilder.AUDIT_TRAIL_COLUMNS);
-                auditWhere = TagNumberFilterBuilder.buildWhere(SerialNumberFilterBuilder.AUDIT_TRAIL_COLUMNS,
-                        conditions, auditParams);
-                filtered = TagNumberFilterBuilder.hasActiveConditions(conditions);
-                totalRecords = countRows(SerialNumberFilterBuilder.AUDIT_TRAIL_FROM + auditWhere, auditParams);
-            } else {
-                where = SerialNumberFilterBuilder.where(body);
-                filtered = where.filtered;
-                totalRecords = countRows(SerialNumberFilterBuilder.SERIAL_FROM + where.serial, where.serialParams)
-                        + countRows(SerialNumberFilterBuilder.REQUEST_FROM + where.request, where.requestParams);
-            }
+            List<TagNumberFilterBuilder.Condition> conditions = TagNumberFilterBuilder.parseConditions(body, export.columns);
+            List<Object> params = new ArrayList<>();
+            String where = TagNumberFilterBuilder.buildWhere(export.columns, conditions, params);
+            boolean filtered = TagNumberFilterBuilder.hasActiveConditions(conditions);
+            long totalRecords = countRows(export.from + where, params);
 
-            int maxRecords = auditTrail ? MAX_UPL_AUDIT_TRAIL_EXPORT_RECORDS : MAX_SERIAL_NUMBER_EXPORT_RECORDS;
+            int maxRecords = export.auditTrail() ? MAX_UPL_AUDIT_TRAIL_EXPORT_RECORDS : MAX_SERIAL_NUMBER_EXPORT_RECORDS;
             String failure = null;
             if (totalRecords == 0) {
                 failure = "No data found matching the specified filters.";
@@ -3004,29 +3090,28 @@ public class ExportsController {
             if (!dir.exists()) {
                 dir.mkdirs();
             }
-            String storedFileName = (auditTrail ? "serial_number_audit_trail_export_" : "serial_numbers_export_")
+            String storedFileName = export.filePrefix.toLowerCase(Locale.ROOT) + "_export_"
                     + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
                     + "_" + jobId.substring(0, 8) + ".xlsx";
             outFile = new File(dir, storedFileName);
 
-            int sheetCount = auditTrail
-                    ? writeSerialNumberAuditTrailWorkbook(SerialNumberFilterBuilder.AUDIT_TRAIL_SELECT
-                            + SerialNumberFilterBuilder.AUDIT_TRAIL_FROM + auditWhere + " ORDER BY a.recordId DESC",
-                            auditParams, outFile, job)
-                    : writeSerialNumberWorkbook(where, outFile, job);
+            String sql = export.select + export.from + where + " ORDER BY " + export.orderSql + " DESC";
+            int sheetCount = export.auditTrail()
+                    ? writeSerialNumberAuditTrailWorkbook(export, sql, params, outFile, job)
+                    : writeSerialNumberWorkbook(export, sql, params, outFile, job);
 
             LocalDateTime completedAt = LocalDateTime.now();
             job.setStatus(ExportJob.STATUS_DONE);
-            job.setFileName((auditTrail ? "SERIAL_NUMBER_AUDIT_TRAIL" : "SERIAL_NUMBERS") + (filtered ? "_FILTERED" : "")
+            job.setFileName(export.filePrefix + (filtered ? "_FILTERED" : "")
                     + "_" + completedAt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")) + ".xlsx");
             job.setFilePath(outFile.getAbsolutePath());
             job.setSheetCount(sheetCount);
             job.setCompletedAt(completedAt);
             exportJobRepository.save(job);
             logger.info("{} export job {} complete — {} record(s), {} export row(s)",
-                    what, jobId, totalRecords, job.getRowsWritten());
+                    export.what, jobId, totalRecords, job.getRowsWritten());
         } catch (Exception ex) {
-            logger.error("{} export job {} failed", what, jobId, ex);
+            logger.error("{} export job {} failed", export.what, jobId, ex);
             job.setStatus(ExportJob.STATUS_FAILED);
             job.setErrorMessage(ex.getMessage());
             job.setCompletedAt(LocalDateTime.now());
@@ -3042,15 +3127,16 @@ public class ExportsController {
         return n == null ? 0 : n;
     }
 
-    /** One row per serial number: tb_SerialNumber rows, then acceptance request rows. Returns the sheet count. */
-    private int writeSerialNumberWorkbook(SerialNumberFilterBuilder.Where where, File outFile, ExportJob job) throws Exception {
+    /** One row per serial number. Returns the sheet count. */
+    private int writeSerialNumberWorkbook(SerialExport export, String sql, List<Object> params, File outFile,
+            ExportJob job) throws Exception {
         SXSSFWorkbook workbook = new SXSSFWorkbook(DEFAULT_FETCH_SIZE);
         try {
-            TagExportSheets sheets = new TagExportSheets(workbook, "Serial Numbers", SERIAL_NUMBER_EXPORT_HEADERS, job);
-            ResultSetRowWriter writer = rs -> {
+            TagExportSheets sheets = new TagExportSheets(workbook, export.sheetName, export.headers, job);
+            streamRows(sql, params, rs -> {
                 Row row = sheets.nextRow();
-                for (int i = 0; i < SERIAL_NUMBER_EXPORT_FIELDS.size(); i++) {
-                    String field = SERIAL_NUMBER_EXPORT_FIELDS.get(i);
+                for (int i = 0; i < export.fields.size(); i++) {
+                    String field = export.fields.get(i);
                     Cell cell = row.createCell(i);
                     if (field.equals("recordNo")) {
                         long recordNo = rs.getLong(field);
@@ -3063,11 +3149,7 @@ public class ExportsController {
                         cell.setCellValue(nullToEmpty(rs.getString(field)));
                     }
                 }
-            };
-            streamRows(SerialNumberFilterBuilder.SERIAL_SELECT + SerialNumberFilterBuilder.SERIAL_FROM + where.serial
-                    + SerialNumberFilterBuilder.SERIAL_ORDER, where.serialParams, writer);
-            streamRows(SerialNumberFilterBuilder.REQUEST_SELECT + SerialNumberFilterBuilder.REQUEST_FROM + where.request
-                    + SerialNumberFilterBuilder.REQUEST_ORDER, where.requestParams, writer);
+            });
             sheets.finish();
             try (FileOutputStream fos = new FileOutputStream(outFile)) {
                 workbook.write(fos);
@@ -3079,12 +3161,15 @@ public class ExportsController {
     }
 
     /** One row per changed field of each audit entry, like the TAG Number Audit Trail export. Returns the sheet count. */
-    private int writeSerialNumberAuditTrailWorkbook(String sql, List<Object> params, File outFile, ExportJob job) throws Exception {
-        List<String> fieldOrder = new ArrayList<>(SERIAL_NUMBER_FIELD_LABELS.keySet());
+    private int writeSerialNumberAuditTrailWorkbook(SerialExport export, String sql, List<Object> params, File outFile,
+            ExportJob job) throws Exception {
+        List<String> fieldOrder = new ArrayList<>(export.fieldLabels.keySet());
+        List<String> headers = new ArrayList<>(export.headers);
+        headers.addAll(Arrays.asList("Type", "Serial Number", "Item Code", "Field", "Old Value", "New Value",
+                "Changed By", "Changed At", "Batch"));
         SXSSFWorkbook workbook = new SXSSFWorkbook(DEFAULT_FETCH_SIZE);
         try {
-            TagExportSheets sheets = new TagExportSheets(workbook, "Serial Number Audit Trail",
-                    SERIAL_NUMBER_AUDIT_TRAIL_EXPORT_HEADERS, job);
+            TagExportSheets sheets = new TagExportSheets(workbook, export.sheetName, headers, job);
             streamRows(sql, params, rs -> {
                 List<String[]> fieldRows = new ArrayList<>();
                 String fieldChanges = rs.getString("fieldChanges");
@@ -3098,13 +3183,13 @@ public class ExportsController {
                         for (Map.Entry<String, JsonElement> entry : entries) {
                             JsonObject pair = entry.getValue().getAsJsonObject();
                             fieldRows.add(new String[] {
-                                    SERIAL_NUMBER_FIELD_LABELS.getOrDefault(entry.getKey(), entry.getKey()),
+                                    export.fieldLabels.getOrDefault(entry.getKey(), entry.getKey()),
                                     jsonValueToDisplayString(pair.get("old")),
                                     jsonValueToDisplayString(pair.get("new")),
                             });
                         }
                     } catch (Exception ex) {
-                        logger.warn("Could not parse fieldChanges for Serial Number audit row {}", rs.getString("recordId"), ex);
+                        logger.warn("Could not parse fieldChanges for {} row {}", export.what, rs.getString("recordId"), ex);
                     }
                 }
                 if (fieldRows.isEmpty()) {
@@ -3112,17 +3197,23 @@ public class ExportsController {
                 }
                 for (String[] fieldChange : fieldRows) {
                     Row row = sheets.nextRow();
-                    row.createCell(0).setCellValue(rs.getLong("recordId"));
-                    row.createCell(1).setCellValue(rs.getLong("serialRecordNo"));
-                    row.createCell(2).setCellValue(nullToEmpty(rs.getString("changeType")));
-                    row.createCell(3).setCellValue(nullToEmpty(rs.getString("serialNumber")));
-                    row.createCell(4).setCellValue(nullToEmpty(rs.getString("itemCode")));
-                    row.createCell(5).setCellValue(fieldChange[0]);
-                    row.createCell(6).setCellValue(fieldChange[1]);
-                    row.createCell(7).setCellValue(fieldChange[2]);
-                    row.createCell(8).setCellValue(nullToEmpty(rs.getString("changedByName")));
-                    row.createCell(9).setCellValue(nullToEmpty(rs.getString("changedAt")));
-                    row.createCell(10).setCellValue(nullToEmpty(rs.getString("batchId")));
+                    int c = 0;
+                    for (String field : export.fields) {
+                        if (field.equals("requestNo")) {
+                            row.createCell(c++).setCellValue(nullToEmpty(rs.getString(field)));
+                        } else {
+                            row.createCell(c++).setCellValue(rs.getLong(field));
+                        }
+                    }
+                    row.createCell(c++).setCellValue(nullToEmpty(rs.getString("changeType")));
+                    row.createCell(c++).setCellValue(nullToEmpty(rs.getString("serialNumber")));
+                    row.createCell(c++).setCellValue(nullToEmpty(rs.getString("itemCode")));
+                    row.createCell(c++).setCellValue(fieldChange[0]);
+                    row.createCell(c++).setCellValue(fieldChange[1]);
+                    row.createCell(c++).setCellValue(fieldChange[2]);
+                    row.createCell(c++).setCellValue(nullToEmpty(rs.getString("changedByName")));
+                    row.createCell(c++).setCellValue(nullToEmpty(rs.getString("changedAt")));
+                    row.createCell(c).setCellValue(nullToEmpty(rs.getString("batchId")));
                 }
             });
             sheets.finish();

@@ -43,6 +43,7 @@ import com.zain.almksazain.model.tbNode;
 import com.zain.almksazain.model.User;
 import com.zain.almksazain.services.CategoryApprovalInitializationService;
 import com.zain.almksazain.services.EmailService;
+import com.zain.almksazain.services.RequestSerialNumberService;
 import com.zain.almksazain.services.ResubmissionEmailService;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -188,6 +189,9 @@ public class APIController {
 
     @Autowired
     ResubmissionEmailService resubmissionEmailService;
+
+    @Autowired
+    RequestSerialNumberService requestSerialNumberService;
 
     @Autowired
     org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
@@ -1254,6 +1258,30 @@ public class APIController {
     }
 
     /**
+     * Rejects a line whose serial number is already on an Active line of another open acceptance
+     * request, by that line's Validation Rule (RequestSerialNumberService#findRaisedRequests):
+     * 'SerialNumber' matches the serial number alone; 'SerialNumber + ItemCode' matches it with
+     * the line's actual item code when it has one, else its item code (non-UPL lines: their Item
+     * Part Number). excludeRequestNo is the request being resubmitted ("" for a new one). A match
+     * is added to raisedSerials as "serial (PO line, UPL line, request(s))".
+     */
+    private void checkRaisedSerialNumber(String serialNumber, String itemCode, String actualItemCode,
+            String itemPartNumber, String excludeRequestNo, String poLineNumber, String uplLineNumber,
+            List<String> raisedSerials) {
+        String serial = serialNumber == null ? "" : serialNumber.trim();
+        if (serial.isEmpty()) {
+            return;
+        }
+        List<String> requests = requestSerialNumberService.findRaisedRequests(serial, itemCode, actualItemCode,
+                itemPartNumber, excludeRequestNo);
+        if (!requests.isEmpty()) {
+            String upl = uplLineNumber == null ? "" : uplLineNumber.trim();
+            raisedSerials.add(serial + " (PO line " + poLineNumber + (upl.isEmpty() ? "" : ", UPL line " + upl)
+                    + ", acceptance request " + String.join(", ", requests) + ")");
+        }
+    }
+
+    /**
      * Active, serialized line: its serial and part number must be in the Active Inventory
      * (tb_Node, as vw_Active_Inventory) at the line's own site - the same check the form makes
      * against the site's inventory before submitting. Not in the inventory at all goes to
@@ -1443,9 +1471,7 @@ public class APIController {
         long recordNo = 0;
         long recordNoValidate = 0;
         Integer ValidateLineItemRecordNo = 0;
-        List<DCCLineItem> validateDCCLineList;
         List<DCCLineItem> validateSerialNumber;
-        List<DCCLineItem> validateSerialNumberActualItemCode;
         String vendorName = "";
         String vendorEmail = "";
         String boqId = "";
@@ -1462,13 +1488,11 @@ public class APIController {
             java.util.Date parsedDate = dateFormat.parse(now.toString());
             java.sql.Date newDate = new java.sql.Date(parsedDate.getTime());
             String requesttime = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(Calendar.getInstance().getTime());
-            List<String> alreadyCreatedDCC = new ArrayList<>();
-
-            List<String> alreadyRaisedDCC = new ArrayList<>();
-
             List<String> missingSerialsforUPLBased = new ArrayList<>();
             List<String> missingApprovalLevel = new ArrayList<>();
             List<String> receivedSerials = new ArrayList<>();
+            // Serial numbers already raised on another open acceptance request - see checkRaisedSerialNumber().
+            List<String> raisedSerials = new ArrayList<>();
             List<String> missingSerialsforNONUPLBased = new ArrayList<>();
             List<String> extraValuesPassed = new ArrayList<>();
             List<String> oldDateService = new ArrayList<>();
@@ -1478,10 +1502,6 @@ public class APIController {
             // Active serials that are in the Active Inventory, but not at the line's site - see validateActiveSerialAtSite().
             Set<String> serialAtOtherSiteLines = new LinkedHashSet<>();
             List<String> validatePassiveInventory = new ArrayList<>();
-            // ITEM CODES LIST
-            List<String> itemCodesList = new ArrayList<>();
-            List<String> updateditemCodesList = new ArrayList<>();
-            List<String> alreadyCreatedDCCwithactualItemCode = new ArrayList<>();
             List<String> missingItemCode = new ArrayList<>();
             List<String> scopevalidation = new ArrayList<>();
             List<String> acceptanceQuantity = new ArrayList<>();
@@ -1771,62 +1791,11 @@ public class APIController {
                                     pendingQtyCheckedPoLines, acceptanceQuantity);
 
                         }
-                        if (serialNumber.length() > 1 && itemCode.length() > 1) {
-                            logger.info("actualItemCode_LENGTH: " + actualItemCode.length());
-                            if (actualItemCode.length() == 0) {
-                                //if ((serialNumber.length() > 1 && itemCode.length() > 1 && (actualItemCode.equalsIgnoreCase("") || actualItemCode.isEmpty()))) {
-                                validateDCCLineList = dcclnrepo.findBySerialNumberAndItemCode(serialNumber, itemCode);
-                                logger.info("validateDCCLineList: " + validateDCCLineList);
-                                logger.info("validateDCCLineList is Empty: " + validateDCCLineList.isEmpty());
-                                if (!validateDCCLineList.isEmpty()) {
-                                    DCCLineItem topRecordNo = dcclnrepo.findTopBySerialNumberAndItemCode(serialNumber, itemCode);
-                                    String dccid = topRecordNo != null ? String.valueOf(topRecordNo.getDccId()) : "";
-                                    logger.info("dccid: " + dccid);
-                                    if (dccid.length() != 0) {
-                                        logger.info("dccid_Length: " + dccid.length());
-                                        DCC dccRecord = dccrepo.findTopByRecordNo(Integer.parseInt(dccid));
-                                        logger.info("dccRecord: " + dccRecord);
-                                        String dccStatus = dccRecord != null ? String.valueOf(dccRecord.getStatus()) : "";
-                                        logger.info("Request Status: " + dccStatus);
-                                        // "returned" (and "rejected") requests are corrected and resubmitted, so their
-                                        // serial numbers/items must be free to reuse in a new request - same exclusion
-                                        // combinedPurchaseOrderView and the tag-number conflict check already use.
-                                        if (dccStatus.equalsIgnoreCase("approved-received") || dccStatus.equalsIgnoreCase("inprocess") || dccStatus.equalsIgnoreCase("approved") || dccStatus.equalsIgnoreCase("request-info")) {
-                                            alreadyRaisedDCC.add(serialNumber);
-                                            itemCodesList.add(itemCode);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        logger.info("Is_alreadyCreatedDCC_Empty " + alreadyRaisedDCC.isEmpty());
-                        if (serialNumber.length() > 1 && itemCode.length() > 1) {
-
-                            if (!actualItemCode.isBlank()) {
-
-                                validateSerialNumberActualItemCode = dcclnrepo.findBySerialNumberAndActualItemCode(serialNumber, actualItemCode);
-
-                                if (!validateSerialNumberActualItemCode.isEmpty()) {
-                                    DCCLineItem topRecordNo = dcclnrepo.findTopBySerialNumberAndActualItemCode(serialNumber, actualItemCode);
-                                    String dccid = topRecordNo != null ? String.valueOf(topRecordNo.getDccId()) : "";
-                                    logger.info("Actualdccid: " + dccid);
-                                    if (dccid.length() != 0) {
-                                        logger.info("Actualdccid_Length: " + dccid.length());
-                                        DCC dccRecord = dccrepo.findByRecordNo(Integer.parseInt(dccid));
-                                        String dccStatus = dccRecord != null ? String.valueOf(dccRecord.getStatus()) : "";
-                                        logger.info("ActualdccRecord: " + dccRecord);
-                                        logger.info("Actual Request Status: " + dccStatus);
-                                        // "returned" (and "rejected") requests are corrected and resubmitted, so their
-                                        // serial numbers/items must be free to reuse in a new request - same exclusion
-                                        // combinedPurchaseOrderView and the tag-number conflict check already use.
-                                        if (dccStatus.equalsIgnoreCase("approved-received") || dccStatus.equalsIgnoreCase("inprocess") || dccStatus.equalsIgnoreCase("approved") || dccStatus.equalsIgnoreCase("request-info")) {
-                                            alreadyCreatedDCCwithactualItemCode.add(serialNumber);
-                                            updateditemCodesList.add(actualItemCode);
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        // Already raised on another open acceptance request, by the Validation Rule
+                        // of its line - UPL and non-UPL lines alike.
+                        checkRaisedSerialNumber(serialNumber, itemCode, actualItemCode,
+                                dcclinejsonObject.optString("itemPartNumber", ""), "", polineitem, upllineitem,
+                                raisedSerials);
                         //VALIDATE SERIAL NUMBER
 //                        if (serialNumber.length() > 1) {
 //                            validateSerialNumber = dcclnrepo.findBySerialNumber(serialNumber);
@@ -2012,40 +1981,11 @@ public class APIController {
                             checkNonUplPendingQuantity(poNumber, polineitem, podetails, dcclineRequestItems,
                                     String.valueOf(recordNoValidate), pendingQtyCheckedPoLines, acceptanceQuantity);
                         }
-                        if (serialNumber.length() > 1 && UpdateItemCode.length() > 1 && UpdateActualItemCode.length() < 1) {
-                            validateDCCLineList = dcclnrepo.findBySerialNumberAndItemCode(serialNumber, UpdateItemCode);
-                            if (!validateDCCLineList.isEmpty()) {
-                                DCCLineItem topRecordNo = dcclnrepo.findTopBySerialNumberAndItemCode(serialNumber, UpdateItemCode);
-                                String dccid = topRecordNo != null ? String.valueOf(topRecordNo.getDccId()) : "";
-                                if (dccid.length() != 0) {
-                                    DCC dccRecord = dccrepo.findByRecordNo(Integer.parseInt(dccid));
-                                    String dccStatus = dccRecord != null ? String.valueOf(dccRecord.getStatus()) : "";
-                                    if (dccStatus.equalsIgnoreCase("approved-received") || dccStatus.equalsIgnoreCase("inprocess") || dccStatus.equalsIgnoreCase("approved") || dccStatus.equalsIgnoreCase("returned") || dccStatus.equalsIgnoreCase("request-info")) {
-                                        alreadyCreatedDCC.add(serialNumber);
-                                        itemCodesList.add(UpdateItemCode);
-                                    }
-                                }
-                            }
-                        }
-                        if (serialNumber.length() > 1 && UpdateItemCode.length() > 1 && UpdateActualItemCode.length() > 1) {
-
-                            validateSerialNumberActualItemCode = dcclnrepo.findBySerialNumberAndActualItemCode(serialNumber, UpdateActualItemCode);
-
-                            if (!validateSerialNumberActualItemCode.isEmpty()) {
-                                DCCLineItem topRecordNo = dcclnrepo.findTopBySerialNumberAndActualItemCode(serialNumber, UpdateActualItemCode);
-                                String dccid = topRecordNo != null ? String.valueOf(topRecordNo.getDccId()) : "";
-                                if (dccid.length() != 0) {
-                                    DCC dccRecord = dccrepo.findByRecordNo(Integer.parseInt(dccid));
-                                    String dccStatus = dccRecord != null ? String.valueOf(dccRecord.getStatus()) : "";
-
-                                    if (dccStatus.equalsIgnoreCase("approved-received") || dccStatus.equalsIgnoreCase("inprocess") || dccStatus.equalsIgnoreCase("approved") || dccStatus.equalsIgnoreCase("returned") || dccStatus.equalsIgnoreCase("request-info")) {
-                                        //DONT VALIDATE ON UPDATE
-//                                        alreadyCreatedDCCwithactualItemCode.add(serialNumber);
-//                                        updateditemCodesList.add(UpdateActualItemCode);
-                                    }
-                                }
-                            }
-                        }
+                        // Already raised on another open acceptance request (not this one), by the
+                        // Validation Rule of its line - UPL and non-UPL lines alike.
+                        checkRaisedSerialNumber(serialNumber, UpdateItemCode, UpdateActualItemCode,
+                                dcclineUpdatejsonObject.optString("itemPartNumber", ""), String.valueOf(recordNoValidate),
+                                polineitem, upllineitem, raisedSerials);
 
                         //VALIDATE SERIAL NUMBER
 //                        if (serialNumber.length() > 1) {
@@ -2202,12 +2142,10 @@ public class APIController {
                 errorMessages.add("UPL line Item(s) " + String.join(", ", missingSerialsforUPLBased) + " are serialized and hence a serial number must be provided to raise an acceptance request");
             }
 
-            if (!alreadyRaisedDCC.isEmpty()) {
-                errorMessages.add("Acceptance request for serial numbers " + String.join(", ", alreadyRaisedDCC) + "  with item code " + String.join(", ", itemCodesList) + " has already been raised. Kindly raise an acceptance request for a different serial Number ");
-            }
-
-            if (!alreadyCreatedDCCwithactualItemCode.isEmpty()) {
-                errorMessages.add("Acceptance request for serial numbers " + String.join(", ", alreadyCreatedDCCwithactualItemCode) + "  with actual item code " + String.join(", ", updateditemCodesList) + " has already been raised. Kindly raise an acceptance request for a different serial Number ");
+            if (!raisedSerials.isEmpty()) {
+                errorMessages.add("Acceptance requests have already been raised for the following serial numbers: "
+                        + String.join(", ", raisedSerials)
+                        + ". Kindly raise an acceptance request for a different serial number.");
             }
             if (!validateInventory.isEmpty()) {
                 errorMessages.add("An acceptance request cannot be raised for serial number  " + String.join(", ", validateInventory) + " since its not available in the Active Inventory ");
@@ -3022,6 +2960,10 @@ public class APIController {
 
         DCCLineItem eddccLineItem = dcclnrepo.findByRecordNo(recordno);
         if (eddccLineItem != null) {
+            // Before the resubmitted values replace them - see RequestSerialNumberService#recordResubmission.
+            String previousSerialNumber = eddccLineItem.getSerialNumber();
+            String previousItemCode = eddccLineItem.getItemCode();
+            String previousActualItemCode = eddccLineItem.getActualItemCode();
             // eddccLineItem.setDccId(recordId);
             eddccLineItem.setLineNumber(jsonObject.getString("poLineNumber"));
             eddccLineItem.setUplLineNumber(jsonObject.getString("uplLineNumber"));
@@ -3089,6 +3031,15 @@ public class APIController {
             try {
                 dcclnrepo.save(eddccLineItem);
                 result = "Record update Success";
+                try {
+                    requestSerialNumberService.recordResubmission(eddccLineItem.getRecordNo(), eddccLineItem.getDccId(),
+                            previousSerialNumber, previousItemCode, previousActualItemCode,
+                            eddccLineItem.getSerialNumber(), eddccLineItem.getItemCode(),
+                            eddccLineItem.getActualItemCode(), createdBy, createdByName);
+                } catch (Exception e) {
+                    logger.error("Line {} saved, but recording its resubmission (Updated By, serial number audit) failed",
+                            eddccLineItem.getRecordNo(), e);
+                }
             } catch (Exception ex) {
                 logger.info("Exception " + ex.getMessage());
 
@@ -3163,6 +3114,12 @@ public class APIController {
             try {
                 dcclnrepo.save(dccLineItem);
                 result = "Record add Success";
+                try {
+                    requestSerialNumberService.inheritValidationRule(dccLineItem.getRecordNo(), dccLineItem.getSerialNumber());
+                } catch (Exception e) {
+                    logger.error("Line {} saved, but taking its serial number's Validation Rule failed",
+                            dccLineItem.getRecordNo(), e);
+                }
 
 //                tb_Arc_ApprovalRecords topRecordNo = arcApprovalRecordsRepo.findTopByRecordId(Integer.parseInt(recordId));
 //                String approvalRecordNo = topRecordNo != null ? String.valueOf(topRecordNo.getRecordNo()) : "";

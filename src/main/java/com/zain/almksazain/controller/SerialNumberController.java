@@ -30,8 +30,9 @@ import com.zain.almksazain.specs.TagNumberFilterBuilder;
 import com.zain.almksazain.specs.TagNumberFilterBuilder.Condition;
 
 /**
- * Serial Number configuration (Configurations > Acceptance Workflow > Serial Numbers) and its
- * audit trail (Audit Trail > Serial Numbers). Writes go through SerialNumberService, which
+ * Received Serials > "Received Outside ALM" (tb_SerialNumber; Configurations > Received Serials)
+ * and its audit trail (Audit Trail > Received Serials). The serial numbers raised on acceptance
+ * requests are the other tab - RequestSerialNumberController. Writes go through SerialNumberService, which
  * validates everything first and saves nothing if any item fails. Validation failures come back
  * as 400 with responseCode "1" and an "errors" list; a save that would also change the Validation
  * Rule of other rows comes back as 409 with requiresConfirmation and is only made when sent again
@@ -57,13 +58,7 @@ public class SerialNumberController {
     // Serial Numbers
     // ============================================================
 
-    /**
-     * Body: {conditions: [{field, operator, value}]} - see SerialNumberFilterBuilder. tb_SerialNumber
-     * rows come first, then the serial numbers of approved-received acceptance requests. In the
-     * default order (by Record No) each source is paged on its own index, so a page costs two
-     * counts and one or two LIMITed reads however many rows there are; any other sort orders the
-     * union of both.
-     */
+    /** Body: {conditions: [{field, operator, value}]} - see SerialNumberFilterBuilder. */
     @PostMapping(value = "/serialNumbers/filter", produces = "application/json")
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
     public ResponseEntity<Map<String, Object>> filterSerialNumbers(
@@ -75,40 +70,18 @@ public class SerialNumberController {
         try {
             page = Math.max(page, 0);
             size = Math.min(Math.max(size, 1), MAX_PAGE_SIZE);
-            String dir = "asc".equalsIgnoreCase(sortDir) ? "ASC" : "DESC";
-
-            SerialNumberFilterBuilder.Where where = SerialNumberFilterBuilder.where(body);
-            int serialCount = count(SerialNumberFilterBuilder.SERIAL_FROM + where.serial, where.serialParams);
-            int requestCount = count(SerialNumberFilterBuilder.REQUEST_FROM + where.request, where.requestParams);
-            int total = serialCount + requestCount;
+            Map<String, TagNumberFilterBuilder.Column> columns = SerialNumberFilterBuilder.SERIAL_COLUMNS;
+            List<Condition> conditions = TagNumberFilterBuilder.parseConditions(body, columns);
+            List<Object> params = new ArrayList<>();
+            String where = TagNumberFilterBuilder.buildWhere(columns, conditions, params);
+            int total = count(SerialNumberFilterBuilder.SERIAL_FROM + where, params);
             long offset = (long) page * size;
-
-            List<Map<String, Object>> rows = new ArrayList<>();
-            if (SerialNumberFilterBuilder.isDefaultSort(sortBy)) {
-                if (offset < serialCount) {
-                    rows.addAll(page(SerialNumberFilterBuilder.SERIAL_SELECT + SerialNumberFilterBuilder.SERIAL_FROM
-                            + where.serial + " ORDER BY s.recordNo " + dir, where.serialParams, size, offset));
-                }
-                int remaining = size - rows.size();
-                if (remaining > 0 && requestCount > 0 && offset + rows.size() < total) {
-                    long requestOffset = Math.max(0, offset - serialCount);
-                    rows.addAll(page(SerialNumberFilterBuilder.REQUEST_SELECT + SerialNumberFilterBuilder.REQUEST_FROM
-                            + where.request + " ORDER BY ln.recordNo " + dir, where.requestParams, remaining, requestOffset));
-                }
-            } else if (offset < total) {
-                List<Object> params = new ArrayList<>(where.serialParams);
-                params.addAll(where.requestParams);
-                String sql = "SELECT * FROM (" + SerialNumberFilterBuilder.SERIAL_SELECT
-                        + SerialNumberFilterBuilder.SERIAL_FROM + where.serial + " UNION ALL "
-                        + SerialNumberFilterBuilder.REQUEST_SELECT + SerialNumberFilterBuilder.REQUEST_FROM
-                        + where.request + ") u" + SerialNumberFilterBuilder.unionOrderBy(sortBy, sortDir);
-                rows.addAll(page(sql, params, size, offset));
-            }
-
-            Map<String, Object> response = pageResponse(rows, page, size, total, sortBy, sortDir);
-            response.put("serialNumberCount", serialCount);
-            response.put("acceptanceRequestCount", requestCount);
-            return ResponseEntity.ok(response);
+            List<Map<String, Object>> rows = offset < total
+                    ? page(SerialNumberFilterBuilder.SERIAL_SELECT + SerialNumberFilterBuilder.SERIAL_FROM + where
+                            + TagNumberFilterBuilder.orderBy(columns, sortBy, sortDir, SerialNumberFilterBuilder.DEFAULT_ORDER_SQL),
+                            params, size, offset)
+                    : new ArrayList<>();
+            return ResponseEntity.ok(pageResponse(rows, page, size, total, sortBy, sortDir));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(error(e.getMessage()));
         } catch (Exception e) {
@@ -121,7 +94,8 @@ public class SerialNumberController {
     @GetMapping(value = "/serialNumbers/columnValues", produces = "application/json")
     @CrossOrigin(origins = "*", allowedHeaders = "*", maxAge = 3600)
     public ResponseEntity<Map<String, Object>> serialNumberColumnValues(@RequestParam String column) {
-        return columnValues(SerialNumberFilterBuilder.distinctValuesSql(column, COLUMN_VALUES_LIMIT), column);
+        return columnValues(TagNumberFilterBuilder.distinctValuesSql(SerialNumberFilterBuilder.SERIAL_COLUMNS, column,
+                SerialNumberFilterBuilder.SERIAL_FROM, COLUMN_VALUES_LIMIT), column);
     }
 
     /**

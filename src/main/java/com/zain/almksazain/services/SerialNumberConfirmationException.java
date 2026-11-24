@@ -10,15 +10,24 @@ import java.util.List;
  */
 public class SerialNumberConfirmationException extends RuntimeException {
 
-    /** One serial number whose other rows would get a new Validation Rule. */
+    /**
+     * One serial number whose other rows would get a new Validation Rule (and, for acceptance
+     * request lines, a new Status - null when it isn't changed).
+     */
     public static class RuleChange {
         public final String serialNumber;
         public final String validationRule;
+        public final String status;
         public final int otherRecords;
 
         public RuleChange(String serialNumber, String validationRule, int otherRecords) {
+            this(serialNumber, validationRule, null, otherRecords);
+        }
+
+        public RuleChange(String serialNumber, String validationRule, String status, int otherRecords) {
             this.serialNumber = serialNumber;
             this.validationRule = validationRule;
+            this.status = status;
             this.otherRecords = otherRecords;
         }
     }
