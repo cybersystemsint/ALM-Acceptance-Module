@@ -2432,8 +2432,9 @@ public class APIController {
                 }
             }
 
-            // Attachments the vendor removed while editing (saved draft, returned) or answering
-            // (request-info) an existing request: each must be one of that request's own files.
+            // Attachments the vendor removed while editing a returned request or a saved draft
+            // (incomplete): each must be one of that request's own files. Not allowed on any other
+            // status (e.g. request-info, where the vendor only adds information).
             Map<Long, List<FileRecord>> attachmentsToRemove = new HashMap<>();
             for (int i = 0; i < jsonArray.length(); i++) {
                 JSONObject header = jsonArray.getJSONObject(i);
@@ -2446,9 +2447,8 @@ public class APIController {
                 DCC existingDcc = headerRecordNo > 0 ? dccrepo.findByRecordNo(headerRecordNo) : null;
                 String existingStatus = existingDcc != null && existingDcc.getStatus() != null
                         ? existingDcc.getStatus().trim().toLowerCase(Locale.ROOT) : "";
-                if (existingDcc == null || !(existingStatus.equals("incomplete") || existingStatus.equals("returned")
-                        || existingStatus.equals("request-info"))) {
-                    errorMessages.add("Attachments can only be removed from a saved, returned or request-info acceptance request.");
+                if (existingDcc == null || !(existingStatus.equals("returned") || existingStatus.equals("incomplete"))) {
+                    errorMessages.add("Attachments can only be removed from a returned or saved (incomplete) acceptance request.");
                     continue;
                 }
                 List<FileRecord> toRemove = new ArrayList<>();
