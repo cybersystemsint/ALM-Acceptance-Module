@@ -39,6 +39,7 @@ public final class RequestSerialNumberFilterBuilder {
         COLUMNS.put("recordNo", Column.number("ln.recordNo"));
         COLUMNS.put("serialNumber", Column.text("ln.serialNumber"));
         COLUMNS.put("itemCode", Column.text(ITEM_CODE_SQL));
+        COLUMNS.put("actualItemCode", Column.text("ln.actualItemCode"));
         COLUMNS.put("organizationCode", Column.text("d.vendorNumber"));
         COLUMNS.put("organizationName", Column.text(ORGANIZATION_NAME_SQL));
         COLUMNS.put("requestNo", Column.number("CAST(ln.dccId AS UNSIGNED)"));
@@ -59,7 +60,7 @@ public final class RequestSerialNumberFilterBuilder {
             + "AND ln.serialNumber IS NOT NULL AND ln.serialNumber <> ''";
 
     public static final String SELECT = "SELECT ln.recordNo AS recordNo, ln.serialNumber AS serialNumber, "
-            + ITEM_CODE_SQL + " AS itemCode, d.vendorNumber AS organizationCode, "
+            + ITEM_CODE_SQL + " AS itemCode, ln.actualItemCode AS actualItemCode, d.vendorNumber AS organizationCode, "
             + ORGANIZATION_NAME_SQL + " AS organizationName, ln.dccId AS requestNo, d.status AS requestStatus, "
             + "ln.validationRule AS validationRule, ln.serialStatus AS status, ln.serialComment AS comment, "
             + "d.createdBy AS createdBy, ln.updatedBy AS updatedBy, d.createdDate AS recordDatetime, "
