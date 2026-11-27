@@ -1122,6 +1122,9 @@ public class APIController {
         // Map the response to include file name and file path
         List<Map<String, String>> files = fileRecords.stream().map(file -> {
             Map<String, String> fileInfo = new HashMap<>();
+            // Id the vendor's edit / "Provide More Info" screens send back (removedAttachmentIds)
+            // to remove the file from a returned or request-info request on resubmission.
+            fileInfo.put("recordNo", String.valueOf(file.getRecordNo()));
             fileInfo.put("fileName", file.getFileName());
             fileInfo.put("filePath", "/files/" + file.getFileName());
             return fileInfo;
@@ -2367,6 +2370,50 @@ public class APIController {
                 }
             }
 
+            // Attachments the vendor removed while editing a returned request or a saved draft
+            // (incomplete): each must be one of that request's own files. Not allowed on any other
+            // status (e.g. request-info, where the vendor only adds information).
+            Map<Long, List<FileRecord>> attachmentsToRemove = new HashMap<>();
+            for (int i = 0; i < jsonArray.length(); i++) {
+                JSONObject header = jsonArray.getJSONObject(i);
+                JSONArray removedIds = header.optJSONArray("removedAttachmentIds");
+                if (removedIds == null || removedIds.length() == 0) {
+                    continue;
+                }
+                long headerRecordNo = Long.parseLong(header.optString("recordNo", "0").trim().isEmpty()
+                        ? "0" : header.optString("recordNo", "0").trim());
+                DCC existingDcc = headerRecordNo > 0 ? dccrepo.findByRecordNo(headerRecordNo) : null;
+                String existingStatus = existingDcc != null && existingDcc.getStatus() != null
+                        ? existingDcc.getStatus().trim().toLowerCase(Locale.ROOT) : "";
+                if (existingDcc == null || !(existingStatus.equals("returned") || existingStatus.equals("incomplete"))) {
+                    errorMessages.add("Attachments can only be removed from a returned or saved (incomplete) acceptance request.");
+                    continue;
+                }
+                List<FileRecord> toRemove = new ArrayList<>();
+                List<String> notOnRequest = new ArrayList<>();
+                for (int j = 0; j < removedIds.length(); j++) {
+                    String rawId = String.valueOf(removedIds.get(j)).trim();
+                    FileRecord fileRecord = null;
+                    try {
+                        fileRecord = fileRepo.findByRecordNo(Long.parseLong(rawId));
+                    } catch (NumberFormatException e) {
+                        // reported below
+                    }
+                    if (fileRecord == null || fileRecord.getDccId() == null
+                            || fileRecord.getDccId().longValue() != headerRecordNo) {
+                        notOnRequest.add(rawId);
+                    } else {
+                        toRemove.add(fileRecord);
+                    }
+                }
+                if (!notOnRequest.isEmpty()) {
+                    errorMessages.add("The following attachment(s) are not on acceptance request " + headerRecordNo
+                            + ": " + String.join(", ", notOnRequest) + ". Please reload the request and try again.");
+                } else {
+                    attachmentsToRemove.put(headerRecordNo, toRemove);
+                }
+            }
+
             // If any errors found, return all in one response
             if (!errorMessages.isEmpty()) {
                 return response("Error", String.join("\n", errorMessages));
@@ -2404,6 +2451,14 @@ public class APIController {
                     newRecordNo = jsonObject.getString("recordNo");
                 } else {
                     newRecordNo = recordId;
+                }
+
+                // Only the request's record is removed; the file itself stays in the upload folder.
+                List<FileRecord> removedAttachments = attachmentsToRemove.get(recordNo);
+                if (removedAttachments != null && !removedAttachments.isEmpty()) {
+                    fileRepo.deleteAll(removedAttachments);
+                    logger.info("Acceptance request " + recordNo + ": " + createdByName + " removed attachment(s) "
+                            + removedAttachments.stream().map(FileRecord::getFileName).collect(Collectors.joining(", ")));
                 }
 
                 if (files != null) {
